@@ -56,4 +56,12 @@ class LogicalGroups(unittest.TestCase):
             for group in leaf['content_evidence']['logical_groups']:
                 self.assertFalse(group['physical_border_verified'])
 
+    def test_unsplit_mixed_zone_does_not_claim_one_party_role(self):
+        m=load()
+        tsv='header\n5\t1\t1\t1\t1\t1\t10\t10\t100\t20\t90\tSupplier\n5\t1\t2\t1\t1\t1\t10\t15\t100\t20\t90\tInvoice'
+        leaves,meta,_=m.refine_regions(np.zeros((200,200,3),np.uint8),[dict(id='R001',xyxy=[0,0,200,200],category='unknown')],tsv)
+        self.assertEqual(len(leaves),1)
+        self.assertEqual(leaves[0]['category'],'unknown')
+        self.assertEqual(leaves[0]['classification_evidence'],'MIXED_CONTENT_REVIEW')
+
 if __name__=='__main__':unittest.main()

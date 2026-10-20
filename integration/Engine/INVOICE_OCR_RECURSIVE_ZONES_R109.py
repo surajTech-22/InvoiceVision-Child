@@ -260,7 +260,12 @@ def refine_regions(img,coarse,raw_tsv=None,max_depth=3,max_leaves=70):
                     visit({**zone,'id':child_id,'xyxy':child,'source':'R109_CONTENT_AWARE_SPLIT',
                            'overlap_warnings':[]},current['id'],depth+1)
                 return
-        if len(ranked)>1:current['content_evidence']['mixed_groups_need_review']=ranked
+        if len(ranked)>1:
+            current['content_evidence']['mixed_groups_need_review']=ranked
+            current['content_evidence']['dominant_hypothesis']=dominant
+            current['category']='unknown'
+            current['label']='Mixed information (review required)'
+            current['classification_evidence']='MIXED_CONTENT_REVIEW'
         if not raw_tsv:current['content_evidence']['warning']='Content OCR unavailable: do not infer groups from positions'
         leaves.append(current)
     for zone in coarse:
