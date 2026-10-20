@@ -3,7 +3,7 @@
 from __future__ import annotations
 import re
 from dataclasses import dataclass
-from .r148_glued_datetime import read_glued_datetime
+from experiments.r148_glued_datetime import read_glued_datetime
 
 @dataclass(frozen=True)
 class Token:
