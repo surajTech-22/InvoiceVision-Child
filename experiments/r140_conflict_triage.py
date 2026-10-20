@@ -7,8 +7,8 @@ from __future__ import annotations
 import re
 from collections import Counter
 
-DATE = re.compile(r"(?<!\\d)(?:\\d{1,2}[-/.]\\d{1,2}[-/.]\\d{4}|\\d{4}[-/.]\\d{1,2}[-/.]\\d{1,2})(?!\\d)")
-NUMERIC = re.compile(r"^\\s*(?:(?:₹|rs\\.?|inr)\\s*)?([+-]?\\d{1,9}(?:,\\d{2,3})*(?:\\.\\d{1,3})?)\\s*$", re.I)
+DATE = re.compile(r"(?<!\d)(?:\d{1,2}[-/.]\d{1,2}[-/.]\d{4}|\d{4}[-/.]\d{1,2}[-/.]\d{1,2})(?!\d)")
+NUMERIC = re.compile(r"^\s*(?:(?:₹|rs\.?|inr)\s*)?([+-]?\d{1,9}(?:,\d{2,3})*(?:\.\d{1,3})?)\s*$", re.I)
 
 def box_of(v):
     try:
@@ -55,7 +55,7 @@ def classify(a,b):
     if digits(x)==digits(y):return "NO_DIGIT_DISAGREEMENT"
     if DATE.fullmatch(x) or DATE.fullmatch(y):return "DATE_SHAPED_CONFLICT"
     if NUMERIC.fullmatch(x) and NUMERIC.fullmatch(y):
-        if re.search(r"[.,₹]|\\brs\\b|\\binr\\b",x+" "+y,re.I):
+        if re.search(r"[.,₹]|\brs\b|\binr\b",x+" "+y,re.I):
             return "DECIMAL_OR_CURRENCY_SHAPED_CONFLICT"
         return "BARE_NUMERIC_TOKEN_CONFLICT_UNCLASSIFIED"
     if re.search(r"[A-Za-z]",x+y):return "MIXED_TEXT_OR_IDENTIFIER_DIGIT_CONFLICT"
