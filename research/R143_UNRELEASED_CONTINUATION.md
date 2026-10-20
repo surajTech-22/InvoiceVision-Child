@@ -42,11 +42,10 @@ cover these errors now. Remaining unverified orientation hypotheses can
 still associate tax/savings amounts with total labels. No automatic winner
 is chosen and no value is eligible for accounting posting.
 
-The Library source-download helper failed with HTTP 403 while listing its
-hosted tools; therefore the complete source archive and all 51 unique
-test inputs were not materialized in this session. GitHub text access works,
-but its fetch tools cannot transfer the binary source ZIP. The existing
-15-photo OCR artifacts were recoverable through GitHub artifact downloads.
+The first source-download route failed with HTTP 403. This blocker was resolved
+by a pinned-source GitHub artifact: all 73 baseline source hashes and all 51
+unique test inputs (36 synthetic, 15 real) were recovered and verified.
+See R144 for subsequent full-corpus morphology and fresh CPU OCR work.
 
 Physical printed boxes, source-supported repairs, complete recursive
 semantic correctness, all reference fields, actual CPU/GPU model fallback,

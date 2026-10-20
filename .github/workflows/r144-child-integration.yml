@@ -1,0 +1,72 @@
+name: InvoiceVision R144 isolated Child build and physical corpus audit
+on:
+  push:
+    branches: [research/invoicevision-r143-unreleased]
+    paths: ['integration/**', 'experiments/*r144*', 'scripts/stage-r144-integration.py', '.github/workflows/r144-child-integration.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  evidence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install 'opencv-python-headless==4.11.0.86' 'numpy>=1.26,<3'
+      - name: Stage pinned baseline in isolated build tree
+        run: |
+          python - <<'PY'
+          import hashlib,pathlib,zipfile
+          p=pathlib.Path('source/INVOICE_OCR_CHILD_R113_R4_R2_VERIFIED_UPDATE.zip')
+          assert hashlib.sha256(p.read_bytes()).hexdigest()=='ad4720d1037558e637fd42abf8e40bce34b505f6cfa73f29dcc3a67816a9ac59'
+          with zipfile.ZipFile(p) as z:
+              assert all(not pathlib.PurePosixPath(n).is_absolute() and '..' not in pathlib.PurePosixPath(n).parts for n in z.namelist())
+              z.extractall('integration-build')
+          PY
+      - name: Test actual Child adapter fallback and closed contour audit
+        run: python -m unittest experiments.test_r144_child_adapter experiments.test_r144_physical_contour_audit
+      - name: Audit all 51 original source-mask inputs without adding pixels
+        run: python -m experiments.r144_corpus_audit --baseline integration-build --out research_results/r144-native
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: InvoiceVision-R144-51-Source-Native-Comparisons-Unverified
+          path: research_results/r144-native
+          retention-days: 30
+  windows-child:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Verify pinned baseline and apply exact research overlay
+        shell: pwsh
+        run: |
+          $p='source/INVOICE_OCR_CHILD_R113_R4_R2_VERIFIED_UPDATE.zip'
+          if ((Get-FileHash $p -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'ad4720d1037558e637fd42abf8e40bce34b505f6cfa73f29dcc3a67816a9ac59') { throw 'Baseline mismatch' }
+          Expand-Archive -LiteralPath $p -DestinationPath integration-build
+          python scripts/stage-r144-integration.py integration-build
+          if ($LASTEXITCODE -ne 0) { throw 'Integration staging failed' }
+          New-Item -ItemType Directory integration-build/scripts -Force | Out-Null
+          Copy-Item scripts/build-windows.ps1 integration-build/scripts/build-windows.ps1
+      - name: Compile self-contained WPF Child and run startup check
+        shell: pwsh
+        run: ./integration-build/scripts/build-windows.ps1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: InvoiceVision-R144-Windows-Integration-Evidence-No-Installers
+          path: |
+            integration-build/release/BUILD_VERIFICATION.json
+            integration-build/R144_INTEGRATION_PROVENANCE.json
+            integration-build/build/startup-smoke.txt
+          if-no-files-found: error
+          retention-days: 30
