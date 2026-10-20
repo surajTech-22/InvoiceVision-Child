@@ -1,0 +1,42 @@
+name: InvoiceVision R147 Unicode OCR evidence and replay contract
+on:
+  push:
+    branches: [research/invoicevision-r147-replay-unreleased]
+    paths:
+      - 'experiments/*r147*'
+      - 'experiments/r146_rezone.py'
+      - 'experiments/r146_field_evaluation.py'
+      - 'experiments/r138_field_evidence.py'
+      - 'experiments/r136_real_invoice_cpu_ocr.py'
+      - 'experiments/r143_replay_review.py'
+      - 'experiments/r144_live_cpu_corpus.py'
+      - 'experiments/r145_child_zone_replay.py'
+      - 'experiments/r145_orientation_cpu_recheck.py'
+      - '.github/workflows/r147-utf8-replay-tests.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  unicode-safety:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install CPU image-processing dependencies for source-bound replay smoke
+        run: python -m pip install 'numpy>=1.26,<3' 'opencv-python-headless==4.11.0.86' 'Pillow>=10,<13'
+      - name: Verify byte-for-byte multilingual source fidelity and no data loss
+        shell: bash
+        run: |
+          python -m py_compile experiments/r147_utf8_evidence.py experiments/r146_rezone.py experiments/r146_field_evaluation.py experiments/r136_real_invoice_cpu_ocr.py experiments/r143_replay_review.py experiments/r144_live_cpu_corpus.py experiments/r145_child_zone_replay.py experiments/r145_orientation_cpu_recheck.py
+          python -m experiments.test_r147_utf8_evidence
+          python -m experiments.test_r147_replay_unicode
+          python -m experiments.test_r138_cross_model_consensus
+          python -m experiments.test_r138_field_evidence
+          python -m experiments.test_r143_continuation

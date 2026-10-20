@@ -5,6 +5,7 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 import json
 from pathlib import Path
+from .r147_utf8_evidence import read_utf8, read_json, write_json
 import re
 from .r143_source_evidence import inspect
 
@@ -20,11 +21,11 @@ def canonical(field,value):
         s=re.sub(r'^(?:INR|Rs\.?|₹)\s*','',s,flags=re.I).replace(',','')
         try:return str(Decimal(s).quantize(Decimal('.01')))
         except InvalidOperation:return s
-    return re.sub(r'[^a-z0-9]','',s.casefold())
+    return ''.join(ch for ch in s.casefold() if ch.isalnum())
 
 
 def run(report,reference,out):
-    source=json.loads(report.read_text());ref=json.loads(reference.read_text())
+    source=read_json(report);ref=read_json(reference)
     byfile={Path(f).name:r for r in ref['invoices'] for f in r.get('image_files',[])}
     rows=[];counts=Counter()
     fields={'supplier':'supplier','buyer':'buyer','invoice_number':'invoice_number','date':'invoice_date','grand_total':'grand_total'}
@@ -32,7 +33,7 @@ def run(report,reference,out):
         if case['file'] not in byfile or case.get('status')=='FAILED':continue
         candidates=inspect(case,'saved_ocr')['candidates'];expected=byfile[case['file']]
         for refkey,field in fields.items():
-            if expected.get(refkey) is None:continue
+            if expected.get(refkey) in (None, '', 'REVIEW_REQUIRED'):continue
             relevant=[c for c in candidates if c['field']==field or (field=='supplier' and c['field']=='supplier_fragments')]
             values=sorted({c['raw_value'] for c in relevant})
             matching=[v for v in values if canonical(field,v)==canonical(field,expected[refkey])]
@@ -41,7 +42,7 @@ def run(report,reference,out):
             counts[status]+=1;counts['reference_slots']+=1
             rows.append({'file':case['file'],'source_sha256':case['source_sha256'],'field':field,'manual_reference':expected[refkey],'candidates':values,'matches':matching,'alternatives':alternatives,'status':status,'evidence':relevant})
     result={'metric':'exact_reference_candidate_coverage_not_accuracy','counts':dict(counts),'rows':rows,'field_accuracy_verified':False,'posting_eligible':False,'normalization':'case/punctuation for identifiers and names; calendar date; decimal amount; no fuzzy or vendor aliases'}
-    out.parent.mkdir(parents=True,exist_ok=True);out.write_text(json.dumps(result,indent=2,ensure_ascii=False));print(json.dumps(result['counts']))
+    out.parent.mkdir(parents=True,exist_ok=True);write_json(out,result);print(json.dumps(result['counts']))
 
 if __name__=='__main__':
     p=argparse.ArgumentParser()

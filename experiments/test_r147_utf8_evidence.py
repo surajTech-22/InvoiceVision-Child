@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
-from experiments.r147_utf8_evidence import write_utf8, write_json
+from experiments.r147_utf8_evidence import write_utf8, write_json, read_utf8, read_json
 
 SAMPLE="Invoice 04/09/2026 — श्री राम € ₹ عربي 中文 漢字 Ω ω 心 ） ： \t\nsecond row"
 
@@ -47,6 +47,21 @@ class EvidencePersistence(unittest.TestCase):
             p=Path(tmp)/"REPORT.json";write_json(p,{"status":"old"})
             with self.assertRaises(ValueError):write_json(p,{"bad":float("nan")})
             self.assertEqual(json.loads(p.read_bytes()),{"status":"old"})
+    def test_strict_reader_preserves_multilingual_invoice(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p=Path(tmp)/"a.tsv"
+            write_utf8(p,SAMPLE)
+            self.assertEqual(read_utf8(p),SAMPLE)
+    def test_reader_rejects_cp1252_legacy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p=Path(tmp)/"REPORT.json"
+            p.write_bytes('{"name":"François"}'.encode("cp1252"))
+            with self.assertRaises(UnicodeDecodeError):read_json(p)
+    def test_json_reader_returns_full_source_text(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p=Path(tmp)/"REPORT.json"
+            write_json(p,{"source":SAMPLE})
+            self.assertEqual(read_json(p)["source"],SAMPLE)
     def test_newlines_match_cross_platform(self):
         with tempfile.TemporaryDirectory() as tmp:
             p=Path(tmp)/"line.tsv";write_utf8(p,"first\nsecond\n")

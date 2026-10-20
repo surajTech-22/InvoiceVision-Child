@@ -39,7 +39,7 @@ def tokens_from_ocr(texts,boxes,engine="rapidocr"):
 
 def normalize(s):
     s=re.sub(r"\b(?:ltd\.?|limited)\b","limited",str(s).casefold())
-    return re.sub(r"[^a-z0-9]+","",s)
+    return ''.join(ch for ch in s if ch.isalnum())
 
 def amount(s):
     s=str(s).strip().replace("₹","").replace("Rs.","").replace(",","").lstrip(": ").strip()
