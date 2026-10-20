@@ -1,0 +1,69 @@
+name: InvoiceVision adaptive CPU or GPU VLM research
+on:
+  push:
+    branches:
+      - research/adaptive-cpu-vlm-r128
+    paths:
+      - 'experiments/adaptive_vlm.py'
+      - 'scripts/benchmark-ocr.py'
+      - '.github/workflows/adaptive-cpu-vlm.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  cpu_smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      HF_HUB_DISABLE_TELEMETRY: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+      OMP_NUM_THREADS: '4'
+      MKL_NUM_THREADS: '4'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Show device and resources
+        run: |
+          free -h
+          df -h .
+          if command -v nvidia-smi >/dev/null; then nvidia-smi; else echo CPU_ONLY_RUNNER; fi
+      - name: Install lightweight CPU-compatible inference dependencies
+        run: |
+          python -m pip install 'torch==2.5.1+cpu' --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install 'transformers==4.55.4' 'accelerate>=1.2,<2' 'Pillow>=10,<12' 'sentencepiece' --disable-pip-version-check
+      - name: Generate clean source-controlled synthetic fixture
+        run: |
+          python - <<'PY'
+          import importlib.util
+          from pathlib import Path
+          spec = importlib.util.spec_from_file_location("fixture", "scripts/benchmark-ocr.py")
+          mod = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(mod)
+          cases=mod.generate(Path("research_results/synthetic"))
+          print("Fixture:",cases[0]["name"],cases[0]["sha256"])
+          PY
+      - name: Verify CPU fallback without importing model weights
+        run: |
+          python - <<'PY'
+          import importlib.util
+          spec=importlib.util.spec_from_file_location('adaptive','experiments/adaptive_vlm.py')
+          m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+          class FakeCuda:
+              def is_available(self): return False
+          class FakeTorch: cuda=FakeCuda()
+          assert m.preferred_device(FakeTorch()) == ('cpu','CUDA_UNAVAILABLE')
+          print('CPU_POLICY_PASS')
+          PY
+      - name: Run genuine CPU image inference and save actual comparison preview
+        run: |
+          timeout 1250s python experiments/adaptive_vlm.py --model smolvlm2 --device auto --max-new-tokens 80 --image research_results/synthetic/synthetic_1.png --out research_results/adaptive_vlm
+      - name: Upload original and comparison image with raw model evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: InvoiceVision-adaptive-CPU-comparison
+          path: research_results/
+          if-no-files-found: warn
+          retention-days: 30
