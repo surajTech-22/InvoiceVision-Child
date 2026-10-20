@@ -1,0 +1,51 @@
+name: InvoiceVision R149 two independent CPU OCR field evidence on real photos
+on:
+  push:
+    branches: [research/invoicevision-r143-unreleased]
+    paths:
+      - 'experiments/r149_two_engine_field_review.py'
+      - '.github/workflows/r149-two-model-field-review.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  source-linked-review:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install source image decoder only
+        run: python -m pip install 'Pillow>=10,<13'
+      - name: Retrieve independent earlier RapidOCR text/geometry for 15 real invoices
+        uses: actions/download-artifact@v4
+        with:
+          name: InvoiceVision-R136-Real-CPU-rapidocr
+          path: prior-rapid
+          run-id: 39416753807
+          github-token: ${{ github.token }}
+      - name: Retrieve real staged Child PaddleOCR CPU text/geometry for 51 originals
+        uses: actions/download-artifact@v4
+        with:
+          name: InvoiceVision-R146-Windows-Actual-Child-OCR-Unverified
+          path: actual-child
+          run-id: 39455484213
+          github-token: ${{ github.token }}
+      - name: Verify 15 original SHA-matched photos and compare field hypotheses
+        shell: bash
+        run: |
+          python -m experiments.r149_two_engine_field_review --rapid-report prior-rapid/REPORT.json --child-report actual-child/REPORT.json --source-zip source/INVOICE_OCR_CHILD_R113_R4_R2_VERIFIED_UPDATE.zip --out research_results/R149_TWO_OCR_SOURCE_LINKED_REVIEW.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: InvoiceVision-R149-Two-CPU-Field-Evidence-${{ matrix.os }}
+          path: research_results/R149_TWO_OCR_SOURCE_LINKED_REVIEW.json
+          if-no-files-found: warn
+          retention-days: 30
