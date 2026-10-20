@@ -7,6 +7,11 @@ on:
       - 'experiments/r146_rezone.py'
       - 'experiments/r146_field_evaluation.py'
       - 'experiments/r138_field_evidence.py'
+      - 'experiments/r136_real_invoice_cpu_ocr.py'
+      - 'experiments/r143_replay_review.py'
+      - 'experiments/r144_live_cpu_corpus.py'
+      - 'experiments/r145_child_zone_replay.py'
+      - 'experiments/r145_orientation_cpu_recheck.py'
       - '.github/workflows/r147-utf8-replay-tests.yml'
   workflow_dispatch:
 permissions:
@@ -29,8 +34,9 @@ jobs:
       - name: Verify byte-for-byte multilingual source fidelity and no data loss
         shell: bash
         run: |
-          python -m py_compile experiments/r147_utf8_evidence.py experiments/r146_rezone.py experiments/r146_field_evaluation.py
+          python -m py_compile experiments/r147_utf8_evidence.py experiments/r146_rezone.py experiments/r146_field_evaluation.py experiments/r136_real_invoice_cpu_ocr.py experiments/r143_replay_review.py experiments/r144_live_cpu_corpus.py experiments/r145_child_zone_replay.py experiments/r145_orientation_cpu_recheck.py
           python -m experiments.test_r147_utf8_evidence
           python -m experiments.test_r147_replay_unicode
           python -m experiments.test_r138_cross_model_consensus
           python -m experiments.test_r138_field_evidence
+          python -m experiments.test_r143_continuation
