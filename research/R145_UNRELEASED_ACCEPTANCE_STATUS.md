@@ -62,10 +62,17 @@ cuts. The overlay protects all intersecting source text, including unknown
 lines, and rechecks the rounded cut coordinate. Original recursive/metadata
 tests pass against the staged engine; targeted crossing-text regression passes.
 
-First Windows overlay build (adapter only), run 39437456439, passed self-contained
-.NET compilation, engine hash readback and real WPF startup smoke. The final
-two-overlay revision must pass a fresh build. No installer was produced by this
-integration workflow. Startup alone does not verify end-to-end invoice GUI use.
+Windows run 39438430410 passed on final two-overlay commit
+5b497afc15457b38cfb90797fb76c76b3d24f42a: 66 regression tests, self-contained
+.NET compilation, engine hash readback and real WPF startup smoke. Its Linux
+job passed the same 66 regressions and 51-source native audit. No installer
+was produced. Startup alone does not verify end-to-end invoice GUI use.
+
+Replaying all 51 CPU OCR outputs through the staged Child recursive engine
+produced 6 splits / 57 total leaves with zero source text lines cropped by
+emitted splits. Most sources stayed unsplit; this is geometry safety only,
+not evidence of complete semantic grouping or field mapping. Replay TSV
+confidence was an explicit fixed inclusion flag, not a measured model score.
 
 ## Mandatory unresolved acceptance gates
 
