@@ -12,7 +12,7 @@ import cv2
 import numpy as np
 
 from experiments.r146_rezone import run as replay
-from experiments.r146_field_evaluation import run as evaluate
+from experiments.r146_field_evaluation import run as evaluate, canonical
 from experiments.r147_utf8_evidence import write_json,write_utf8,read_json
 
 UNICODE="中文 Ω 心 ₹ 04/09/2026"
@@ -66,5 +66,25 @@ class SourceLinkedReplay(unittest.TestCase):
             self.assertEqual(result["rows"][0]["matches"],["₹1,413.00"])
             self.assertFalse(result["field_accuracy_verified"])
             self.assertFalse(result["posting_eligible"])
+
+    def test_nonlatin_names_are_not_equal_after_normalization(self):
+        self.assertNotEqual(canonical("supplier","شركة التجارة"),canonical("supplier","北京贸易公司"))
+        self.assertEqual(canonical("buyer","北京-贸易 公司"),canonical("buyer","北京贸易公司"))
+        self.assertNotEqual(canonical("supplier","MÉTRO"),canonical("supplier","METRO"))
+
+    def test_foreign_party_and_absent_reference_cannot_false_match(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            report,_,_=self.make_fixture(tmp)
+            reference=Path(tmp)/"ref.json"
+            write_json(reference,{"invoices":[{"image_files":["sample.png"],
+                "buyer":"شركة التجارة","supplier":"REVIEW_REQUIRED","invoice_number":""}]})
+            with patch("experiments.r146_field_evaluation.inspect",
+                return_value={"candidates":[{"field":"buyer","raw_value":"北京贸易公司"}]}):
+                evaluate(report,reference,Path(tmp)/"result"/"fields.json")
+            output=read_json(Path(tmp)/"result"/"fields.json")
+            self.assertEqual(output["counts"]["reference_slots"],1)
+            self.assertEqual(output["rows"][0]["status"],"wrong_candidates_only")
+            self.assertEqual(output["rows"][0]["matches"],[])
+            self.assertFalse(output["field_accuracy_verified"])
 
 if __name__=="__main__":unittest.main(verbosity=2)
