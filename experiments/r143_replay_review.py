@@ -6,13 +6,14 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+from .r147_utf8_evidence import write_json, read_json
 from PIL import Image, ImageDraw
 from .r143_orientation_evidence import hypotheses
 
 
 def run(evidence, out):
     out.mkdir(parents=True, exist_ok=True)
-    reports = {e: json.loads((evidence/e/'REPORT.json').read_text()) for e in ('rapidocr','paddleocr')}
+    reports = {e: read_json(evidence/e/'REPORT.json') for e in ('rapidocr','paddleocr')}
     by_engine = {e: {c['file']: c for c in report['cases']} for e, report in reports.items()}
     if set(by_engine['rapidocr']) != set(by_engine['paddleocr']):
         raise ValueError('Independent OCR source sets differ')
@@ -52,11 +53,11 @@ def run(evidence, out):
             counts[engine] = {'candidates_with_orientation_hypotheses':len(rows),
                               'issues':len(views[engine][0]['issues'])}
         comparison.save(out/(Path(filename).stem+'_source_comparison.jpg'),quality=92)
-        (out/(Path(filename).stem+'_evidence.json')).write_text(json.dumps(views, indent=2,ensure_ascii=False))
+        write_json(out/(Path(filename).stem+'_evidence.json'),views)
         summary['cases'].append({'file':filename,'source_sha256':sha,'engines':counts,
                                  'source_bytes_verified':True,'physical_boxes_verified':False})
     summary['source_count'] = len(summary['cases'])
-    (out/'REPORT.json').write_text(json.dumps(summary, indent=2))
+    write_json(out/'REPORT.json',summary)
     print(json.dumps({'sources_replayed':len(summary['cases']), 'release_verified':False}))
 
 if __name__ == '__main__':
