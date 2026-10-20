@@ -1,0 +1,66 @@
+name: InvoiceVision Advanced Recognition Research
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/advanced-model-benchmarks.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  research:
+    name: ${{ matrix.model }}
+    strategy:
+      fail-fast: false
+      matrix:
+        model: [docling, uie, layoutlmv3, paddleocr-vl, qwen3-vl, pp-chatocrv4]
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Check available resources
+        shell: bash
+        run: |
+          free -h
+          df -h .
+          command -v nvidia-smi && nvidia-smi || echo 'NO_NVIDIA_GPU'
+      - name: Install generic benchmark dependencies
+        run: python -m pip install 'Pillow>=10,<12' 'numpy>=1.26,<3' --disable-pip-version-check
+      - name: Install Docling
+        if: matrix.model == 'docling'
+        run: python -m pip install 'docling>=2,<3' --disable-pip-version-check
+      - name: Install PaddleNLP UIE
+        if: matrix.model == 'uie'
+        run: |
+          python -m pip install 'paddlepaddle==3.2.2' 'paddlenlp' --disable-pip-version-check
+      - name: Install generic layout-transformer model
+        if: matrix.model == 'layoutlmv3'
+        run: |
+          python -m pip install 'torch==2.5.1' 'torchvision==0.20.1' 'transformers==4.46.3' 'sentencepiece' --disable-pip-version-check
+      - name: Install PaddleOCR-VL local CPU parser
+        if: matrix.model == 'paddleocr-vl'
+        run: |
+          python -m pip install 'paddlepaddle==3.2.2' 'paddleocr[doc-parser]>=3.7.0' --disable-pip-version-check
+      - name: Record actual inference or explicit resource-blocker
+        shell: bash
+        env:
+          PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK: 'True'
+          FLAGS_use_mkldnn: '0'
+          HF_HUB_DISABLE_TELEMETRY: '1'
+        run: |
+          mkdir -p "advanced_results/${{ matrix.model }}"
+          timeout 1100s python experiments/advanced_models.py --model '${{ matrix.model }}' --out "advanced_results/${{ matrix.model }}"
+      - name: Publish independent model results, even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: InvoiceVision-Advanced-${{ matrix.model }}
+          path: advanced_results/${{ matrix.model }}/
+          if-no-files-found: warn
+          retention-days: 30
