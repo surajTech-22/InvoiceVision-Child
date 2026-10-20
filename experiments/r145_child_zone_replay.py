@@ -7,6 +7,7 @@ import argparse
 import importlib.util
 import json
 from pathlib import Path
+from .r147_utf8_evidence import read_json, write_json
 import numpy as np
 from .r138_field_evidence import box_of
 
@@ -14,7 +15,7 @@ from .r138_field_evidence import box_of
 def run(report,engine,out):
     spec=importlib.util.spec_from_file_location('child_recursive_replay',engine)
     module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
-    data=json.loads(report.read_text())
+    data=read_json(report)
     result={'cases':[],'semantic_accuracy_verified':False,'posting_eligible':False,
             'replay_tsv_confidence_is_not_model_confidence':True}
     for case in data['cases']:
@@ -45,7 +46,7 @@ def run(report,engine,out):
         result['cases'].append({'file':case['file'],'source_sha256':case['source_sha256'],
             'source_lines':len(lines),'leaves':len(leaves),'splits':len(cuts),
             'uncovered_lines':len(uncovered),'semantic_accuracy_verified':False})
-    out.write_text(json.dumps(result,indent=2))
+    write_json(out,result)
     print('CHILD_SOURCE_GEOMETRY_REPLAY',len(result['cases']),'ZERO_CROPPED_TEXT_LINES')
 
 if __name__=='__main__':
