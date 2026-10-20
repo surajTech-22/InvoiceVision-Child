@@ -1,0 +1,29 @@
+name: InvoiceVision R141 inline-label OCR evidence validation
+on:
+  push:
+    branches: [research/invoicevision-r135-unreleased]
+    paths:
+      - 'experiments/r141_inline_field_evidence.py'
+      - 'experiments/test_r141_inline_field_evidence.py'
+      - '.github/workflows/r141-inline-field-tests.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  conservative-field-validation:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Prevent OCR value invention or automatic accounting posting
+        shell: bash
+        run: |
+          python -m py_compile experiments/r141_inline_field_evidence.py
+          python -m experiments.test_r141_inline_field_evidence
