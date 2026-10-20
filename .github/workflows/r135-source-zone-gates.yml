@@ -1,0 +1,29 @@
+name: InvoiceVision R135 isolated text-zone safety verification
+on:
+  push:
+    branches:
+      - research/invoicevision-r135-unreleased
+    paths:
+      - 'experiments/r135_source_zone_safety_gate.py'
+      - '.github/workflows/r135-source-zone-gates.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  conservative-zone-gates:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Validate syntax and read-only text-zone safety invariants
+        shell: bash
+        run: |
+          python -m py_compile experiments/r135_source_zone_safety_gate.py
+          python experiments/r135_source_zone_safety_gate.py
