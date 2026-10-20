@@ -23,7 +23,7 @@ jobs:
           python-version: '3.11'
       - name: Install CPU-safe vision-transformer environment
         run: |
-          python -m pip install 'torch==2.5.1' 'torchvision==0.20.1' 'transformers==4.57.6' 'accelerate' 'Pillow>=10,<12' 'sentencepiece' --disable-pip-version-check
+          python -m pip install 'torch==2.5.1' 'torchvision==0.20.1' 'transformers==4.57.6' 'accelerate' 'Pillow>=10,<12' 'sentencepiece' 'num2words' --disable-pip-version-check
       - name: Select available GPU or CPU-adapted model and perform real inference
         env:
           HF_HUB_DISABLE_TELEMETRY: '1'
