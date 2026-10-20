@@ -61,7 +61,7 @@ def main():
         for index,name in enumerate(inputs):
             raw=inner.read(name); im=Image.open(io.BytesIO(raw)).convert('RGB')
             outfile=a.out/(Path(name).stem+'_input.jpg')
-            im.save(outfile,quality=96)
+            outfile.write_bytes(raw)  # exact original compressed bytes; no recompression
             try:
                 lines,boxes=reader(outfile)
                 lines=list(map(str,lines))
