@@ -5,6 +5,7 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 import json
 from pathlib import Path
+from .r147_utf8_evidence import read_utf8, read_json, write_json
 import re
 from .r143_source_evidence import inspect
 
@@ -24,7 +25,7 @@ def canonical(field,value):
 
 
 def run(report,reference,out):
-    source=json.loads(report.read_text());ref=json.loads(reference.read_text())
+    source=read_json(report);ref=read_json(reference)
     byfile={Path(f).name:r for r in ref['invoices'] for f in r.get('image_files',[])}
     rows=[];counts=Counter()
     fields={'supplier':'supplier','buyer':'buyer','invoice_number':'invoice_number','date':'invoice_date','grand_total':'grand_total'}
@@ -41,7 +42,7 @@ def run(report,reference,out):
             counts[status]+=1;counts['reference_slots']+=1
             rows.append({'file':case['file'],'source_sha256':case['source_sha256'],'field':field,'manual_reference':expected[refkey],'candidates':values,'matches':matching,'alternatives':alternatives,'status':status,'evidence':relevant})
     result={'metric':'exact_reference_candidate_coverage_not_accuracy','counts':dict(counts),'rows':rows,'field_accuracy_verified':False,'posting_eligible':False,'normalization':'case/punctuation for identifiers and names; calendar date; decimal amount; no fuzzy or vendor aliases'}
-    out.parent.mkdir(parents=True,exist_ok=True);out.write_text(json.dumps(result,indent=2,ensure_ascii=False));print(json.dumps(result['counts']))
+    out.parent.mkdir(parents=True,exist_ok=True);write_json(out,result);print(json.dumps(result['counts']))
 
 if __name__=='__main__':
     p=argparse.ArgumentParser()
