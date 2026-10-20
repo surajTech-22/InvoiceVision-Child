@@ -1,0 +1,46 @@
+name: InvoiceVision UIE Compatibility Recheck
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/uie-compatibility-recheck.yml'
+      - 'experiments/advanced_models.py'
+
+permissions:
+  contents: read
+
+jobs:
+  uie:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install isolated PaddleNLP with compatible model hub
+        shell: bash
+        run: |
+          python -m pip install 'Pillow>=10,<12' 'numpy>=1.26,<3'
+          python -m pip install 'paddlepaddle==3.2.2' paddlenlp
+          python -m pip install 'huggingface_hub==0.35.3'
+          python - <<'PY'
+          import huggingface_hub
+          print('HUB',huggingface_hub.__version__)
+          from huggingface_hub import repo_type_and_id_from_hf_id
+          print('LEGACY_API_AVAILABLE')
+          PY
+      - name: Run UIE field extraction on unfamiliar synthetic formats
+        shell: bash
+        run: |
+          mkdir -p advanced_results/uie-pinned
+          timeout 900s python experiments/advanced_models.py --model uie --out advanced_results/uie-pinned
+      - name: Upload evidence including failures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: InvoiceVision-UIE-Pinned-Recheck
+          path: advanced_results/uie-pinned/
+          if-no-files-found: warn
