@@ -5,17 +5,11 @@ on:
   push:
     branches: [main]
     paths:
-      - 'InvoiceVisionChild/**'
-      - 'CHILD_SOURCE_SHA256.json'
-      - 'installer/**'
-      - 'scripts/**'
+      - 'source/INVOICE_OCR_CHILD_R113_R4_R2_VERIFIED_UPDATE.zip'
   pull_request:
     branches: [main]
     paths:
-      - 'InvoiceVisionChild/**'
-      - 'CHILD_SOURCE_SHA256.json'
-      - 'installer/**'
-      - 'scripts/**'
+      - 'source/INVOICE_OCR_CHILD_R113_R4_R2_VERIFIED_UPDATE.zip'
 
 permissions:
   contents: read
@@ -31,6 +25,32 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+      - name: Validate pinned Child archive and safely extract the verified baseline
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $src = 'source/INVOICE_OCR_CHILD_R113_R4_R2_VERIFIED_UPDATE.zip'
+          if (!(Test-Path -LiteralPath $src -PathType Leaf)) {
+            throw 'Verified Child archive is not yet uploaded. No Setup.exe or Update.exe may be produced.'
+          }
+          $sha = (Get-FileHash -LiteralPath $src -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($sha -ne 'ad4720d1037558e637fd42abf8e40bce34b505f6cfa73f29dcc3a67816a9ac59') {
+            throw "Pinned verified source ZIP hash mismatch: $sha"
+          }
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $archive = [IO.Compression.ZipFile]::OpenRead((Resolve-Path $src).Path)
+          try {
+            foreach ($item in $archive.Entries) {
+              $name = $item.FullName.Replace('\\','/')
+              if ($name.StartsWith('/') -or $name -match '(^|/)\.\.(/|$)' -or $name -match '^[A-Za-z]:') {
+                throw "Unsafe ZIP member $name"
+              }
+            }
+          } finally { $archive.Dispose() }
+          Expand-Archive -LiteralPath $src -DestinationPath '.' -Force
+          if (!(Test-Path 'InvoiceVisionChild/InvoiceVisionChild.csproj')) { throw 'Child project missing' }
+          if (!(Test-Path 'CHILD_SOURCE_SHA256.json')) { throw 'Child file manifest missing' }
+          Write-Host 'PINNED_CHILD_ARCHIVE_HASH_PASS'
       - name: Install .NET 10
         uses: actions/setup-dotnet@v4
         with:
