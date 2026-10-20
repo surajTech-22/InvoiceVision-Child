@@ -7,6 +7,40 @@ import cv2
 import numpy as np
 
 
+def closed_ink_contours(layers):
+    """Rotation-tolerant enclosed contours in source-threshold ink.
+
+    No closing/dilation or synthetic lines. A hole contour proves enclosure in
+    this threshold view only; it does not independently certify a printed box.
+    """
+    ink=layers['ink']
+    contours,hierarchy=cv2.findContours(ink,cv2.RETR_CCOMP,cv2.CHAIN_APPROX_SIMPLE)
+    if hierarchy is None:return []
+    found=[];height,width=ink.shape
+    for i,contour in enumerate(contours):
+        if hierarchy[0,i,3]<0:continue  # Only enclosed background contours.
+        area=float(cv2.contourArea(contour))
+        rect=cv2.minAreaRect(contour);rw,rh=rect[1]
+        if min(rw,rh)<13 or max(rw,rh)<35 or area<1000:continue
+        if area/max(1,rw*rh)<.85:continue
+        polygon=cv2.boxPoints(rect)
+        if np.min(polygon)<1 or np.max(polygon[:,0])>=width-1 or np.max(polygon[:,1])>=height-1:continue
+        coverages=[]
+        for a,b in zip(polygon,np.roll(polygon,-1,axis=0)):
+            n=max(20,int(np.linalg.norm(b-a)))
+            points=np.rint(np.linspace(a,b,n)).astype(int)
+            supported=[]
+            for x,y in points:
+                supported.append(bool(np.any(ink[max(0,y-2):min(height,y+3),max(0,x-2):min(width,x+3)])))
+            coverages.append(float(np.mean(supported)))
+        if min(coverages)<.95:continue
+        found.append({'source_polygon':polygon.astype(float).tolist(),
+                      'source_contour_area':area,'side_coverage':coverages,
+                      'evidence':'ENCLOSED_SOURCE_INK_CONTOUR_NO_REPAIRS',
+                      'physical_border_verified':False})
+    return found
+
+
 def closed_regions(layers):
     """Closed background components, including full-width tables/outer frames.
 

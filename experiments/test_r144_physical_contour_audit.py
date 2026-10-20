@@ -1,10 +1,21 @@
 import unittest
 import cv2
 import numpy as np
-from experiments.r144_physical_contour_audit import audit,closed_regions
+from experiments.r144_physical_contour_audit import audit,closed_regions,closed_ink_contours
 
 
 class ContourAudit(unittest.TestCase):
+    def test_tilted_source_box_without_synthetic_gap_repair(self):
+        ink=np.zeros((400,500),dtype='uint8')
+        p=cv2.boxPoints(((250.,200.),(420.,300.),-2.)).astype(int)
+        cv2.polylines(ink,[p],True,255,2)
+        before=ink.copy()
+        self.assertTrue(closed_ink_contours({'ink':ink}))
+        self.assertTrue(np.array_equal(ink,before))
+        # Cut a genuine opening in one complete side; no contour may close it.
+        ink[180:220,30:60]=0
+        self.assertFalse(closed_ink_contours({'ink':ink}))
+
     def test_full_width_source_frame_is_not_excluded(self):
         ink=np.zeros((600,400),dtype='uint8')
         cv2.rectangle(ink,(10,10),(390,590),255,2)

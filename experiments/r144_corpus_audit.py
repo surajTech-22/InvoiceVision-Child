@@ -8,7 +8,7 @@ import sys
 import zipfile
 import cv2
 import numpy as np
-from .r144_physical_contour_audit import audit, closed_regions
+from .r144_physical_contour_audit import audit, closed_regions, closed_ink_contours
 
 
 def run(baseline,out):
@@ -32,6 +32,7 @@ def run(baseline,out):
         proposals=native.r70_provisional_cells(layers)
         reviewed=audit(layers,proposals)
         closed=closed_regions(layers)
+        ink_contours=closed_ink_contours(layers)
         info,overlay,blank=border.analyze_borders(layers,source.shape)
         mask=overlay[:,:,3]>0
         assert not np.any(mask & (layers['h13']==0) & (layers['v13']==0)), name
@@ -48,6 +49,8 @@ def run(baseline,out):
                 'cell_candidates':len(proposals),
                 'closed_region_candidates':closed,
                 'closed_region_count':len(closed),
+                'source_ink_contours':ink_contours,
+                'source_ink_contour_count':len(ink_contours),
                 'closed_source_components':sum(r['closed_source_component'] for r in reviewed),
                 'cell_audit':reviewed,'physical_boxes_verified':False}
         report['cases'].append(result)

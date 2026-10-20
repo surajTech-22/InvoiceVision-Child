@@ -56,4 +56,14 @@ class AdapterFallback(unittest.TestCase):
         with patch.dict('os.environ',{'INVOICEVISION_OCR_DEVICE':'invalid'}):
             with self.assertRaises(ValueError):load()._recognize_tile(None,300,200,{})
 
+    def test_child_zones_protect_unknown_text_crossing_gutter(self):
+        path=PATH.with_name('INVOICE_OCR_RECURSIVE_ZONES_R109.py')
+        spec=importlib.util.spec_from_file_location('r144_zones',path)
+        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+        anchors=[{'xyxy':[10,10,60,25],'category':'supplier'},
+                 {'xyxy':[10,70,60,85],'category':'tax'}]
+        source=anchors+[{'xyxy':[10,20,60,75],'category':'unknown'}]
+        self.assertIsNotNone(module._best_partition([0,0,100,100],anchors,'horizontal'))
+        self.assertIsNone(module._best_partition([0,0,100,100],anchors,'horizontal',source))
+
 if __name__=='__main__':unittest.main(verbosity=2)
