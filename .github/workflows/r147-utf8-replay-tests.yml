@@ -23,8 +23,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      - name: Install CPU image-processing dependencies for source-bound replay smoke
+        run: python -m pip install 'numpy>=1.26,<3' 'opencv-python-headless==4.11.0.86' 'Pillow>=10,<13'
       - name: Verify byte-for-byte multilingual source fidelity and no data loss
         shell: bash
         run: |
           python -m py_compile experiments/r147_utf8_evidence.py experiments/r146_rezone.py experiments/r146_field_evaluation.py
           python -m experiments.test_r147_utf8_evidence
+          python -m experiments.test_r147_replay_unicode
