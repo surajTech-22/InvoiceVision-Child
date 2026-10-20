@@ -1,0 +1,30 @@
+name: InvoiceVision R147 Unicode OCR evidence and replay contract
+on:
+  push:
+    branches: [research/invoicevision-r147-replay-unreleased]
+    paths:
+      - 'experiments/*r147*'
+      - 'experiments/r146_rezone.py'
+      - 'experiments/r146_field_evaluation.py'
+      - '.github/workflows/r147-utf8-replay-tests.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  unicode-safety:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify byte-for-byte multilingual source fidelity and no data loss
+        shell: bash
+        run: |
+          python -m py_compile experiments/r147_utf8_evidence.py experiments/r146_rezone.py experiments/r146_field_evaluation.py
+          python -m experiments.test_r147_utf8_evidence
