@@ -24,6 +24,20 @@ def parse_inline(line):
     """Raw OCR text hypotheses, not a model of invoice truth or layout."""
     text=str(line).strip();out=[]
     if not text:return out
+    # Multiple explicitly delimited fields may share one OCR line. Split only
+    # at printed labels, retaining the complete original line as evidence.
+    labels=sorted({label for values in LABELS.values() for label in values} |
+                  {r'(?:C[. ]*N|credit\s+note|(?:DL[.]?|FSSAI)\s+exp|exp(?:iry)?|due|order|delivery|shipping)\s+date'},key=len,reverse=True)
+    boundary=re.compile(r'(?<!\S)(?:'+ '|'.join(labels)+r')\s*[:#=]\s*',re.I)
+    markers=list(boundary.finditer(text))
+    if len(markers)>1 and markers[0].start()==0:
+        for index,marker in enumerate(markers):
+            end=markers[index+1].start() if index+1<len(markers) else len(text)
+            for row in parse_inline(text[marker.start():end].strip()):
+                row['source_line']=text
+                row['evidence']='SOURCE_INLINE_MULTIPLE_EXPLICIT_LABELS'
+                out.append(row)
+        return out
     for field,patterns in PREFIX.items():
         for pattern in patterns:
             match=pattern.match(text)

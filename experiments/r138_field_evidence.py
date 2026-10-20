@@ -97,7 +97,7 @@ def reconstruct(case,engine="rapidocr"):
     for a in tokens:
         if re.search(r"\b(shipping|delivery|dispatch|due|order)\s*date\b",a.text,re.I):continue
         m=DATE.search(a.text)
-        if m and re.search(r"\b(invoice\s*date|bill\s*date|date|dated)\b",a.text,re.I):
+        if m and re.search(r"^\s*(?:invoice\s*date|bill\s*date|date|dated)\b",a.text,re.I):
             proposals["invoice_date"].append({"value":m.group(1),"source_tokens":[a.index],
               "engine":engine,"evidence":"LABELED_DATE_FRAGMENT","verified":False})
     # A short uppercase single-word header can sometimes be split from legal name.

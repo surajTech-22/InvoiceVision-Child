@@ -22,4 +22,4 @@ jobs:
         run: >-
           python -m unittest experiments.test_r138_cross_model_consensus
           experiments.test_r138_field_evidence experiments.test_r140_conflict_triage
-          experiments.test_r141_inline_field_evidence experiments.test_r143_continuation
+          experiments.test_r141_inline_field_evidence experiments.test_r143_continuation experiments.test_r146_fields
