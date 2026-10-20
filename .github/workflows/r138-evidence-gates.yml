@@ -1,0 +1,30 @@
+name: InvoiceVision R138 source-linked OCR field evidence gates
+on:
+  push:
+    branches:
+      - research/invoicevision-r135-unreleased
+    paths:
+      - 'experiments/r138_field_evidence.py'
+      - 'experiments/test_r138_field_evidence.py'
+      - '.github/workflows/r138-evidence-gates.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  safety:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Read-only evidence integrity tests
+        shell: bash
+        run: |
+          python -m py_compile experiments/r138_field_evidence.py
+          python experiments/test_r138_field_evidence.py
