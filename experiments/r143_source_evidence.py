@@ -6,6 +6,7 @@ import math
 import re
 from .r138_field_evidence import box_of, reconstruct, DATE
 from .r141_inline_field_evidence import parse_inline
+from .r148_glued_datetime import read_glued_datetime
 
 
 def valid_date(value):
@@ -52,7 +53,7 @@ def inspect(case, engine, source_bytes=None):
             return
         reason = None
         if field == 'invoice_number':
-            if DATE.search(value) or len(value) > 64 or re.search(
+            if DATE.search(value) or read_glued_datetime(value) or len(value) > 64 or re.search(
                 r'\b(?:address|pin\s*code|salesperson|beat|pan|gstin|state|customer|supplier|distributor|po\s*no)\b',value,re.I):
                 reason = 'COMPETING_FIELD_OR_PROSE_NOT_INVOICE_NUMBER'
         if field in ('supplier','buyer','consignee'):

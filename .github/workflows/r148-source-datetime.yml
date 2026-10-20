@@ -1,0 +1,35 @@
+name: InvoiceVision R148 source-backed glued date-time checks
+on:
+  push:
+    branches: [research/invoicevision-r148-date-evidence-unreleased]
+    paths:
+      - 'experiments/r148_glued_datetime.py'
+      - 'experiments/test_r148_glued_datetime.py'
+      - 'experiments/r138_field_evidence.py'
+      - 'experiments/r141_inline_field_evidence.py'
+      - 'experiments/r143_source_evidence.py'
+      - '.github/workflows/r148-source-datetime.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  strict-date-review:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Check exact source date/time parsing and no posting
+        shell: bash
+        run: |
+          python -m py_compile experiments/r148_glued_datetime.py experiments/r138_field_evidence.py experiments/r141_inline_field_evidence.py experiments/r143_source_evidence.py
+          python -m experiments.test_r148_glued_datetime
+          python -m experiments.test_r141_inline_field_evidence
+          python -m experiments.test_r138_field_evidence
+          python -m experiments.test_r138_cross_model_consensus

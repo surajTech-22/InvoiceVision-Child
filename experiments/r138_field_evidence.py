@@ -3,6 +3,7 @@
 from __future__ import annotations
 import re
 from dataclasses import dataclass
+from experiments.r148_glued_datetime import read_glued_datetime
 
 @dataclass(frozen=True)
 class Token:
@@ -82,8 +83,8 @@ def reconstruct(case,engine="rapidocr"):
                 if dist is None:continue
                 if field=="grand_total":
                     if amount(b.text) is None or abs(b.cy-a.cy)>max(8,.45*max(a.height,b.height)):continue
-                if field=="invoice_date" and not DATE.search(b.text):continue
-                if field=="invoice_number" and (re.search(r"\b(date|time|gstin|tax|invoice\s*no|supplier)\b",b.text,re.I)
+                if field=="invoice_date" and not (DATE.search(b.text) or read_glued_datetime(b.text)):continue
+                if field=="invoice_number" and (read_glued_datetime(b.text) or re.search(r"\b(date|time|gstin|tax|invoice\s*no|supplier)\b",b.text,re.I)
                     or re.fullmatch(r"\d{1,4}[-/][A-Za-z0-9]{1,3}[-/]\d{2,4}",b.text)):continue
                 if field in ("buyer","supplier","consignee"):
                     if SIGNATURE.search(b.text) or BAD_VALUE.search(b.text):continue
@@ -91,7 +92,7 @@ def reconstruct(case,engine="rapidocr"):
                     if letters<4 or letters<len(b.text)*.55:continue
                 candidates.append((dist,b))
             for dist,b in sorted(candidates,key=lambda pair:pair[0])[:2]:
-                proposals[field].append({"value":b.text,"source_tokens":[a.index,b.index],
+                proposals[field].append({"value":read_glued_datetime(b.text)["date"] if field=="invoice_date" and read_glued_datetime(b.text) else b.text,"raw_source_value":b.text,"source_tokens":[a.index,b.index],
                                          "distance":round(dist,4),"engine":engine,
                                          "evidence":"NEARBY_LABEL_VALUE_ONLY","verified":False})
     for a in tokens:

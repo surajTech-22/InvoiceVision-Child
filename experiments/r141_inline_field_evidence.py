@@ -5,6 +5,7 @@ guess fields from vendor dictionaries, or post unverified invoice values.
 """
 from __future__ import annotations
 import re
+from .r148_glued_datetime import read_glued_datetime
 
 LABELS={
  'supplier':[r'from',r'sold\s+by',r'supplier(?:\s+name)?',r'seller(?:\s+name)?',r'bill\s+from'],
@@ -46,12 +47,15 @@ def parse_inline(line):
             if not value:continue
             if field=='invoice_date':
                 date=DATE.search(value)
-                if date is None:continue
-                value=date.group(0)
+                if date is None:
+                    glue=read_glued_datetime(value)
+                    if glue is None:continue
+                    value=glue['date']
+                else:value=date.group(0)
             elif field=='grand_total':
                 if EXCLUDE.search(text) or not AMOUNT.fullmatch(value):continue
             elif field=='invoice_number':
-                if DATE.search(value) or len(value)>55 or re.search(r'\b(?:total|gstin|tax|date)\b',value,re.I):continue
+                if DATE.search(value) or read_glued_datetime(value) or len(value)>55 or re.search(r'\b(?:total|gstin|tax|date)\b',value,re.I):continue
             elif field in ('supplier','buyer','consignee'):
                 if EXCLUDE.search(value) or re.search(r'\b(?:tax\s*invoice|date|gstin|state|phone|mobile|total|authorized|signature|address|pin\s*code)\b',value,re.I):continue
                 if re.fullmatch(r'\W*(?:bill(?:ed)?\s*to|ship\s*to|buyer|supplier)\W*',value,re.I):continue
