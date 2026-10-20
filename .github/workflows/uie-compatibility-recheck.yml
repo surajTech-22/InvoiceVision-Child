@@ -25,12 +25,14 @@ jobs:
         run: |
           python -m pip install 'Pillow>=10,<12' 'numpy>=1.26,<3'
           python -m pip install 'paddlepaddle==3.2.2' paddlenlp
-          python -m pip install 'huggingface_hub==0.35.3'
+          python -m pip install 'huggingface_hub==0.35.3' 'aistudio_sdk==0.2.6'
           python - <<'PY'
           import huggingface_hub
           print('HUB',huggingface_hub.__version__)
           from huggingface_hub import repo_type_and_id_from_hf_id
           print('LEGACY_API_AVAILABLE')
+          from aistudio_sdk.hub import download
+          print('AISTUDIO_COMPAT_API_AVAILABLE')
           PY
       - name: Run UIE field extraction on unfamiliar synthetic formats
         shell: bash
