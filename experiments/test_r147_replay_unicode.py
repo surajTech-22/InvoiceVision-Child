@@ -13,6 +13,7 @@ import numpy as np
 
 from experiments.r146_rezone import run as replay
 from experiments.r146_field_evaluation import run as evaluate, canonical
+from experiments.r138_cross_model_consensus import same_value
 from experiments.r147_utf8_evidence import write_json,write_utf8,read_json
 
 UNICODE="中文 Ω 心 ₹ 04/09/2026"
@@ -67,6 +68,11 @@ class SourceLinkedReplay(unittest.TestCase):
             self.assertFalse(result["field_accuracy_verified"])
             self.assertFalse(result["posting_eligible"])
 
+    def test_cross_engine_nonlatin_with_same_digits_must_disagree(self):
+        self.assertFalse(same_value("北京贸易123","上海贸易123"))
+        self.assertFalse(same_value("شركة التجارة ۱۲۳","北京贸易 ۱۲۳"))
+        self.assertTrue(same_value("北京-贸易123","北京贸易 123"))
+        self.assertTrue(same_value("Grand Total ₹ 1,413.00","Grand Total ₹ 1,413.00"))
     def test_nonlatin_names_are_not_equal_after_normalization(self):
         self.assertNotEqual(canonical("supplier","شركة التجارة"),canonical("supplier","北京贸易公司"))
         self.assertEqual(canonical("buyer","北京-贸易 公司"),canonical("buyer","北京贸易公司"))
