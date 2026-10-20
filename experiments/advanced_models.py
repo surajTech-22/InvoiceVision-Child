@@ -86,10 +86,11 @@ def main():
                 report['cases'].append({'image':c['name'],'seconds':round(time.monotonic()-begin,2),
                    'pages':len(output),'note':'No validated field or zone accuracy from one synthetic sample'})
         elif x.model=='qwen3-vl':
-            import torch
-            if not torch.cuda.is_available():
+            import shutil
+            if shutil.which('nvidia-smi') is None:
                 report.update(status='SKIPPED_NO_GPU',reason='GitHub standard CPU runners do not have CUDA; no >2B model downloaded')
                 return emit(x.out,report)
+            import torch
             from transformers import AutoProcessor,AutoModelForImageTextToText
             mid='Qwen/Qwen3-VL-2B-Instruct'
             proc=AutoProcessor.from_pretrained(mid)
@@ -103,7 +104,6 @@ def main():
             report['cases'].append({'image':cases[0]['name'],'prediction':val})
         elif x.model=='pp-chatocrv4':
             # Cannot honestly call this end-to-end without an available local LLM.
-            from paddleocr import PPChatOCRv4Doc
             report.update(status='SKIPPED_NO_LOCAL_LLM_ENDPOINT',
                 reason='PP-ChatOCRv4 requires an authorized, configured LLM endpoint for full document information extraction. Import alone is not an accuracy benchmark.')
             return emit(x.out,report)
