@@ -25,7 +25,7 @@ class AdapterFallback(unittest.TestCase):
         class Model:
             def __init__(self,**kwargs):devices.append(kwargs['device'])
             def predict(self,**kwargs):return [payload('CPU RAW')]
-        with patch.dict('sys.modules',{'paddleocr':types.SimpleNamespace(PaddleOCR=Model)}),patch.dict('os.environ',{'INVOICEVISION_OCR_DEVICE':'cpu'}):
+        with patch.dict('sys.modules',{'paddleocr':types.SimpleNamespace(PaddleOCR=Model),'paddle':types.SimpleNamespace(device=types.SimpleNamespace(is_compiled_with_cuda=lambda:True,cuda=types.SimpleNamespace(device_count=lambda:1)))}),patch.dict('os.environ',{'INVOICEVISION_OCR_DEVICE':'cpu'}):
             for _ in range(3):self.assertEqual(m._recognize_tile(None,300,200,{})[0]['text'],'CPU RAW')
         self.assertEqual(devices,['cpu'])
 
@@ -38,7 +38,7 @@ class AdapterFallback(unittest.TestCase):
                     yield payload('GPU PARTIAL')
                     raise RuntimeError('device lost during iteration')
                 yield payload('CPU COMPLETE')
-        with patch.dict('sys.modules',{'paddleocr':types.SimpleNamespace(PaddleOCR=Model)}),patch.dict('os.environ',{'INVOICEVISION_OCR_DEVICE':'auto'}):
+        with patch.dict('sys.modules',{'paddleocr':types.SimpleNamespace(PaddleOCR=Model),'paddle':types.SimpleNamespace(device=types.SimpleNamespace(is_compiled_with_cuda=lambda:True,cuda=types.SimpleNamespace(device_count=lambda:1)))}),patch.dict('os.environ',{'INVOICEVISION_OCR_DEVICE':'auto'}):
             for _ in range(3):
                 lines=m._recognize_tile(None,300,200,{},lambda event,**info:events.append((event,info)))
                 self.assertEqual([x['text'] for x in lines],['CPU COMPLETE'])
@@ -49,7 +49,7 @@ class AdapterFallback(unittest.TestCase):
         m=load()
         class Model:
             def __init__(self,**kwargs):raise RuntimeError('local model unavailable')
-        with patch.dict('sys.modules',{'paddleocr':types.SimpleNamespace(PaddleOCR=Model)}),patch.dict('os.environ',{'INVOICEVISION_OCR_DEVICE':'gpu'}):
+        with patch.dict('sys.modules',{'paddleocr':types.SimpleNamespace(PaddleOCR=Model),'paddle':types.SimpleNamespace(device=types.SimpleNamespace(is_compiled_with_cuda=lambda:True,cuda=types.SimpleNamespace(device_count=lambda:1)))}),patch.dict('os.environ',{'INVOICEVISION_OCR_DEVICE':'gpu'}):
             with self.assertRaises(RuntimeError):m._recognize_tile(None,300,200,{})
 
     def test_invalid_preference_does_not_guess(self):

@@ -2,7 +2,7 @@ name: InvoiceVision R144 isolated Child build and physical corpus audit
 on:
   push:
     branches: [research/invoicevision-r143-unreleased]
-    paths: ['integration/**', 'experiments/*r144*', 'experiments/*r145*', 'scripts/stage-r144-integration.py', '.github/workflows/r144-child-integration.yml']
+    paths: ['integration/**', 'experiments/*r144*', 'experiments/*r145*', 'experiments/*r146*', 'scripts/stage-r144-integration.py', '.github/workflows/r144-child-integration.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -32,7 +32,7 @@ jobs:
           experiments.test_r138_field_evidence experiments.test_r140_conflict_triage
           experiments.test_r141_inline_field_evidence experiments.test_r143_continuation
           experiments.test_r144_child_adapter experiments.test_r144_physical_contour_audit
-          experiments.test_r145_magnify_recheck
+          experiments.test_r145_magnify_recheck experiments.test_r146_metadata experiments.test_r146_groups
       - name: Audit all 51 original source-mask inputs without adding pixels
         run: python -m experiments.r144_corpus_audit --baseline integration-build --out research_results/r144-native
       - uses: actions/upload-artifact@v4
@@ -43,7 +43,7 @@ jobs:
           retention-days: 30
   windows-child:
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -57,7 +57,7 @@ jobs:
         run: |
           python -m pip install 'opencv-python-headless==4.11.0.86' 'numpy>=1.26,<3'
           if ($LASTEXITCODE -ne 0) { throw 'Test dependencies failed' }
-          python -m unittest experiments.test_r138_cross_model_consensus experiments.test_r138_field_evidence experiments.test_r140_conflict_triage experiments.test_r141_inline_field_evidence experiments.test_r143_continuation experiments.test_r144_child_adapter experiments.test_r144_physical_contour_audit experiments.test_r145_magnify_recheck
+          python -m unittest experiments.test_r138_cross_model_consensus experiments.test_r138_field_evidence experiments.test_r140_conflict_triage experiments.test_r141_inline_field_evidence experiments.test_r143_continuation experiments.test_r144_child_adapter experiments.test_r144_physical_contour_audit experiments.test_r145_magnify_recheck experiments.test_r146_metadata experiments.test_r146_groups
           if ($LASTEXITCODE -ne 0) { throw 'Regression tests failed' }
       - name: Verify pinned baseline and apply exact research overlay
         shell: pwsh
@@ -72,6 +72,20 @@ jobs:
       - name: Compile self-contained WPF Child and run startup check
         shell: pwsh
         run: ./integration-build/scripts/build-windows.ps1
+      - name: Run actual staged Paddle CPU adapter on all 51 sources
+        shell: pwsh
+        run: |
+          python -m pip install 'paddlepaddle==3.2.2' 'paddleocr==3.7.0'
+          if ($LASTEXITCODE -ne 0) { throw 'Paddle runtime installation failed' }
+          python -m experiments.r146_child_cpu_corpus --baseline integration-build --overlay integration-build/InvoiceVisionChild/Engine --out research_results/r146-child-windows
+          if ($LASTEXITCODE -ne 0) { throw 'Actual Child OCR corpus failed' }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: InvoiceVision-R146-Windows-Actual-Child-OCR-Unverified
+          path: research_results/r146-child-windows
+          if-no-files-found: warn
+          retention-days: 30
       - uses: actions/upload-artifact@v4
         if: always()
         with:

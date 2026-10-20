@@ -8,6 +8,7 @@ or image modifications. Source images are not overwritten.
 """
 import importlib.util
 import os
+import math
 import re
 from pathlib import Path
 
@@ -24,6 +25,12 @@ def _pipeline(device='cpu'):
         raise ValueError('Unsupported OCR device')
     cached = _instance if device == 'cpu' else _gpu_instance
     if cached is None:
+        if device == 'gpu:0':
+            # PaddleX silently substitutes CPU for an unavailable GPU. Check
+            # capability first so diagnostics never claim CPU work ran on GPU.
+            import paddle
+            if not paddle.device.is_compiled_with_cuda() or paddle.device.cuda.device_count()<1:
+                raise RuntimeError('Requested CUDA GPU is unavailable in this runtime')
         # Avoid surprise model-host probing if cached models exist. PaddleX may
         # fetch model weights on first initialization if they have not been cached;
         # the dedicated Windows verifier checks for this before certification.
@@ -59,8 +66,12 @@ def _recognize_tile(work, width, height, args, progress=None):
     for device in devices:
         try:
             result=[]
+            page_count=0
             for res in _pipeline(device).predict(input=work, **args):
+                page_count+=1
+                if page_count>1: raise ValueError("Multiple OCR pages returned for one source tile")
                 result.extend(normalized_lines(res,width,height))
+            if page_count!=1: raise ValueError("OCR backend returned no result for source tile")
             if progress: progress('OCR_BACKEND_COMPLETE', device=device, fallback_used=_gpu_failed)
             return result
         except Exception as exc:
@@ -77,33 +88,56 @@ def normalized_lines(result, w, h):
     if isinstance(payload,dict):
         payload=payload.get('res',payload)
     if not isinstance(payload,dict): raise ValueError('PaddleOCR v3 metadata is not a dictionary')
-    texts=payload.get('rec_texts') or []
-    scores=payload.get('rec_scores') or []
+    def sequence(value, name):
+        if hasattr(value, 'tolist'): value=value.tolist()
+        if not isinstance(value, (list, tuple)):
+            raise ValueError('PaddleOCR missing or invalid '+name)
+        return value
+    texts=sequence(payload.get('rec_texts'), 'rec_texts')
+    scores=sequence(payload.get('rec_scores'), 'rec_scores')
     boxes=payload.get('rec_polys')
-    if boxes is None:boxes=payload.get('rec_boxes')
-    if boxes is None: boxes=payload.get('dt_polys')
-    if boxes is None: raise ValueError('PaddleOCR missing recognized-text positions')
+    if boxes is None: boxes=payload.get('rec_boxes')
+    # Detection polygons need not align with recognition after score filtering.
+    # Never assign a recognized value to a dt_polys position by array index.
+    boxes=sequence(boxes, 'recognized-text positions')
+    if len(texts)!=len(scores) or len(texts)!=len(boxes):
+        raise ValueError('PaddleOCR recognized text/score/position counts differ')
+    if not all(math.isfinite(v) and v>0 for v in (w,h)):
+        raise ValueError('Invalid source dimensions')
     out=[]
-    for index,txt in enumerate(texts):
-        if index>=len(boxes): break
-        txt=str(txt).strip()
-        if not txt:continue
-        conf=float(scores[index]) if index<len(scores) else 0.
-        if not 0 <= conf <=1:continue
-        if conf < .18:continue
-        box=boxes[index]
-        if hasattr(box,'tolist'):box=box.tolist()
-        if len(box)>=4 and isinstance(box[0],(int,float)):
-            x0,y0,x1,y1=map(float,box[:4])
-        else:
-            coords=[row[:2] for row in box if len(row)>=2]
-            if not coords: continue
-            x0=min(float(q[0]) for q in coords);y0=min(float(q[1]) for q in coords)
-            x1=max(float(q[0]) for q in coords);y1=max(float(q[1]) for q in coords)
-        x0=max(0,min(w,int(round(x0))));x1=max(0,min(w,int(round(x1))))
-        y0=max(0,min(h,int(round(y0))));y1=max(0,min(h,int(round(y1))))
-        if x1<=x0 or y1<=y0:continue
-        out.append(dict(text=txt,conf=round(conf*100,3),box=(x0,y0,x1-x0,y1-y0)))
+    for txt, score, box in zip(texts, scores, boxes):
+        if not isinstance(txt,str): raise ValueError('PaddleOCR text is not a string')
+        try: conf=float(score)
+        except (ValueError,TypeError): raise ValueError('Invalid OCR confidence')
+        if not math.isfinite(conf) or not 0<=conf<=1:
+            raise ValueError('Invalid OCR confidence')
+        box=sequence(box,'recognized-text geometry')
+        try:
+            if len(box)==4 and all(isinstance(q,(int,float)) for q in box):
+                x0,y0,x1,y1=map(float,box)
+                polygon=[[x0,y0],[x1,y0],[x1,y1],[x0,y1]]
+            else:
+                if len(box)!=4 or any(len(q)!=2 for q in box):
+                    raise ValueError('Expected four source polygon vertices')
+                polygon=[[float(x),float(y)] for x,y in box]
+                x0=min(q[0] for q in polygon);y0=min(q[1] for q in polygon)
+                x1=max(q[0] for q in polygon);y1=max(q[1] for q in polygon)
+            if any(not math.isfinite(v) for q in polygon for v in q):
+                raise ValueError('Nonfinite OCR geometry')
+            if not (0<=x0<x1<=w and 0<=y0<y1<=h):
+                raise ValueError('OCR geometry lies outside source or has no area')
+            area=abs(sum(polygon[i][0]*polygon[(i+1)%4][1]-
+                         polygon[(i+1)%4][0]*polygon[i][1] for i in range(4)))/2
+            if area<=0: raise ValueError('Degenerate OCR polygon')
+        except (TypeError,IndexError,OverflowError) as exc:
+            raise ValueError('Invalid OCR geometry') from exc
+        # Validate every entry before applying the deliberate confidence filter.
+        # A malformed low-score entry still invalidates the whole tile.
+        if not txt.strip() or conf<.18: continue
+        x0=math.floor(x0);y0=math.floor(y0)
+        x1=math.ceil(x1);y1=math.ceil(y1)
+        out.append(dict(text=txt.strip(),raw_text=txt,conf=round(conf*100,3),
+                        source_polygon=polygon,box=(x0,y0,x1-x0,y1-y0)))
     return sorted(out,key=lambda x:(x['box'][1],x['box'][0]))
 
 def lines_to_tsv(lines):
