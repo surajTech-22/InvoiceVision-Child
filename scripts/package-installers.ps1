@@ -31,7 +31,7 @@ foreach ($name in $required) {
     $gate = $acceptance.gates.$name
     if ($gate.passed -isnot [bool] -or -not $gate.passed) { throw "Acceptance gate failed: $name" }
     $relative = [string]$gate.evidence_path
-    if (-not $relative -or [IO.Path]::IsPathRooted($relative) -or $relative.Split('/\') -contains '..') {
+    if (-not $relative -or [IO.Path]::IsPathRooted($relative) -or ($relative -split '[\\/]') -contains '..') {
         throw "Unsafe acceptance evidence path: $name"
     }
     $evidence = Join-Path $release $relative
