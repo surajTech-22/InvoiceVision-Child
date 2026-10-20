@@ -1,11 +1,7 @@
 #ifndef AppVersion
   #define AppVersion "2.5.2"
 #endif
-#ifndef UpdateMode
-  #define UpdateMode 0
-#endif
-
-#if UpdateMode
+#if defined(UpdateMode)
   #define OutputName "InvoiceVisionChild_Update"
 #else
   #define OutputName "InvoiceVisionChild_Setup"
@@ -34,7 +30,7 @@ UninstallDisplayIcon={app}\InvoiceVisionChild.exe
 CloseApplications=yes
 RestartApplications=no
 SetupLogging=yes
-#if UpdateMode
+#if defined(UpdateMode)
 AllowNoIcons=yes
 #endif
 
@@ -50,7 +46,7 @@ var
   ExistingPath: string;
 begin
   Result := True;
-#if UpdateMode
+#if defined(UpdateMode)
   // Update.exe must NOT create an entirely new app by accident.
   // Requires a previous standalone Inno installation for this AppId.
   if not RegQueryStringValue(HKCU,
