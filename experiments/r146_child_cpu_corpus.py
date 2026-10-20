@@ -11,6 +11,7 @@ import zipfile
 import cv2
 import numpy as np
 from PIL import Image, ImageDraw
+from .r147_utf8_evidence import write_utf8, write_json
 
 
 def module(path,name):
@@ -59,17 +60,17 @@ def run(baseline,overlay,out):
             leaves,meta,lines=zones.refine_regions(image,[{'id':'R001','xyxy':[0,0,w,h],'category':'unknown'}],tsv)
             uncovered=[l for l in lines if not any(z['xyxy'][0]<=l['xyxy'][0] and z['xyxy'][1]<=l['xyxy'][1] and z['xyxy'][2]>=l['xyxy'][2] and z['xyxy'][3]>=l['xyxy'][3] for z in leaves)]
             assert not uncovered,'Source text cropped'
-            (out/(Path(name).stem+'.tsv')).write_text(tsv)
+            write_utf8(out/(Path(name).stem+'.tsv'),tsv)
             record.update(status='COMPLETED_UNVERIFIED',source_pixels_changed=False,raw_texts=[l['text'] for l in lines],raw_boxes=[l['xyxy'] for l in lines],leaves=leaves,zone_meta=meta,uncovered_lines=0)
             comparison(image,lines,leaves,out/(Path(name).stem+'_comparison.png'))
         except Exception as exc:
             record.update(status='FAILED',error=type(exc).__name__+': '+str(exc))
         record.update(events=events,seconds=round(time.monotonic()-start,3));report['cases'].append(record)
-        (out/'REPORT.json').write_text(json.dumps(report,indent=2,ensure_ascii=False))
+        write_json(out/'REPORT.json',report)
         print(name,record['status'],len(record.get('raw_texts',[])),record['seconds'],record.get('error',''),flush=True)
     models=Path.home()/'.paddlex/official_models'
     report['model_hashes']={str(p.relative_to(models)):hashlib.sha256(p.read_bytes()).hexdigest() for name in ('PP-OCRv5_mobile_det','PP-OCRv5_mobile_rec') for p in (models/name).glob('inference.*')}
-    (out/'REPORT.json').write_text(json.dumps(report,indent=2,ensure_ascii=False))
+    write_json(out/'REPORT.json',report)
     return int(any(c['status']=='FAILED' for c in report['cases']))
 
 if __name__=='__main__':
