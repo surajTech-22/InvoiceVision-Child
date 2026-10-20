@@ -28,3 +28,10 @@ def write_utf8(destination, contents):
 
 def write_json(destination, value):
     write_utf8(destination,json.dumps(value,indent=2,ensure_ascii=False,allow_nan=False))
+
+def read_utf8(source):
+    """Strictly require a UTF-8 source-evidence file; never coerce legacy bytes."""
+    return Path(source).read_text(encoding="utf-8",errors="strict")
+
+def read_json(source):
+    return json.loads(read_utf8(source))
