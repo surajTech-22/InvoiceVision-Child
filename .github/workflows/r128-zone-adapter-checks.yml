@@ -1,0 +1,28 @@
+name: InvoiceVision R128 zone adapter checks
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'experiments/r128_semantic_zone_review.py'
+      - 'scripts/test_r128_adapters.py'
+      - '.github/workflows/r128-zone-adapter-checks.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  cpu-only-zone-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile research adapters
+        run: |
+          python -m py_compile experiments/r128_semantic_zone_review.py experiments/r128_visual_review.py experiments/advanced_models.py
+      - name: Run isolated semantic/geometry safety checks
+        run: python scripts/test_r128_adapters.py
