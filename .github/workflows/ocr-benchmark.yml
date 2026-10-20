@@ -1,0 +1,66 @@
+name: InvoiceVision isolated OCR benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      engine:
+        description: 'rapidocr, paddleocr or both'
+        required: true
+        default: rapidocr
+        type: choice
+        options: [rapidocr, paddleocr, both]
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/benchmark-ocr.py'
+      - 'scripts/requirements-ocr-benchmark.txt'
+      - '.github/workflows/ocr-benchmark.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  rapidocr:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: ${{ github.event_name == 'push' || inputs.engine == 'rapidocr' || inputs.engine == 'both' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install RapidOCR in disposable GitHub runner
+        run: python -m pip install -r scripts/requirements-ocr-benchmark.txt
+      - name: Run real model inference on synthetic invoices (no real invoices uploaded)
+        run: python scripts/benchmark-ocr.py --engine rapidocr --out benchmark_results/rapidocr
+      - name: Preserve diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: InvoiceVision-RapidOCR-Results
+          path: benchmark_results/
+          if-no-files-found: warn
+  paddleocr:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.engine == 'paddleocr' || inputs.engine == 'both') }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install isolated PaddlePaddle CPU and OCR
+        run: |
+          python -m pip install 'paddlepaddle==3.2.2' 'paddleocr==3.7.0' Pillow opencv-python-headless
+      - name: Run live PaddleOCR on synthetic invoices
+        env:
+          PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK: 'True'
+          FLAGS_use_mkldnn: '0'
+        run: python scripts/benchmark-ocr.py --engine paddleocr --out benchmark_results/paddleocr
+      - name: Preserve diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: InvoiceVision-PaddleOCR-Results
+          path: benchmark_results/
+          if-no-files-found: warn
