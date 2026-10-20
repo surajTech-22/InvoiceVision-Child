@@ -1,0 +1,29 @@
+name: InvoiceVision R150 raw amount punctuation safety
+on:
+  push:
+    branches: [research/invoicevision-r143-unreleased]
+    paths:
+      - 'experiments/r150_amount_source_normalization.py'
+      - 'experiments/test_r150_amount_source_normalization.py'
+      - '.github/workflows/r150-source-amount-tests.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  source-amount-review:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Reject unsupported money transformation and preserve no-post safeguards
+        shell: bash
+        run: |
+          python -m py_compile experiments/r150_amount_source_normalization.py
+          python -m experiments.test_r150_amount_source_normalization
