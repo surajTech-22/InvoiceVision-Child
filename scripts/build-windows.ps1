@@ -33,6 +33,7 @@ if (Test-Path $publish) { Remove-Item $publish -Recurse -Force }
 New-Item -ItemType Directory -Path $publish,$release -Force | Out-Null
 & dotnet publish $project -c Release -r win-x64 --self-contained true -p:UseAppHost=true -p:PublishSingleFile=false -o $publish
 if ($LASTEXITCODE -ne 0) { throw "Windows .NET 10 publish failed ($LASTEXITCODE)" }
+New-Item -ItemType Directory -Path (Join-Path $publish 'Engine') -Force | Out-Null
 Copy-Item -Path (Join-Path $root 'InvoiceVisionChild\Engine\*') -Destination (Join-Path $publish 'Engine') -Recurse -Force
 foreach ($item in $items) {
     $rel = [string]$item.path
