@@ -1,0 +1,45 @@
+name: InvoiceVision R148 actual Child source-linked field replay
+on:
+  push:
+    branches: [research/invoicevision-r143-unreleased]
+    paths:
+      - 'experiments/r148_saved_corpus_replay.py'
+      - '.github/workflows/r148-saved-corpus-replay.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  pinned-51-source-field-review:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install source image decoder on CPU
+        run: python -m pip install 'Pillow>=10,<13'
+      - name: Fetch actual staged Windows Child PaddleOCR evidence from successful fixed run
+        uses: actions/download-artifact@v4
+        with:
+          name: InvoiceVision-R146-Windows-Actual-Child-OCR-Unverified
+          path: previous_child_results
+          run-id: 39455484213
+          github-token: ${{ github.token }}
+      - name: Verify original source bytes and replay strict date field
+        shell: bash
+        run: |
+          python -m experiments.r148_saved_corpus_replay --report previous_child_results/REPORT.json --source source/INVOICE_OCR_CHILD_R113_R4_R2_VERIFIED_UPDATE.zip --out research_results/r148-source-linked
+      - name: Preserve read-only candidate evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: InvoiceVision-R148-Source-Linked-Field-Candidates-${{ matrix.os }}
+          path: research_results/r148-source-linked/
+          if-no-files-found: warn
+          retention-days: 30
