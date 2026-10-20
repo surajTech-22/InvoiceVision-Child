@@ -1,0 +1,30 @@
+name: InvoiceVision R153 source-linked field association safety
+on:
+  push:
+    branches: [research/invoicevision-r153-source-associations]
+    paths:
+      - 'experiments/r152_unknown_semantic_islands.py'
+      - 'experiments/r153_source_value_associations.py'
+      - 'experiments/test_r153_source_value_associations.py'
+      - '.github/workflows/r153-source-associations.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  evidence-gates:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify standalone OCR association safety without posting
+        shell: bash
+        run: |
+          python -m py_compile experiments/r152_unknown_semantic_islands.py experiments/r153_source_value_associations.py
+          python experiments/test_r153_source_value_associations.py
