@@ -1,0 +1,46 @@
+name: InvoiceVision Adaptive CPU GPU VLM Experiment
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/r129-adaptive-vlm.yml'
+      - 'experiments/r129_adaptive_vlm.py'
+      - 'experiments/r129_vlm_comparisons.py'
+
+permissions:
+  contents: read
+
+jobs:
+  adaptive-vlm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 16
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install CPU-safe vision-transformer environment
+        run: |
+          python -m pip install 'torch==2.5.1' 'torchvision==0.20.1' 'transformers==4.57.6' 'accelerate' 'Pillow>=10,<12' 'sentencepiece' --disable-pip-version-check
+      - name: Select available GPU or CPU-adapted model and perform real inference
+        env:
+          HF_HUB_DISABLE_TELEMETRY: '1'
+          TOKENIZERS_PARALLELISM: 'false'
+        run: |
+          timeout 620s python experiments/r129_adaptive_vlm.py --out adaptive_results --max-new-tokens 48
+      - name: Render comparisons even for missing inference
+        if: always()
+        run: |
+          if [ -f adaptive_results/REPORT.json ]; then
+            python experiments/r129_vlm_comparisons.py --out adaptive_results
+          fi
+      - name: Archive exact CPU/GPU/model identity and source comparisons
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: InvoiceVision-Adaptive-VLM-Research
+          path: adaptive_results/
+          if-no-files-found: warn
+          retention-days: 30
