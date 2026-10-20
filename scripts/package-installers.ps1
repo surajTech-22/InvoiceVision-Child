@@ -15,7 +15,7 @@ $project = Join-Path $root 'InvoiceVisionChild\InvoiceVisionChild.csproj'
 [xml]$projectXml = Get-Content $project -Raw
 $version = [string]$projectXml.Project.PropertyGroup.Version
 if (-not $version -or $version -notmatch '^\d+\.\d+\.\d+$') { throw 'Unable to resolve safe Child version' }
-& $iscc "/DAppVersion=$version" "/DUpdateMode=0" $iss
+& $iscc "/DAppVersion=$version" $iss
 if ($LASTEXITCODE -ne 0) { throw 'Setup.exe compilation failed' }
 & $iscc "/DAppVersion=$version" "/DUpdateMode=1" $iss
 if ($LASTEXITCODE -ne 0) { throw 'Update.exe compilation failed' }
