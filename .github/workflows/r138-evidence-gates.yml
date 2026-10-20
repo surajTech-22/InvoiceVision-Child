@@ -6,6 +6,8 @@ on:
     paths:
       - 'experiments/r138_field_evidence.py'
       - 'experiments/test_r138_field_evidence.py'
+      - 'experiments/r138_cross_model_consensus.py'
+      - 'experiments/test_r138_cross_model_consensus.py'
       - '.github/workflows/r138-evidence-gates.yml'
   workflow_dispatch:
 permissions:
@@ -28,3 +30,4 @@ jobs:
         run: |
           python -m py_compile experiments/r138_field_evidence.py
           python experiments/test_r138_field_evidence.py
+          python -m experiments.test_r138_cross_model_consensus
