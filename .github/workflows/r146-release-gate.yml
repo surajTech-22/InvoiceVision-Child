@@ -1,0 +1,16 @@
+name: R146 installer withholding regression
+on:
+  push:
+    branches: [research/invoicevision-r143-unreleased]
+    paths: ['scripts/package-installers.ps1', 'scripts/test-r146-release-gate.ps1', '.github/workflows/r146-release-gate.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  release-gate:
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - shell: pwsh
+        run: ./scripts/test-r146-release-gate.ps1
