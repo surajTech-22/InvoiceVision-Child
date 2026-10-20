@@ -6,10 +6,18 @@ on:
     branches: [main]
     paths:
       - 'source/INVOICE_OCR_CHILD_R113_R4_R2_VERIFIED_UPDATE.zip'
+      - 'scripts/build-windows.ps1'
+      - 'scripts/package-installers.ps1'
+      - 'installer/InvoiceVisionChild.iss'
+      - '.github/workflows/windows-installers.yml'
   pull_request:
     branches: [main]
     paths:
       - 'source/INVOICE_OCR_CHILD_R113_R4_R2_VERIFIED_UPDATE.zip'
+      - 'scripts/build-windows.ps1'
+      - 'scripts/package-installers.ps1'
+      - 'installer/InvoiceVisionChild.iss'
+      - '.github/workflows/windows-installers.yml'
 
 permissions:
   contents: read
