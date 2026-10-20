@@ -4,6 +4,7 @@ import hashlib
 import importlib.metadata
 import json
 from pathlib import Path
+from .r147_utf8_evidence import write_json
 import time
 import zipfile
 import cv2
@@ -39,7 +40,7 @@ def run(baseline,out):
         except Exception as exc:
             record={'file':name,'status':'FAILED','error':type(exc).__name__+': '+str(exc)}
         report['cases'].append(record)
-        (out/'REPORT.json').write_text(json.dumps(report,indent=2,ensure_ascii=False))
+        write_json(out/'REPORT.json',report)
         print(name,record['status'],len(record.get('raw_texts',[])),flush=True)
     return 0 if all(c['status']=='OCR_COMPLETED_UNVERIFIED' for c in report['cases']) else 1
 
