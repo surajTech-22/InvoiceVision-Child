@@ -4,6 +4,7 @@ All results are research-only; raw model data retained, no AAH posting.
 """
 import hashlib, importlib.util, io, json, re, sys, zipfile
 from pathlib import Path
+from .r147_utf8_evidence import write_utf8
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -87,11 +88,11 @@ def main():
                         'status':'FAILED','error':type(e).__name__+': '+str(e),
                         'posting_eligible':False}
             output['cases'].append(record)
-            (a.out/'REPORT.json').write_text(json.dumps(output,indent=2,ensure_ascii=False,default=str))
+            write_utf8(a.out/'REPORT.json',json.dumps(output,indent=2,ensure_ascii=False,default=str))
             print(Path(name).name,record['status'],record.get('ocr_text_lines'),flush=True)
     output['num_source_images']=15
     output['completed_inference']=sum(x['status']=='OCR_COMPLETED_UNVERIFIED' for x in output['cases'])
     output['source_based_field_accuracy_certified']=False
-    (a.out/'REPORT.json').write_text(json.dumps(output,indent=2,ensure_ascii=False,default=str))
+    write_utf8(a.out/'REPORT.json',json.dumps(output,indent=2,ensure_ascii=False,default=str))
     return 0 if output['completed_inference']==15 else 1
 if __name__=='__main__':sys.exit(main())
