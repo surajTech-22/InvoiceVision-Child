@@ -1,0 +1,29 @@
+name: InvoiceVision R140 conservative numeric OCR review safety
+on:
+  push:
+    branches: [research/invoicevision-r135-unreleased]
+    paths:
+      - 'experiments/r140_conflict_triage.py'
+      - 'experiments/test_r140_conflict_triage.py'
+      - '.github/workflows/r140-conflict-triage.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  review-safety:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify source-linked safety classifications without invoice posting
+        shell: bash
+        run: |
+          python -m py_compile experiments/r140_conflict_triage.py
+          python -m experiments.test_r140_conflict_triage
