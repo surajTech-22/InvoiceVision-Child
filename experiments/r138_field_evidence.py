@@ -47,9 +47,10 @@ def amount(s):
 
 LABELS={
  "supplier":r"\b(?:from|sold\s*by|supplier\s*name|seller\s*name)\s*:?$",
- "buyer":r"\b(?:to|billed\s*to|bill\s*to|buyer|customer\s*name|ship\s*to)\s*:?$",
+ "buyer":r"^(?:to|billed\s*to|bill\s*to|buyer|customer\s*name)\s*:?$",
+ "consignee":r"^(?:ship\s*to|deliver(?:ed)?\s*to|consignee)\s*:?$",
  "invoice_number":r"\b(?:invoice\s*(?:no|number|#)|inv\s*no|bill\s*(?:no|number))\s*:?$",
- "invoice_date":r"\b(?:invoice\s*date|bill\s*date|dated|date)\s*:?$",
+ "invoice_date":r"^(?:invoice\s*date|bill\s*date|dated|date)\s*:?$",
  "grand_total":r"\b(?:net\s*payable|grand\s*total|amount\s*payable|total\s*amount|net\s*amount|amount\s*chargeable(?:\s*\(in\s*words\))?)\s*:?$"
 }
 DATE=re.compile(r"(?<!\d)(\d{1,4}[-/.](?:\d{1,2}|[A-Za-z]{3,9})[-/.]\d{2,4})(?!\d)",re.I)
@@ -84,7 +85,7 @@ def reconstruct(case,engine="rapidocr"):
                 if field=="invoice_date" and not DATE.search(b.text):continue
                 if field=="invoice_number" and (re.search(r"\b(date|time|gstin|tax|invoice\s*no|supplier)\b",b.text,re.I)
                     or re.fullmatch(r"\d{1,4}[-/][A-Za-z0-9]{1,3}[-/]\d{2,4}",b.text)):continue
-                if field in ("buyer","supplier"):
+                if field in ("buyer","supplier","consignee"):
                     if SIGNATURE.search(b.text) or BAD_VALUE.search(b.text):continue
                     letters=sum(c.isalpha() for c in b.text)
                     if letters<4 or letters<len(b.text)*.55:continue
@@ -116,3 +117,4 @@ def reconstruct(case,engine="rapidocr"):
     return {"source_sha256":case.get("source_sha256"),"filename":case.get("file"),
             "fields":proposals,"posting_eligible":False,"field_accuracy_certified":False,
             "physical_boundaries_verified":False}
+

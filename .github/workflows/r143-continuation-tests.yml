@@ -1,0 +1,25 @@
+name: InvoiceVision R143 source evidence and runtime fallback contracts
+on:
+  push:
+    branches: [research/invoicevision-r143-unreleased]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  evidence-contracts:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Test source identity, recursive coverage and fallback lifecycle
+        run: >-
+          python -m unittest experiments.test_r138_cross_model_consensus
+          experiments.test_r138_field_evidence experiments.test_r140_conflict_triage
+          experiments.test_r141_inline_field_evidence experiments.test_r143_continuation

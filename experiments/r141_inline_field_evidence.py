@@ -8,7 +8,8 @@ import re
 
 LABELS={
  'supplier':[r'from',r'sold\s+by',r'supplier(?:\s+name)?',r'seller(?:\s+name)?',r'bill\s+from'],
- 'buyer':[r'bill(?:ed)?\s+to',r'buyer(?:\s+name)?',r'ship\s+to',r'customer(?:\s+name)?',r'to'],
+ 'buyer':[r'bill(?:ed)?\s+to',r'buyer(?:\s+name)?',r'customer\s+name',r'to'],
+ 'consignee':[r'ship\s+to',r'deliver(?:ed)?\s+to',r'consignee'],
  'invoice_number':[r'invoice\s*(?:no\.?|number|#)',r'inv\s*(?:no\.?|#)',r'bill\s*(?:no\.?|number|#)'],
  'invoice_date':[r'invoice\s*date',r'bill\s*date',r'dated',r'date'],
  'grand_total':[r'grand\s*total',r'net\s*payable',r'amount\s*payable',r'total\s*amount',r'net\s*amount',r'amount\s*chargeable',r'total'],
@@ -37,8 +38,9 @@ def parse_inline(line):
                 if EXCLUDE.search(text) or not AMOUNT.fullmatch(value):continue
             elif field=='invoice_number':
                 if DATE.search(value) or len(value)>55 or re.search(r'\b(?:total|gstin|tax|date)\b',value,re.I):continue
-            elif field in ('supplier','buyer'):
-                if EXCLUDE.search(value) or re.search(r'\b(?:tax\s*invoice|date|gstin|state|phone|mobile|total|authorized|signature)\b',value,re.I):continue
+            elif field in ('supplier','buyer','consignee'):
+                if EXCLUDE.search(value) or re.search(r'\b(?:tax\s*invoice|date|gstin|state|phone|mobile|total|authorized|signature|address|pin\s*code)\b',value,re.I):continue
+                if re.fullmatch(r'\W*(?:bill(?:ed)?\s*to|ship\s*to|buyer|supplier)\W*',value,re.I):continue
                 if sum(c.isalpha() for c in value)<3:continue
             out.append({'field':field,'raw_value':value,'source_line':text,
                 'evidence':'SOURCE_INLINE_OCR_LABEL_AND_VALUE',
@@ -55,3 +57,4 @@ def inspect_case(case,engine):
             rows.append(candidate)
     return {'file':case.get('file'),'source_sha256':case.get('source_sha256'),
             'proposals':rows,'field_accuracy_verified':False,'posting_eligible':False}
+
