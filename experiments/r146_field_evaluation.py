@@ -21,7 +21,7 @@ def canonical(field,value):
         s=re.sub(r'^(?:INR|Rs\.?|₹)\s*','',s,flags=re.I).replace(',','')
         try:return str(Decimal(s).quantize(Decimal('.01')))
         except InvalidOperation:return s
-    return re.sub(r'[^a-z0-9]','',s.casefold())
+    return ''.join(ch for ch in s.casefold() if ch.isalnum())
 
 
 def run(report,reference,out):
@@ -33,7 +33,7 @@ def run(report,reference,out):
         if case['file'] not in byfile or case.get('status')=='FAILED':continue
         candidates=inspect(case,'saved_ocr')['candidates'];expected=byfile[case['file']]
         for refkey,field in fields.items():
-            if expected.get(refkey) is None:continue
+            if expected.get(refkey) in (None, '', 'REVIEW_REQUIRED'):continue
             relevant=[c for c in candidates if c['field']==field or (field=='supplier' and c['field']=='supplier_fragments')]
             values=sorted({c['raw_value'] for c in relevant})
             matching=[v for v in values if canonical(field,v)==canonical(field,expected[refkey])]
