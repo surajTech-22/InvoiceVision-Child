@@ -1,0 +1,30 @@
+name: InvoiceVision R143 pinned source recovery for integration testing
+on:
+  push:
+    branches: [research/invoicevision-r143-unreleased]
+    paths: ['.github/workflows/r143-source-validation.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify-source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify original source archive identity
+        run: |
+          python - <<'PY'
+          import hashlib, pathlib, zipfile
+          p=pathlib.Path('source/INVOICE_OCR_CHILD_R113_R4_R2_VERIFIED_UPDATE.zip')
+          assert hashlib.sha256(p.read_bytes()).hexdigest()=='ad4720d1037558e637fd42abf8e40bce34b505f6cfa73f29dcc3a67816a9ac59'
+          with zipfile.ZipFile(p) as z:
+              assert z.testzip() is None
+              print('PINNED_SOURCE_ZIP_INTEGRITY_PASSED',len(z.namelist()))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: InvoiceVision-R143-Pinned-Source-For-Integration
+          path: source/INVOICE_OCR_CHILD_R113_R4_R2_VERIFIED_UPDATE.zip
+          retention-days: 3
+          if-no-files-found: error
