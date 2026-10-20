@@ -58,7 +58,9 @@ def main():
             from transformers import AutoProcessor, AutoModelForTokenClassification
             mid='nielsr/layoutlmv3-finetuned-funsd'
             proc=AutoProcessor.from_pretrained(mid,apply_ocr=False)
-            model=AutoModelForTokenClassification.from_pretrained(mid).eval()
+            device='cuda' if torch.cuda.is_available() else 'cpu'
+            report['execution_device']=device
+            model=AutoModelForTokenClassification.from_pretrained(mid).eval().to(device)
             label_counts={}
             for c in cases:
                 begin=time.monotonic();im=Image.open(c['path']).convert('RGB')
@@ -67,6 +69,7 @@ def main():
                 # not an observation-based word alignment or field ground truth.
                 boxes=[[40,40+70*i,700,68+70*i] for i,_ in enumerate(texts)]
                 encoding=proc(im,texts,boxes=boxes,return_tensors='pt',truncation=True)
+                encoding={key:value.to(device) for key,value in encoding.items()}
                 with torch.no_grad(): z=model(**encoding).logits.argmax(-1)[0].tolist()
                 counts={}
                 for index in z:
@@ -76,7 +79,15 @@ def main():
                      'labels':counts,'note':'FUNSD model labels are NOT invoice field labels; word boxes approximate'})
         elif x.model=='paddleocr-vl':
             from paddleocr import PaddleOCRVL
-            model=PaddleOCRVL(device='cpu',use_doc_orientation_classify=False,use_doc_unwarping=False)
+            import paddle
+            device='gpu:0' if paddle.device.is_compiled_with_cuda() and paddle.device.cuda.device_count() else 'cpu'
+            try:
+                model=PaddleOCRVL(device=device,use_doc_orientation_classify=False,use_doc_unwarping=False)
+            except Exception:
+                if device=='cpu':raise
+                device='cpu'
+                model=PaddleOCRVL(device='cpu',use_doc_orientation_classify=False,use_doc_unwarping=False)
+            report['execution_device']=device
             for c in cases[:1]:
                 begin=time.monotonic(); output=list(model.predict(input=c['path']))
                 for j,obj in enumerate(output):
@@ -86,22 +97,41 @@ def main():
                 report['cases'].append({'image':c['name'],'seconds':round(time.monotonic()-begin,2),
                    'pages':len(output),'note':'No validated field or zone accuracy from one synthetic sample'})
         elif x.model=='qwen3-vl':
-            import shutil
-            if shutil.which('nvidia-smi') is None:
-                report.update(status='SKIPPED_NO_GPU',reason='GitHub standard CPU runners do not have CUDA; no >2B model downloaded')
-                return emit(x.out,report)
+            # Qwen3-VL uses the available accelerator, with genuine CPU inference
+            # attempted when CUDA is absent. No nvidia-smi-only early skip.
             import torch
             from transformers import AutoProcessor,AutoModelForImageTextToText
             mid='Qwen/Qwen3-VL-2B-Instruct'
+            device='cuda' if torch.cuda.is_available() else 'cpu'
+            report['execution_device']=device
+            report['cpu_fallback_attempted']=(device=='cpu')
+            # bfloat16 cuts CPU memory usage relative to float32; report any
+            # unsupported operator or actual OOM as failure, not PASS.
+            dtype=torch.float16 if device=='cuda' else torch.bfloat16
             proc=AutoProcessor.from_pretrained(mid)
-            m=AutoModelForImageTextToText.from_pretrained(mid,torch_dtype='auto',device_map='auto')
+            m=AutoModelForImageTextToText.from_pretrained(
+                mid,torch_dtype=dtype,low_cpu_mem_usage=True).eval()
+            try:
+                m=m.to(device)
+            except RuntimeError as exc:
+                if device!='cuda':raise
+                report['gpu_fallback_reason']=str(exc)
+                device='cpu'
+                report['execution_device']='cpu'
+                report['cpu_fallback_attempted']=True
+                m=m.to(device,dtype=torch.bfloat16)
             im=Image.open(cases[0]['path']).convert('RGB')
-            prompts=[{'role':'user','content':[{'type':'image','image':im},{'type':'text',
-              'text':'List supplier, buyer and invoice date. Only use visible text and say unknown otherwise.'}]}]
-            inp=proc.apply_chat_template(prompts,tokenize=True,add_generation_prompt=True,return_dict=True,return_tensors='pt').to(m.device)
-            with torch.no_grad(): gen=m.generate(**inp,max_new_tokens=160,do_sample=False)
+            prompts=[{'role':'user','content':[{'type':'image','image':im},
+                {'type':'text','text':'Extract only source-visible supplier, buyer and invoice date. Say unknown for missing values.'}]}]
+            inp=proc.apply_chat_template(prompts,tokenize=True,
+                add_generation_prompt=True,return_dict=True,return_tensors='pt').to(device)
+            begin=time.monotonic()
+            with torch.inference_mode():
+                gen=m.generate(**inp,max_new_tokens=64,do_sample=False)
             val=proc.batch_decode(gen[:,inp['input_ids'].shape[-1]:],skip_special_tokens=True)[0]
-            report['cases'].append({'image':cases[0]['name'],'prediction':val})
+            report['cases'].append({'image':cases[0]['name'],'prediction':val,
+                'seconds':round(time.monotonic()-begin,2),
+                'device':device,'note':'Candidate reading; never approved invoice extraction'})
         elif x.model=='pp-chatocrv4':
             # Cannot honestly call this end-to-end without an available local LLM.
             report.update(status='SKIPPED_NO_LOCAL_LLM_ENDPOINT',
