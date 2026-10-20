@@ -6,6 +6,7 @@ No reference filenames or expected accounting values influence the candidates.
 import argparse
 import json
 from pathlib import Path
+from .r147_utf8_evidence import read_json, write_json
 import cv2
 import numpy as np
 from rapidocr import RapidOCR
@@ -14,7 +15,7 @@ from .r143_orientation_evidence import point
 
 
 def run(report_path,source_dir,out):
-    original=json.loads(report_path.read_text())
+    original=read_json(report_path)
     out.mkdir(parents=True,exist_ok=True)
     reader=RapidOCR(params={'EngineConfig.onnxruntime.intra_op_num_threads':2,
         'EngineConfig.onnxruntime.inter_op_num_threads':1,'EngineConfig.onnxruntime.use_cuda':False})
@@ -37,7 +38,7 @@ def run(report_path,source_dir,out):
             row={**case,'raw_texts':list(result.txts) if result.txts is not None else [],
                  'raw_boxes':mapped,'recognition_quarter_turns_ccw':turns,'orientation_verified':False}
             report['cases'].append(row)
-            (out/'REPORT.json').write_text(json.dumps(report,indent=2,ensure_ascii=False))
+            write_json(out/'REPORT.json',report)
             print(case['file'],turns,len(row['raw_texts']),flush=True)
     return report
 
