@@ -105,53 +105,102 @@ def _add_field(view,line,category,match,output):
     })
 
 def _table(lines,view,width,height,max_rows):
-    """Require physically separate QTY and AMOUNT headers to propose rows."""
+    """Anchor printed item rows to multi-line, spatially ordered table columns.
+
+    Labels must come from the actual OCR tokens, never a supplier name or
+    image-specific coordinate. A common Indian tax-invoice table uses 'Pcs'
+    and 'Net Amt' where scanned OCR sometimes renders them 'Pes'/'Ant'.
+    These are HEADER aliases only; no quantity or amount is auto-corrected.
+    """
     output=[]
-    for li,line in enumerate(lines):
-        headers={}
-        for word in line["words"]:
-            text=word["text"].strip().strip(":")
-            for name,regex in _HEADS.items():
-                if regex.fullmatch(text) and name not in headers:
-                    headers[name]=word
-        if not {"quantity","amount"}.issubset(headers):
-            continue
-        head=headers
-        qty=(head["quantity"]["box"][0]+head["quantity"]["box"][2])/2
-        amount=(head["amount"]["box"][0]+head["amount"]["box"][2])/2
-        if abs(qty-amount)<30:continue
-        # Column spans derived only from actual source headings.
-        col_bounds=sorted([qty,amount])
-        if amount<qty:continue
-        split=(qty+amount)/2
-        header_bottom=max(q["box"][3] for q in head.values())
-        table_end=min(height,header_bottom+min(max(140,int(height*.22)),650))
-        for l in lines[li+1:]:
-            if l["cy"]<=header_bottom or l["cy"]>table_end:continue
-            source=l["words"]
-            qty_words=[q for q in source if q["box"][0]>=qty-42 and q["box"][2]<=split+12
-                       and _NUM_RE.fullmatch(q["text"].replace(",",""))]
-            amount_words=[q for q in source if q["box"][0]>=split and
-                          q["box"][0]<=amount+60 and
-                          _NUM_RE.fullmatch(q["text"].replace(",",""))]
+    all_words=[word for line in lines for word in line["words"]]
+    for line in lines:
+        # Source table headings can span two printed lines; group only within
+        # 32 original pixels vertically, then require DESCRIPTION<QTY<AMOUNT.
+        band=[x for x in all_words if
+              line["cy"]-5 <= (x["box"][1]+x["box"][3])/2 <= line["cy"]+32]
+        if len(band)>80:continue
+        description=[x for x in band if re.fullmatch(
+            r"(?i:DESCRIPTION|PRODUCT|PARTICULARS|ITEM|GOODS)",x["text"].strip(":|"))]
+        quantities=[x for x in band if re.fullmatch(
+            r"(?i:QTY|QUANTITY|PCS|PES|PIECES)",x["text"].strip(":|"))]
+        amount_tokens=[x for x in band if re.fullmatch(
+            r"(?i:AMOUNT|AMT|ANT|NETAMT|NETAMOUNT)",x["text"].strip(":|"))]
+        if not description or not quantities or not amount_tokens:continue
+        net_tokens=[x for x in band if re.fullmatch(
+            r"(?i:NET)",x["text"].strip(":|"))]
+        eligible_amounts=[]
+        for token in amount_tokens:
+            name=token["text"].strip(":|").upper()
+            if name in ("AMOUNT","NETAMOUNT","NETAMT"):
+                eligible_amounts.append(token)
+            elif any(0<token["box"][0]-n["box"][0]<80 and
+                     abs((token["box"][1]+token["box"][3])/2 -
+                         (n["box"][1]+n["box"][3])/2)<24 for n in net_tokens):
+                eligible_amounts.append(token)
+        if not eligible_amounts:continue
+        desc=min(description,key=lambda x:x["box"][0])
+        qty=min((x for x in quantities if x["box"][0]>desc["box"][0]+35),
+                key=lambda x:x["box"][0],default=None)
+        if qty is None:continue
+        amount=max((x for x in eligible_amounts if
+                    x["box"][0]>qty["box"][2]+60),
+                   key=lambda x:x["box"][0],default=None)
+        if amount is None:continue
+        qty_x=(qty["box"][0]+qty["box"][2])/2
+        amount_x=(amount["box"][0]+amount["box"][2])/2
+        desc_x=(desc["box"][0]+desc["box"][2])/2
+        if not(desc_x+35<qty_x<amount_x-55):continue
+        header_bottom=max(desc["box"][3],qty["box"][3],amount["box"][3])
+        table_end=min(height,header_bottom+min(max(140,int(height*.28)),650))
+        # Description text determines ROW geometry, not numbers elsewhere.
+        anchors=[x for x in all_words if
+                 x["box"][0]>=desc["box"][0]-100 and
+                 x["box"][2]<qty["box"][0]-12 and
+                 header_bottom+3 < (x["box"][1]+x["box"][3])/2 < table_end and
+                 re.search(r"[A-Za-z]{2,}",x["text"])]
+        anchors.sort(key=lambda x:(x["box"][1]+x["box"][3])/2)
+        centers=[]
+        for word in anchors:
+            cy=(word["box"][1]+word["box"][3])/2
+            if centers and abs(centers[-1]["center"]-cy)<=12:
+                group=centers[-1]
+                old=len(group["words"])
+                group["words"].append(word)
+                group["center"]=(group["center"]*old+cy)/(old+1)
+            else:
+                centers.append({"center":cy,"words":[word]})
+        for group in centers:
+            cy=group["center"]
+            # Require a UNIQUE numeric source observation near each detected
+            # physical table column. Ambiguity is omitted, never guessed.
+            qty_words=[x for x in all_words if
+                abs((x["box"][0]+x["box"][2])/2-qty_x)<=65 and
+                abs((x["box"][1]+x["box"][3])/2-cy)<=21 and
+                _NUM_RE.fullmatch(x["text"].strip("()|").replace(",",""))]
+            amount_words=[x for x in all_words if
+                abs((x["box"][0]+x["box"][2])/2-amount_x)<=90 and
+                abs((x["box"][1]+x["box"][3])/2-cy)<=21 and
+                _NUM_RE.fullmatch(x["text"].strip("()|").replace(",",""))]
             if len(qty_words)!=1 or len(amount_words)!=1:continue
             if qty_words[0]["index"]==amount_words[0]["index"]:continue
-            desc=[q for q in source if q["box"][2]<qty-10 and
-                  re.search(r"[A-Za-z]",q["text"])]
-            if not desc:continue
+            desc_words=sorted(group["words"],key=lambda x:x["box"][0])
             output.append({
                 "type":"HEADER_COLUMN_ITEM_ROW_UNVERIFIED",
                 "source_view":view,
-                "row_box":_union(desc+qty_words+amount_words),
-                "description_original_ocr":" ".join(q["text"] for q in desc)[:220],
+                "row_box":_union(desc_words+qty_words+amount_words),
+                "description_original_ocr":" ".join(q["text"] for q in desc_words)[:220],
                 "quantity_original_ocr":qty_words[0]["text"],
                 "amount_original_ocr":amount_words[0]["text"],
-                "description_source_boxes":[q["box"] for q in desc],
+                "description_source_boxes":[q["box"] for q in desc_words],
                 "quantity_source_box":qty_words[0]["box"],
                 "amount_source_box":amount_words[0]["box"],
-                "source_token_indices":[q["index"] for q in desc+qty_words+amount_words],
-                "header_source_boxes":{key:value["box"] for key,value in head.items()},
-                "row_complete_certified":False,"posting_eligible":False
+                "source_token_indices":[q["index"] for q in desc_words+qty_words+amount_words],
+                "header_source_boxes":{"description":desc["box"],
+                                       "quantity":qty["box"],
+                                       "amount":amount["box"]},
+                "row_complete_certified":False,
+                "posting_eligible":False
             })
             if len(output)>=max_rows:return output
         break
