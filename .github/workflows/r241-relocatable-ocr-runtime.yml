@@ -55,8 +55,13 @@ jobs:
       - name: Compile real self-contained WPF Child with relocated OCR runtime
         shell: pwsh
         run: |
-          & ./integration-build/scripts/build-windows.ps1
-          if ($LASTEXITCODE -ne 0) { throw 'Self-contained Child and OCR runtime publish failed' }
+          Push-Location (Get-Location)
+          try {
+            & ./integration-build/scripts/build-windows.ps1
+            if ($LASTEXITCODE -ne 0) { throw 'Self-contained Child and OCR runtime publish failed' }
+          } finally {
+            Pop-Location
+          }
           $report=Get-Content integration-build/release/BUILD_VERIFICATION.json -Raw | ConvertFrom-Json
           if (-not $report.offline_runtime_bundled -or -not $report.child_startup_smoke_pass) {
             throw 'Child bundle did not include complete validated OCR runtime'
