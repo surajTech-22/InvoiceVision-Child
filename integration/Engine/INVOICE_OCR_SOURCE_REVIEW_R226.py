@@ -124,6 +124,21 @@ def review(image, raw_tsv):
     except Exception as exc:
         recovered_rows = {'status':'REVIEW_UNAVAILABLE','error_type':type(exc).__name__,
                           'posting_eligible':False,'release_approved':False}
+    date_flags=_date_flags(texts, boxes)
+    try:
+        if recovered_rows.get('status')=='REVIEW_UNAVAILABLE':
+            raise RuntimeError('R229 review unavailable, cannot safely build queue')
+        path=Path(__file__).with_name('INVOICE_OCR_REVIEW_QUEUE_R231.py')
+        spec=importlib.util.spec_from_file_location('_child_review_queue_r231',path)
+        if spec is None or spec.loader is None:
+            raise RuntimeError('R231 manual-review queue module unavailable')
+        queue_module=importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(queue_module)
+        queue=queue_module.build(case,rows,recovered_rows,date_flags)
+    except Exception as exc:
+        queue={'status':'REVIEW_UNAVAILABLE','error_type':type(exc).__name__,
+               'posting_eligible':False,'accounting_write_permitted':False,
+               'release_approved':False}
     return {
         'status': 'UNVERIFIED_SOURCE_GEOMETRY_REVIEW_ONLY',
         'source_kind': 'decoded_child_image_frame',
@@ -131,7 +146,8 @@ def review(image, raw_tsv):
         'source_observations': len(texts), 'source_tsv_row_numbers': row_ids,
         'unmodified_tsv': True, 'unmodified_image': True,
         'row_hypotheses': rows, 'layout_recovery_review': recovered_rows,
-        'date_flags': _date_flags(texts, boxes),
+        'date_flags': date_flags,
+        'manual_review_queue': queue,
         'all_values_require_human_review': True,
         'field_accuracy_certified': False,
         'posting_eligible': False, 'accounting_write_permitted': False,
