@@ -31,7 +31,9 @@ TEXT={
 
 def _run(args,cwd,timeout=160):
     p=subprocess.run(args,cwd=cwd,capture_output=True,text=True,timeout=timeout,
-                     env={**os.environ,"INVOICEVISION_SOURCE_REVIEW_R226":"1"},
+                     env={**os.environ,
+                          "INVOICEVISION_SOURCE_REVIEW_R226":"1",
+                          "INVOICEVISION_R244_FIELD_CROP_REVIEW":"1"},
                      check=False)
     if p.returncode:
         raise RuntimeError("Actual OCR engine failed, return=%d, stderr=%s, stdout_tail=%s"%
@@ -152,6 +154,15 @@ def run(engine,out,python_executable=None):
         _ensure(isinstance(review,dict) and
                 review.get("status")=="UNVERIFIED_SOURCE_GEOMETRY_REVIEW_ONLY",
                 "Actual staged Child failed to emit source-locked OCR review")
+        rereads=review.get("low_confidence_crop_rereads")
+        _ensure(isinstance(rereads,dict) and
+                rereads.get("status")=="UNCERTAIN_SOURCE_TOKEN_REREADS_REVIEW_ONLY" and
+                not rereads.get("posting_eligible") and
+                rereads.get("source_tokens_selected",99)<=4 and
+                not rereads.get("original_ocr_text_modified"),
+                "R244 real Child source crop OCR review absent or unsafe")
+        print("R244_REAL_CHILD_LOCAL_CROP_RECHECK_PASS",
+              rereads.get("source_tokens_selected"),flush=True)
         for field in ("manual_review_queue","field_consistency_review",
                       "source_field_associations","qr_invoice_crosscheck",
                       "source_gstin_checkdigit_review"):
