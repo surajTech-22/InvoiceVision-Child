@@ -20,6 +20,11 @@ def remove_long_ruling_lines(image):
     original=hashlib.sha256(image.tobytes(order="C")).hexdigest()
     gray=(cv2.cvtColor(image,cv2.COLOR_BGR2GRAY)
           if image.ndim==3 else image.copy())
+    # A clipped all-black/near-black frame does not contain recoverable
+    # printed document geometry. Adaptive thresholds may return zero ink
+    # on that source; do not classify it as a valid blank invoice.
+    if float(gray.mean())<18 and float(gray.std())<6:
+        raise ValueError("Unreadable dark source frame; refuse grid OCR")
     up=cv2.resize(gray,None,fx=2,fy=2,interpolation=cv2.INTER_CUBIC)
     # Uniform Otsu threshold mistakes grey phone-photo shadows/background
     # for continuous black table lines; this falsely deletes real source ink.
