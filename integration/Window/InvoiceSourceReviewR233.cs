@@ -31,6 +31,10 @@ internal sealed partial class InvoiceVisionWindow
         Text="No independent field-consistency checks loaded. Recognition is unverified.",
         TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,4,0,7),
         Foreground=System.Windows.Media.Brushes.DarkRed };
+    private readonly TextBlock _r237SourceSplitCandidates=new() {
+        Text="No original-source split-field review available.",
+        TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,4,0,8),
+        Foreground=System.Windows.Media.Brushes.DarkGoldenrod };
     private readonly System.Windows.Controls.ListBox _r233List = new() { Height=132,MinWidth=210 };
     private readonly TextBlock _r233Original = new() {
         TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,6,0,4),
@@ -48,6 +52,7 @@ internal sealed partial class InvoiceVisionWindow
         var body=new StackPanel { Margin=new Thickness(5,5,5,6) };
         body.Children.Add(_r233Summary);
         body.Children.Add(_r235FieldWarnings);
+        body.Children.Add(_r237SourceSplitCandidates);
         body.Children.Add(_r233List);
         body.Children.Add(_r233Original);
         body.Children.Add(new TextBlock {
@@ -93,6 +98,7 @@ internal sealed partial class InvoiceVisionWindow
         _r233Correction.Text="";
         _r233Summary.Text="No source-linked OCR review for this analysis. All recognition remains unverified.";
         _r235FieldWarnings.Text="No source-field consistency evidence. Full accuracy not certified.";
+        _r237SourceSplitCandidates.Text="No source-linked field candidates for this invoice.";
         if (!_r233NativePanelBuilt ||
             !Regex.IsMatch(verifiedPhotoHash,@"\A[0-9a-fA-F]{64}\z") ||
             analysis.ValueKind!=JsonValueKind.Object ||
@@ -192,6 +198,56 @@ internal sealed partial class InvoiceVisionWindow
                 _r235FieldWarnings.Text="Invalid OCR warnings refused; no values approved.";
         }
         else _r235FieldWarnings.Text="Field consistency review unavailable; no value approved.";
+        if(source.TryGetProperty("source_field_associations",out var structured) &&
+           structured.ValueKind==JsonValueKind.Object &&
+           R233GetString(structured,"status")=="SOURCE_BOUND_FIELD_ASSOCIATIONS_UNVERIFIED" &&
+           structured.TryGetProperty("posting_eligible",out var safe) &&
+           safe.ValueKind==JsonValueKind.False &&
+           structured.TryGetProperty("proposals",out var proposals) &&
+           proposals.ValueKind==JsonValueKind.Array &&
+           proposals.GetArrayLength()<=100)
+        {
+            var info=new List<string>();
+            bool invalid=false;
+            foreach(var proposal in proposals.EnumerateArray())
+            {
+                if(proposal.ValueKind!=JsonValueKind.Object ||
+                   !proposal.TryGetProperty("posting_eligible",out var approved) ||
+                   approved.ValueKind!=JsonValueKind.False)
+                { invalid=true;break; }
+                string kind=R233GetString(proposal,"type");
+                if(kind is not ("HSN_WITH_ATTACHED_ROW_SERIAL" or
+                                "TWO_SOURCE_AMOUNTS_JOINED_BY_OCR" or
+                                "HEADER_SUPPLIER_NAME_FRAGMENTS"))
+                { invalid=true;break; }
+                string value="";
+                if(proposal.TryGetProperty("candidate_text",out var candidate))
+                {
+                    if(candidate.ValueKind==JsonValueKind.String)
+                        value=candidate.GetString()??"";
+                    else if(candidate.ValueKind==JsonValueKind.Array)
+                    {
+                        var nums=new List<string>();
+                        foreach(var part in candidate.EnumerateArray())
+                        {
+                            if(part.ValueKind!=JsonValueKind.String) { invalid=true;break; }
+                            nums.Add(part.GetString()??"");
+                        }
+                        value=string.Join(" | ",nums);
+                    }
+                }
+                if(invalid || value.Length==0 || value.Length>200)
+                { invalid=true;break; }
+                if(info.Count<8) info.Add(kind.Replace('_',' ')+": "+value);
+            }
+            _r237SourceSplitCandidates.Text=invalid
+                ? "Malformed source associations rejected. No field approved."
+                : proposals.GetArrayLength()+" unverified source-field proposals. "+
+                    (info.Count>0 ? string.Join("\n",info) :
+                     "No candidate requires review.");
+        }
+        else _r237SourceSplitCandidates.Text="Source field associations unavailable; no values approved.";
+
 
     }
 
