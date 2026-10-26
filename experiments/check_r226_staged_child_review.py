@@ -66,6 +66,14 @@ class StagedChildReview(unittest.TestCase):
         self.assertEqual(x['layout_recovery_review']['total_provisional_rows'],2)
         self.assertFalse(x['layout_recovery_review']['posting_eligible'])
         self.assertEqual(x['layout_recovery_review']['accepted_field_values'],0)
+        queue=x['manual_review_queue']
+        self.assertEqual(queue['status'],'IMMUTABLE_SOURCE_REVIEW_REQUIRED')
+        self.assertEqual(queue['item_proposals'],2)
+        self.assertEqual(queue['date_proposals'],2)
+        self.assertEqual(queue['total_review_items'],4)
+        self.assertEqual(len({v['review_id'] for v in queue['items']}),4)
+        self.assertTrue(all(v['source_frame_sha256']==x['decoded_frame_sha256']
+                            and not v['posting_eligible'] for v in queue['items']))
         self.assertEqual({k['reason'] for k in x['date_flags']},
                          {'invalid_calendar_date','date_time_glued'})
         self.assertEqual(x['decoded_frame_sha256'],hashlib.sha256(image.tobytes()).hexdigest())
