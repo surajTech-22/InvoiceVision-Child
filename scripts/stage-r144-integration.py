@@ -59,6 +59,40 @@ def stage(build):
         changes.append({'type':'ADDITIVE_REVIEW_MODULE_NOT_BASELINE',
                         'target':str(destination.relative_to(build)).replace(chr(92),'/'),
                         'overlay_sha256':hashlib.sha256(destination.read_bytes()).hexdigest()})
+    # R233: patch the verified native C# workspace only inside the isolated
+    # research build. An exact one-time string match prevents fuzzy edits to
+    # any new or unverified installed application revision.
+    cs_rel='InvoiceVisionChild/InvoiceZoneWorkspace.cs'
+    cs_path=build/cs_rel
+    original=cs_path.read_text(encoding='utf-8-sig')
+    review_insert='inspector.Children.Add(_zoneContentStatus);'
+    review_attach='inspector.Children.Add(_zoneContentStatus); AttachSourceReviewUiR233(inspector);'
+    review_load='RefreshZonePhoto(); RefreshZones();'
+    review_loaded='LoadSourceReviewQueueR233(root, actualHash); RefreshZonePhoto(); RefreshZones();'
+    smoke='ToggleZoneInspector();\n        if (_toolTabs.SelectedIndex != 1)'
+    smoke_new='ToggleZoneInspector();\n        AssertR233NativeReviewReadyForInstaller();\n        if (_toolTabs.SelectedIndex != 1)'
+    for before,after in ((review_insert,review_attach),(review_load,review_loaded),
+                         (smoke,smoke_new)):
+        if original.count(before)!=1:
+            raise ValueError('Verified C# source review insertion anchor mismatched: '+before[:55])
+        original=original.replace(before,after)
+    previous=hashlib.sha256(cs_path.read_bytes()).hexdigest()
+    cs_path.write_text(original,encoding='utf-8')
+    after=hashlib.sha256(cs_path.read_bytes()).hexdigest()
+    matching=[entry for entry in manifest['files'] if entry['path']==cs_rel]
+    if len(matching)!=1:raise ValueError('Expected exactly one sealed native workspace source')
+    matching[0]['sha256']=after
+    if 'size_bytes' in matching[0]:matching[0]['size_bytes']=cs_path.stat().st_size
+    changes.append({'type':'R233_STAGED_NATIVE_WPF_REVIEW_HOOK',
+                    'target':cs_rel,'previous_sha256':previous,'overlay_sha256':after})
+    add_source=ROOT/'integration/Window/InvoiceSourceReviewR233.cs'
+    add_target=build/'InvoiceVisionChild/InvoiceSourceReviewR233.cs'
+    if not add_source.is_file() or add_target.exists():
+        raise ValueError('R233 WPF review source missing or collides with original')
+    shutil.copyfile(add_source,add_target)
+    changes.append({'type':'R233_ADDITIVE_WPF_SOURCE_NOT_ORIGINAL_BASELINE',
+                    'target':'InvoiceVisionChild/InvoiceSourceReviewR233.cs',
+                    'overlay_sha256':hashlib.sha256(add_target.read_bytes()).hexdigest()})
     manifest_path.write_text(json.dumps(manifest,indent=2))
     (build/'R144_INTEGRATION_PROVENANCE.json').write_text(json.dumps({
         'changes':changes,
