@@ -72,6 +72,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'R222 image dependencies failed' }
           python experiments/check_r222_original_source_dates_synthetic.py
           if ($LASTEXITCODE -ne 0) { throw 'R222 date validation failed' }
+      - name: Verify R226 review hook inside staged WPF Child Engine
+        shell: pwsh
+        run: |
+          python experiments/check_r226_staged_child_review.py
+          if ($LASTEXITCODE -ne 0) { throw 'R226 real Child zone integration regression failed' }
+          Write-Host 'R226_STAGED_CHILD_REVIEW_ONLY_PASS'
       - name: Ensure unverified Setup and Update executables remain blocked
         shell: pwsh
         run: |
