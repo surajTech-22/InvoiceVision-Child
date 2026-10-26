@@ -117,7 +117,8 @@ jobs:
               'INVOICE_OCR_SOURCE_REVIEW_R226.py',
               'INVOICE_OCR_LAYOUT_RECOVERY_R229.py',
               'INVOICE_OCR_REVIEW_QUEUE_R231.py',
-              'INVOICE_OCR_FIELD_CONSISTENCY_R235.py')) {
+              'INVOICE_OCR_FIELD_CONSISTENCY_R235.py',
+              'INVOICE_OCR_TARGETED_RECHECK_R236.py')) {
             $source = Join-Path 'integration-build/InvoiceVisionChild/Engine' $name
             $published = Join-Path 'integration-build/build/publish/Engine' $name
             if (-not (Test-Path -LiteralPath $source -PathType Leaf) -or
@@ -162,6 +163,11 @@ jobs:
         run: |
           python -m unittest discover -s experiments -p 'test_r235_source_field_consistency.py' -v
           if ($LASTEXITCODE -ne 0) { throw 'R235 date, HSN and amount safety regression failed' }
+      - name: Verify R236 targeted source-pixel OCR rereads, without any auto-corrections
+        shell: pwsh
+        run: |
+          python -m unittest discover -s experiments -p 'test_r236_targeted_recheck.py' -v
+          if ($LASTEXITCODE -ne 0) { throw 'R236 numeric source-crop verification failed' }
       - name: Verify R226 review hook inside staged WPF Child Engine
         shell: pwsh
         run: |
@@ -197,5 +203,6 @@ jobs:
             integration-build/InvoiceVisionChild/Engine/INVOICE_OCR_LAYOUT_RECOVERY_R229.py
             integration-build/InvoiceVisionChild/Engine/INVOICE_OCR_REVIEW_QUEUE_R231.py
             integration-build/InvoiceVisionChild/Engine/INVOICE_OCR_FIELD_CONSISTENCY_R235.py
+            integration-build/InvoiceVisionChild/Engine/INVOICE_OCR_TARGETED_RECHECK_R236.py
           if-no-files-found: warn
           retention-days: 14
