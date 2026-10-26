@@ -154,6 +154,16 @@ def run(engine,out,python_executable=None):
         _ensure(isinstance(review,dict) and
                 review.get("status")=="UNVERIFIED_SOURCE_GEOMETRY_REVIEW_ONLY",
                 "Actual staged Child failed to emit source-locked OCR review")
+        gridded=analysis.get("zone_refinement",{}).get("source_grid_table_review_r246")
+        _ensure(isinstance(gridded,dict) and
+                gridded.get("status")=="GRID_RULING_SOURCE_REVIEW_ONLY" and
+                not gridded.get("posting_eligible") and
+                not gridded.get("original_first_pass_ocr_replaced") and
+                gridded.get("accepted_item_rows")==0 and
+                gridded.get("provisional_table_rows",0)>=1,
+                "R246 de-ruled grid table did not produce a provisional source-aligned item row")
+        print("R246_REAL_CHILD_RULING_REMOVED_ITEM_ROWS_PASS",
+              gridded.get("provisional_table_rows"),flush=True)
         anchored=analysis.get("zone_refinement",{}).get("source_field_row_anchors_r245")
         _ensure(isinstance(anchored,dict) and
                 anchored.get("status")=="SOURCE_FIELD_AND_ITEM_ROW_ASSOCIATIONS_REVIEW_ONLY" and
