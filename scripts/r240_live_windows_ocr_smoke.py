@@ -121,6 +121,9 @@ def run(engine,out,python_executable=None):
                 alt.get("status")=="SOURCE_MULTISCALE_ALTERNATIVES_REVIEW_ONLY",
                 "R243 live Child did not emit multiscale source review")
         variants=alt.get("variants",[])
+        print("R243_ACTUAL_SOURCE_VARIANT_STATUS",
+              [(v.get("variant"),v.get("status"),v.get("error_type"),
+                v.get("source_ocr_words_total")) for v in variants],flush=True)
         _ensure(len(variants)==2 and
                 set(v.get("variant") for v in variants)=={"gray_2x","clahe_2x"},
                 "R243 two source views missing")
