@@ -130,7 +130,8 @@ jobs:
               'INVOICE_OCR_GSTIN_REVIEW_R239.py',
               'INVOICE_OCR_MULTISCALE_REVIEW_R243.py',
               'INVOICE_OCR_FIELD_CROP_REVIEW_R244.py',
-              'INVOICE_OCR_FIELD_ROW_ANCHORS_R245.py')) {
+              'INVOICE_OCR_FIELD_ROW_ANCHORS_R245.py',
+              'INVOICE_OCR_GRID_TABLE_R246.py')) {
             $source = Join-Path 'integration-build/InvoiceVisionChild/Engine' $name
             $published = Join-Path 'integration-build/build/publish/Engine' $name
             if (-not (Test-Path -LiteralPath $source -PathType Leaf) -or
@@ -210,6 +211,11 @@ jobs:
         run: |
           python -m unittest discover -s experiments -p 'test_r245_field_row_anchors.py' -v
           if ($LASTEXITCODE -ne 0) { throw 'R245 source-label and item-column association tests failed' }
+      - name: Verify R246 temporary table ruling-line removal and row geometry
+        shell: pwsh
+        run: |
+          python -m unittest discover -s experiments -p 'test_r246_grid_table.py' -v
+          if ($LASTEXITCODE -ne 0) { throw 'R246 synthetic invoice grid table regression failed' }
       - name: Verify R226 review hook inside staged WPF Child Engine
         shell: pwsh
         run: |
@@ -252,5 +258,6 @@ jobs:
             integration-build/InvoiceVisionChild/Engine/INVOICE_OCR_MULTISCALE_REVIEW_R243.py
             integration-build/InvoiceVisionChild/Engine/INVOICE_OCR_FIELD_CROP_REVIEW_R244.py
             integration-build/InvoiceVisionChild/Engine/INVOICE_OCR_FIELD_ROW_ANCHORS_R245.py
+            integration-build/InvoiceVisionChild/Engine/INVOICE_OCR_GRID_TABLE_R246.py
           if-no-files-found: warn
           retention-days: 14
