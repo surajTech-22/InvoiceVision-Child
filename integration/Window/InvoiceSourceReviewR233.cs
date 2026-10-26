@@ -27,11 +27,11 @@ internal sealed partial class InvoiceVisionWindow
     private readonly TextBlock _r233Summary = new() {
         Text="No source-linked rows loaded. Analyze a photograph to see review items.",
         TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,3,0,8) };
-    private readonly ListBox _r233List = new() { Height=132,MinWidth=210 };
+    private readonly System.Windows.Controls.ListBox _r233List = new() { Height=132,MinWidth=210 };
     private readonly TextBlock _r233Original = new() {
         TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,6,0,4),
         Text="Select a source item. Raw OCR is never overwritten." };
-    private readonly TextBox _r233Correction = new() {
+    private readonly System.Windows.Controls.TextBox _r233Correction = new() {
         MinHeight=38,MaxHeight=86,TextWrapping=TextWrapping.Wrap,
         AcceptsReturn=true,VerticalScrollBarVisibility=ScrollBarVisibility.Auto,
         MaxLength=350 };
