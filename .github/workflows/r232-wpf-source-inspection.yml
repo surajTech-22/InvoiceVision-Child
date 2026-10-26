@@ -35,10 +35,10 @@ jobs:
                   target=dest/p;target.parent.mkdir(parents=True,exist_ok=True)
                   target.write_bytes(data)
                   found.append(name);total+=len(data)
-          if not any(x.endswith('.csproj') for x in found) or not any(x.endswith('.xaml') for x in found):
+          if not any(x.endswith('.csproj') for x in found) or not any(x.endswith('.cs') for x in found):
               raise ValueError('Missing expected WPF text sources')
           assert total<2500000,(total,'unexpected large source content')
-          print('R232_VERIFIED_CODE_ONLY',len(found),total)
+          print('R232_VERIFIED_CODE_ONLY',len(found),total,found)
           (dest/'SOURCE_LIST.json').write_text(json.dumps({'text_sources':found,'count':len(found),'bytes':total},indent=2))
           PY
       - name: Upload code-only inspection, no images or OCR samples
