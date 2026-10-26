@@ -88,6 +88,23 @@ class StagedChildReview(unittest.TestCase):
         self.assertFalse(x['posting_eligible'])
         self.assertFalse(x['release_approved'])
 
+    def test_actual_tesseract_hierarchy_pages_blocks_paragraphs_lines_not_error(self):
+        image,word_only=fixture()
+        structural=[
+            '1\t1\t0\t0\t0\t0\t0\t0\t1200\t600\t-1\t',
+            '2\t1\t1\t0\t0\t0\t30\t30\t900\t400\t-1\t',
+            '3\t1\t1\t1\t0\t0\t30\t30\t900\t400\t-1\t',
+            '4\t1\t1\t1\t1\t0\t30\t30\t900\t32\t-1\t',
+        ]
+        word_rows=word_only.splitlines()
+        mixed=word_rows[0]+'\n'+'\n'.join(structural)+'\n'+'\n'.join(word_rows[1:])+'\n'
+        review=self.review.review(image,mixed)
+        self.assertEqual(review['status'],'UNVERIFIED_SOURCE_GEOMETRY_REVIEW_ONLY')
+        self.assertEqual(review['source_observations'],19)
+        self.assertEqual(review['row_hypotheses']['proposed_row_count'],2)
+        self.assertEqual(review['source_tsv_row_numbers'][0],6)
+        self.assertFalse(review['posting_eligible'])
+
     def test_default_child_zone_behavior_unchanged_when_disabled(self):
         image,tsv=fixture()
         coarse=[{'id':'R001','xyxy':[0,0,1200,600],'category':'unknown'}]
