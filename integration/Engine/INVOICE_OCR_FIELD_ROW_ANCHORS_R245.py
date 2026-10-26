@@ -174,8 +174,19 @@ def _table(lines,view,width,height,max_rows):
             cy=group["center"]
             # Require a UNIQUE numeric source observation near each detected
             # physical table column. Ambiguity is omitted, never guessed.
+            # Distinguish close CS / PCS / Total Units columns from their
+            # actual printed header centers, not from guessed invoice data.
+            colmarks=[x for x in band if re.fullmatch(
+                r"(?i:CS|CASE|TOTAL|UNIT|UNITS|MRP|UPC|PKM|RATE|PRICE|PCS|PES|QTY)",
+                x["text"].strip(":|)"))]
+            lefts=[(x["box"][0]+x["box"][2])/2 for x in colmarks
+                   if (x["box"][0]+x["box"][2])/2<qty_x-8]
+            rights=[(x["box"][0]+x["box"][2])/2 for x in colmarks
+                    if (x["box"][0]+x["box"][2])/2>qty_x+8]
+            qty_left=(max(lefts)+qty_x)/2 if lefts else qty_x-42
+            qty_right=(min(rights)+qty_x)/2 if rights else qty_x+42
             qty_words=[x for x in all_words if
-                abs((x["box"][0]+x["box"][2])/2-qty_x)<=65 and
+                qty_left <= (x["box"][0]+x["box"][2])/2 <= qty_right and
                 abs((x["box"][1]+x["box"][3])/2-cy)<=21 and
                 _NUM_RE.fullmatch(x["text"].strip("()|").replace(",",""))]
             amount_words=[x for x in all_words if
