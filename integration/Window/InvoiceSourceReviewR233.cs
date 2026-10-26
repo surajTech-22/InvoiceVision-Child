@@ -44,6 +44,10 @@ internal sealed partial class InvoiceVisionWindow
         Text="GSTIN OCR check digit has not been checked.",
         TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,4,0,8),
         Foreground=System.Windows.Media.Brushes.DarkGoldenrod };
+    private readonly TextBlock _r243AlternativeOcr=new() {
+        Text="No high-resolution alternate OCR evidence loaded.",
+        TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,5,0,8),
+        Foreground=System.Windows.Media.Brushes.DimGray };
     private readonly System.Windows.Controls.ListBox _r233List = new() { Height=132,MinWidth=210 };
     private readonly TextBlock _r233Original = new() {
         TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,6,0,4),
@@ -64,6 +68,7 @@ internal sealed partial class InvoiceVisionWindow
         body.Children.Add(_r237SourceSplitCandidates);
         body.Children.Add(_r238QrStatus);
         body.Children.Add(_r239GstinReview);
+        body.Children.Add(_r243AlternativeOcr);
         body.Children.Add(_r233List);
         body.Children.Add(_r233Original);
         body.Children.Add(new TextBlock {
@@ -112,6 +117,7 @@ internal sealed partial class InvoiceVisionWindow
         _r237SourceSplitCandidates.Text="No source-linked field candidates for this invoice.";
         _r238QrStatus.Text="QR source document ID not yet corroborated.";
         _r239GstinReview.Text="GSTIN check digits not verified for this invoice.";
+        _r243AlternativeOcr.Text="No alternate high-resolution OCR source evidence for this invoice.";
         if (!_r233NativePanelBuilt ||
             !Regex.IsMatch(verifiedPhotoHash,@"\A[0-9a-fA-F]{64}\z") ||
             analysis.ValueKind!=JsonValueKind.Object ||
@@ -322,6 +328,37 @@ internal sealed partial class InvoiceVisionWindow
                                    : "No checksum mismatch detected; supplier identity still unverified.");
         }
         else _r239GstinReview.Text="GSTIN source-check status unavailable; no values approved.";
+        if(refinement.TryGetProperty("alternate_multiscale_source_review",out var alternate) &&
+           alternate.ValueKind==JsonValueKind.Object &&
+           R233GetString(alternate,"status")=="SOURCE_MULTISCALE_ALTERNATIVES_REVIEW_ONLY" &&
+           alternate.TryGetProperty("posting_eligible",out var alternatePosting) &&
+           alternatePosting.ValueKind==JsonValueKind.False &&
+           alternate.TryGetProperty("variants",out var variants) &&
+           variants.ValueKind==JsonValueKind.Array && variants.GetArrayLength()==2)
+        {
+            var summaries=new List<string>();
+            bool valid=true;
+            foreach(var variant in variants.EnumerateArray())
+            {
+                string name=R233GetString(variant,"variant");
+                if(name is not ("gray_2x" or "clahe_2x") ||
+                   !variant.TryGetProperty("posting_eligible",out var vp) ||
+                   vp.ValueKind!=JsonValueKind.False ||
+                   !variant.TryGetProperty("source_ocr_words_total",out var wc) ||
+                   wc.ValueKind!=JsonValueKind.Number || !wc.TryGetInt32(out var n) ||
+                   n<0 || n>8000 ||
+                   !variant.TryGetProperty("source_boxes_are_original_pixels",out var orig) ||
+                   orig.ValueKind!=JsonValueKind.True)
+                { valid=false; break; }
+                summaries.Add(name+": "+n+" OCR source words");
+            }
+            _r243AlternativeOcr.Text=valid && summaries.Count==2
+                ? "Alternative 2x image readings (unverified): "+string.Join("; ",summaries)+
+                  ". The original OCR and field assignments are not replaced."
+                : "Unsafe alternate OCR evidence refused; no data approved.";
+        }
+        else _r243AlternativeOcr.Text="No verified alternate source OCR available; no values approved.";
+
 
 
 
