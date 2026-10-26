@@ -18,19 +18,20 @@ def _norm(s):
 
 def _role(s):
     n = _norm(s)
-    if n in {'products','productname','productdescription','itemdescription',
-             'itemname','itenname','descriptionofgoods','itemdeseription'}:
+    if n in {'products','product','productname','produciname','productdescription','itemdescription',
+             'itemname','itenname','descriptionofgoods','itemdeseription',
+             'desorptionofcoods','descriptionofcoods'}:
         return 'description'
-    if n in {'hsn','hsncode','hsncoda','hsnsac','hsnno','hisnsac'}:
+    if n in {'hsn','hsncode','hsncoda','hsnsac','hsnno','hisnsac','hsnsacgsy'}:
         return 'hsn'
-    if n in {'sno','sn','srno','srna','slno','snoandkind','snokind'}:
+    if n in {'sno','sn','srno','srna','slno','snoandkind','snokind','sl'}:
         return 'serial'
-    if n in {'quantity','qnantity','qty','pcs','case','qtypcs','weightkg'}:
+    if n in {'quantity','qnantity','qty','pcs','case','qtypcs','weightkg','auanlity'}:
         return 'quantity'
-    if n in {'rate','basicrate','unitrate','price','netprice','mrp','rpu'}:
+    if n in {'rate','basicrate','unitrate','price','netprice','mrp','rpu','rato'}:
         return 'rate'
     if n in {'amount','netamt','netamount','taxable','taxableamt',
-             'totalvalueincoftaxrs','gross','grossamt'}:
+             'totalvalueincoftaxrs','gross','grossamt','grossamount'}:
         return 'amount'
     if n in {'cgst','sgst','sgstutgst','igst','gst','gstpercent','scheme','discount',
              'schdis','schdispercent','grossdisc'}:
