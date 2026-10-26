@@ -299,22 +299,22 @@ internal sealed partial class InvoiceVisionWindow
            gstRows.ValueKind==JsonValueKind.Array && gstRows.GetArrayLength()<=50)
         {
             var wrong=new List<string>();
-            bool safe=true;
+            bool gstEvidenceSafe=true;
             foreach(var item in gstRows.EnumerateArray())
             {
                 if(item.ValueKind!=JsonValueKind.Object ||
                    !item.TryGetProperty("posting_eligible",out var ok) ||
                    ok.ValueKind!=JsonValueKind.False)
-                { safe=false;break; }
+                { gstEvidenceSafe=false;break; }
                 bool valid=item.TryGetProperty("checksum_valid",out var chk) &&
                            chk.ValueKind==JsonValueKind.True;
                 if(!valid) {
                     var raw=R233GetString(item,"literal_source_text");
-                    if(raw.Length!=15) { safe=false;break; }
+                    if(raw.Length!=15) { gstEvidenceSafe=false;break; }
                     if(wrong.Count<8)wrong.Add(raw);
                 }
             }
-            _r239GstinReview.Text=!safe
+            _r239GstinReview.Text=!gstEvidenceSafe
                 ? "Untrusted GSTIN OCR evidence refused; no values approved."
                 : gstRows.GetArrayLength()+" GSTIN OCR readings checked. "+
                     (wrong.Count>0 ? "Checksum mismatch (source review required): "+
