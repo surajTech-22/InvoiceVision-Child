@@ -141,5 +141,6 @@ jobs:
             integration-build/InvoiceVisionChild/Engine/INVOICE_OCR_RECURSIVE_ZONES_R109.py
             integration-build/InvoiceVisionChild/Engine/INVOICE_OCR_SOURCE_REVIEW_R226.py
             integration-build/InvoiceVisionChild/Engine/INVOICE_OCR_SOURCE_ROWS_R223.py
+            integration-build/InvoiceVisionChild/Engine/INVOICE_OCR_LAYOUT_RECOVERY_R229.py
           if-no-files-found: warn
           retention-days: 14
