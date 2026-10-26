@@ -164,6 +164,15 @@ def run(engine,out,python_executable=None):
                 gridded.get("source_unique_item_row_count")==1 and
                 gridded.get("accepted_item_rows")==0,
                 "R246 de-ruled grid table did not produce a provisional source-aligned item row")
+        table_amounts=gridded.get("source_amount_cell_rereads_r248",{})
+        _ensure(isinstance(table_amounts,dict) and
+                table_amounts.get("status")=="SOURCE_TABLE_AMOUNT_CELL_REREAD_ONLY" and
+                table_amounts.get("source_item_rows_reviewed")==1 and
+                table_amounts.get("accepted_amount_values")==0 and
+                not table_amounts.get("posting_eligible") and
+                not table_amounts.get("original_source_pixels_modified"),
+                "R248 live Child source table amount rereread failed or altered source")
+        print("R248_REAL_CHILD_TABLE_AMOUNT_SOURCE_REREAD_PASS",flush=True)
         print("R246_REAL_CHILD_RULING_REMOVED_ITEM_ROWS_PASS",
               gridded.get("provisional_table_rows"),flush=True)
         anchored=analysis.get("zone_refinement",{}).get("source_field_row_anchors_r245")
