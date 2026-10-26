@@ -17,7 +17,7 @@ def _center(b):
 def _rotated_case(case):
     w=case['source_width'];h=case['source_height']
     return {**case,'source_width':h,'source_height':w,
-            'raw_boxes':[[b[1],w-b[2],b[3],w-b[0]] for b in case['raw_boxes']}
+            'raw_boxes':[[b[1],w-b[2],b[3],w-b[0]] for b in case['raw_boxes']]}
 
 def _strong_sideways_evidence(case,r223):
     candidates=[]
