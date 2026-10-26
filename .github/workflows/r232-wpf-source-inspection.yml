@@ -1,0 +1,50 @@
+name: R232 inspect verified Child WPF source (code only)
+on:
+  push:
+    branches: [research/invoicevision-r220-source-witness]
+    paths: ['.github/workflows/r232-wpf-source-inspection.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verified-wpf-code-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Extract ONLY CSharp and XAML source after sealed archive checksum
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib,zipfile,json
+          src=Path('source/INVOICE_OCR_CHILD_R113_R4_R2_VERIFIED_UPDATE.zip')
+          assert hashlib.sha256(src.read_bytes()).hexdigest()=='ad4720d1037558e637fd42abf8e40bce34b505f6cfa73f29dcc3a67816a9ac59'
+          dest=Path('r232-wpf-source-inspection')
+          total=0;found=[]
+          with zipfile.ZipFile(src) as z:
+              for entry in z.infolist():
+                  name=entry.filename.replace('\\','/')
+                  p=Path(name)
+                  if p.is_absolute() or '..' in p.parts:raise ValueError('Unsafe input path')
+                  if not name.startswith('InvoiceVisionChild/'):continue
+                  if not name.lower().endswith(('.cs','.xaml','.csproj','.json','.config')):continue
+                  if '/engine/' in name.lower() or '/obj/' in name.lower() or '/bin/' in name.lower():continue
+                  if entry.file_size>250000:raise ValueError('unexpected source size')
+                  data=z.read(entry)
+                  data.decode('utf-8-sig')
+                  target=dest/p;target.parent.mkdir(parents=True,exist_ok=True)
+                  target.write_bytes(data)
+                  found.append(name);total+=len(data)
+          if not any(x.endswith('.csproj') for x in found) or not any(x.endswith('.xaml') for x in found):
+              raise ValueError('Missing expected WPF text sources')
+          assert total<2500000,(total,'unexpected large source content')
+          print('R232_VERIFIED_CODE_ONLY',len(found),total)
+          (dest/'SOURCE_LIST.json').write_text(json.dumps({'text_sources':found,'count':len(found),'bytes':total},indent=2))
+          PY
+      - name: Upload code-only inspection, no images or OCR samples
+        uses: actions/upload-artifact@v4
+        with:
+          name: R232-WPF-Verified-CSharp-XAML-Only
+          path: r232-wpf-source-inspection
+          retention-days: 1
+          if-no-files-found: error
