@@ -271,6 +271,41 @@ def review(image, raw_tsv):
                       'error_type':type(exc).__name__,
                       'candidates':[],'posting_eligible':False,
                       'release_approved':False}
+    # R244: bounded original-pixel reread of low-confidence OCR tokens.
+    # Multiple passes from one local backend are NOT independent verification.
+    crop_review={'status':'LOCAL_CROP_RECHECK_DISABLED',
+                 'source_tokens_selected':0,'review_items':[],
+                 'posting_eligible':False,'release_approved':False}
+    try:
+        import os,shutil,subprocess
+        if os.environ.get('INVOICEVISION_R244_FIELD_CROP_REVIEW')=='1':
+            exe=os.environ.get('TESSERACT_EXE','').strip()
+            if not exe or not Path(exe).is_file():
+                exe=shutil.which('tesseract')
+            if not exe:raise RuntimeError('Offline Tesseract not installed')
+            source=Path(__file__).with_name('INVOICE_OCR_FIELD_CROP_REVIEW_R244.py')
+            spec=importlib.util.spec_from_file_location('_child_r244_crop_reread',source)
+            if spec is None or spec.loader is None:
+                raise RuntimeError('Staged source-cell OCR module unavailable')
+            rereader=importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(rereader)
+            def local_ocr_read(view,psm):
+                import cv2
+                ok,png=cv2.imencode('.png',view)
+                if not ok:raise RuntimeError('Local OCR crop encoding failed')
+                result=subprocess.run(
+                    [exe,'stdin','stdout','-l','eng','--psm',str(psm)],
+                    input=png.tobytes(),capture_output=True,
+                    timeout=9,check=False)
+                if result.returncode:
+                    raise RuntimeError('Local source-cell OCR returned error')
+                return result.stdout.decode('utf-8',errors='replace')
+            crop_review=rereader.review(image,raw_tsv,local_ocr_read,max_candidates=4)
+    except Exception as exc:
+        crop_review={'status':'LOCAL_CROP_RECHECK_UNAVAILABLE',
+                     'error_type':type(exc).__name__,
+                     'source_tokens_selected':0,'review_items':[],
+                     'posting_eligible':False,'release_approved':False}
     return {
         'status': 'UNVERIFIED_SOURCE_GEOMETRY_REVIEW_ONLY',
         'source_kind': 'decoded_child_image_frame',
@@ -285,6 +320,7 @@ def review(image, raw_tsv):
         'source_field_associations': source_associations,
         'qr_invoice_crosscheck': qr_source_review,
         'source_gstin_checkdigit_review': gstin_review,
+        'low_confidence_crop_rereads': crop_review,
         'all_values_require_human_review': True,
         'field_accuracy_certified': False,
         'posting_eligible': False, 'accounting_write_permitted': False,
