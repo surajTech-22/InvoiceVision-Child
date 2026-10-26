@@ -623,6 +623,14 @@ internal sealed partial class InvoiceVisionWindow
                 table_header_anchored_row_proposals=new [] {
                     new {type="HEADER_COLUMN_ITEM_ROW_UNVERIFIED",posting_eligible=false}
                 }
+            }, source_grid_table_review_r246=new {
+                status="GRID_RULING_SOURCE_REVIEW_ONLY",
+                posting_eligible=false,
+                source_field_row_anchors=new {
+                    table_header_anchored_row_proposals=new [] {
+                        new {quantity_original_ocr="20",amount_original_ocr="1140.00",posting_eligible=false}
+                    }
+                }
             }}
         };
         using (var syntheticDoc=JsonDocument.Parse(JsonSerializer.Serialize(synthetic)))
@@ -635,7 +643,8 @@ internal sealed partial class InvoiceVisionWindow
                !_r238QrStatus.Text.Contains("TEST-QR-0049") ||
                !_r243AlternativeOcr.Text.Contains("clahe_2x: 23 OCR source words") ||
                !_r244LowConfidence.Text.Contains("20 | 30") ||
-               !_r245FieldRows.Text.Contains("TEST2026A17"))
+               !_r245FieldRows.Text.Contains("TEST2026A17") ||
+               !_r246GridTable.Text.Contains("qty 20 / amount 1140.00"))
                 throw new InvalidOperationException("R233 native source queue did not display synthetic evidence.");
         }
         using (var empty=JsonDocument.Parse("{}"))
@@ -648,7 +657,8 @@ internal sealed partial class InvoiceVisionWindow
                _r238QrStatus.Text.Contains("TEST-QR-0049") ||
                _r243AlternativeOcr.Text.Contains("23 OCR source words") ||
                _r244LowConfidence.Text.Contains("20 | 30") ||
-               _r245FieldRows.Text.Contains("TEST2026A17"))
+               _r245FieldRows.Text.Contains("TEST2026A17") ||
+               _r246GridTable.Text.Contains("qty 20 / amount 1140.00"))
                 throw new InvalidOperationException("R233 leaked review data between source invoices.");
         }
     }
