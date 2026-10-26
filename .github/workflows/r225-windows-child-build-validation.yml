@@ -14,6 +14,7 @@ on:
       - 'experiments/test_r231_review_queue.py'
       - 'scripts/build-windows.ps1'
       - 'integration/Engine/**'
+      - 'integration/Window/**'
   workflow_dispatch:
 permissions:
   contents: read
@@ -62,6 +63,23 @@ jobs:
           New-Item -ItemType Directory integration-build/scripts -Force | Out-Null
           Copy-Item scripts/build-windows.ps1 integration-build/scripts/build-windows.ps1
           Write-Host 'R225_RESEARCH_OVERLAY_STAGED_NOT_INSTALLED'
+      - name: Check R233 native review source exists and is staged safely
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $panel='integration-build/InvoiceVisionChild/InvoiceSourceReviewR233.cs'
+          $source='integration/Window/InvoiceSourceReviewR233.cs'
+          if (-not (Test-Path $panel -PathType Leaf)) { throw 'R233 native review source missing' }
+          if ((Get-FileHash $panel -Algorithm SHA256).Hash -ne (Get-FileHash $source -Algorithm SHA256).Hash) {
+            throw 'R233 native review source differs from isolated verified overlay'
+          }
+          $workspace=Get-Content 'integration-build/InvoiceVisionChild/InvoiceZoneWorkspace.cs' -Raw
+          if (-not $workspace.Contains('AttachSourceReviewUiR233(inspector)') -or
+              -not $workspace.Contains('LoadSourceReviewQueueR233(root, actualHash)') -or
+              -not $workspace.Contains('AssertR233NativeReviewReadyForInstaller()')) {
+            throw 'Verified WPF review hooks were not inserted'
+          }
+          Write-Host 'R233_NATIVE_SOURCE_REVIEW_STAGING_PASS'
       - name: Compile real .NET 10 WPF Child and run original startup self-test
         shell: pwsh
         run: |
