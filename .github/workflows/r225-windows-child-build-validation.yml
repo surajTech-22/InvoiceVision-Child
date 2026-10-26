@@ -6,6 +6,10 @@ on:
       - '.github/workflows/r225-windows-child-build-validation.yml'
       - 'scripts/stage-r144-integration.py'
       - 'scripts/r227_replay_original_child_review.py'
+      - 'experiments/r223_source_table_rows.py'
+      - 'integration/Engine/INVOICE_OCR_SOURCE_REVIEW_R226.py'
+      - 'integration/Engine/INVOICE_OCR_LAYOUT_RECOVERY_R229.py'
+      - 'experiments/test_r229_layout_recovery.py'
       - 'scripts/build-windows.ps1'
       - 'integration/Engine/**'
   workflow_dispatch:
@@ -69,7 +73,8 @@ jobs:
               'INVOICE_OCR_PADDLE_ADAPTER_R112.py',
               'INVOICE_OCR_RECURSIVE_ZONES_R109.py',
               'INVOICE_OCR_SOURCE_ROWS_R223.py',
-              'INVOICE_OCR_SOURCE_REVIEW_R226.py')) {
+              'INVOICE_OCR_SOURCE_REVIEW_R226.py',
+              'INVOICE_OCR_LAYOUT_RECOVERY_R229.py')) {
             $source = Join-Path 'integration-build/InvoiceVisionChild/Engine' $name
             $published = Join-Path 'integration-build/build/publish/Engine' $name
             if (-not (Test-Path -LiteralPath $source -PathType Leaf) -or
@@ -99,6 +104,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'R222 image dependencies failed' }
           python experiments/check_r222_original_source_dates_synthetic.py
           if ($LASTEXITCODE -ne 0) { throw 'R222 date validation failed' }
+      - name: Verify R229 synthetic orientation and HSN safety tests
+        shell: pwsh
+        run: |
+          python -m unittest discover -s experiments -p 'test_r229_layout_recovery.py' -v
+          if ($LASTEXITCODE -ne 0) { throw 'R229 source geometry regression failed' }
       - name: Verify R226 review hook inside staged WPF Child Engine
         shell: pwsh
         run: |
