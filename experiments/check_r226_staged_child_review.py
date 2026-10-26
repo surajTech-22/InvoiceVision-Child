@@ -66,6 +66,11 @@ class StagedChildReview(unittest.TestCase):
         self.assertEqual(x['layout_recovery_review']['total_provisional_rows'],2)
         self.assertFalse(x['layout_recovery_review']['posting_eligible'])
         self.assertEqual(x['layout_recovery_review']['accepted_field_values'],0)
+        warnings=x['field_consistency_review']
+        self.assertEqual(warnings['status'],'SOURCE_EVIDENCE_CONSISTENCY_REVIEW_ONLY')
+        self.assertFalse(warnings['posting_eligible'])
+        self.assertFalse(warnings['automatic_field_replacement'])
+        self.assertTrue(any(q['issue']=='INVALID_SOURCE_DATE' for q in warnings['warnings']))
         queue=x['manual_review_queue']
         self.assertEqual(queue['status'],'IMMUTABLE_SOURCE_REVIEW_REQUIRED')
         self.assertEqual(queue['item_proposals'],2)
