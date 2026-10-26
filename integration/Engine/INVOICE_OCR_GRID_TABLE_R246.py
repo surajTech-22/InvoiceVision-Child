@@ -130,7 +130,7 @@ def distinct_source_rows(proposals,max_rows=24):
             raise ValueError("Too many physical table rows; fail closed")
     return groups
 
-def review(image,reader):
+def review(image,reader,plain_reader=None):
     """reader(temp_image, psm) returns unmodified local Tesseract TSV."""
     if not callable(reader):raise ValueError("Offline OCR callback unavailable")
     processed,evidence=remove_long_ruling_lines(image)
@@ -170,6 +170,25 @@ def review(image,reader):
     out["source_field_row_anchors"]=proposals
     physical_rows=distinct_source_rows(proposals["table_header_anchored_row_proposals"])
     out["source_unique_item_rows"]=physical_rows
+    # R248: re-read the actual printed amount cell, including possible
+    # missing leading ink. Every result remains a provisional observation.
+    if plain_reader is not None:
+        try:
+            source_recheck=_load("INVOICE_OCR_ITEM_AMOUNT_REREAD_R248.py",
+                                 "_r248_staged_amount_reread")
+            out["source_amount_cell_rereads_r248"]=source_recheck.reread(
+                image,physical_rows,plain_reader,max_rows=3)
+        except Exception as exc:
+            out["source_amount_cell_rereads_r248"]={
+                "status":"SOURCE_TABLE_AMOUNT_REREAD_UNAVAILABLE",
+                "error_type":type(exc).__name__,"posting_eligible":False,
+                "accepted_amount_values":0,"release_approved":False}
+    else:
+        out["source_amount_cell_rereads_r248"]={
+            "status":"LOCAL_AMOUNT_RECHECK_NOT_REQUESTED",
+            "posting_eligible":False,"accepted_amount_values":0,
+            "release_approved":False}
+
     out["source_unique_item_row_count"]=len(physical_rows)
     out["physical_row_duplicate_evidence_count"]=max(0,proposals["row_proposals_count"]-len(physical_rows))
     out["provisional_table_rows"]=proposals["row_proposals_count"]
