@@ -49,7 +49,7 @@ internal sealed partial class InvoiceVisionWindow
             Text="Correction (manual annotation only; not an approved field)",
             FontWeight=FontWeights.SemiBold,Margin=new Thickness(0,6,0,4) });
         body.Children.Add(_r233Correction);
-        var save=new Button {
+        var save=new System.Windows.Controls.Button {
             Content="Save private correction",
             Padding=new Thickness(7,5,7,5),Margin=new Thickness(0,7,0,4),
             MinHeight=30 };
@@ -168,7 +168,7 @@ internal sealed partial class InvoiceVisionWindow
                Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(_zonePhotoPath))),
                _r233PhotoHash,StringComparison.OrdinalIgnoreCase))
         {
-            MessageBox.Show("Select a valid source item and type a correction. " +
+            System.Windows.MessageBox.Show("Select a valid source item and type a correction. " +
                             "The exact original photograph must still be present.",
                             "Source review — not saved",MessageBoxButton.OK,MessageBoxImage.Warning);
             return;
