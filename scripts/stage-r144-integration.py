@@ -17,6 +17,7 @@ TARGETS=['InvoiceVisionChild/Engine/INVOICE_OCR_PADDLE_ADAPTER_R112.py',
 REVIEW_MODULES={
     'experiments/r223_source_table_rows.py': 'INVOICE_OCR_SOURCE_ROWS_R223.py',
     'integration/Engine/INVOICE_OCR_SOURCE_REVIEW_R226.py': 'INVOICE_OCR_SOURCE_REVIEW_R226.py',
+    'integration/Engine/INVOICE_OCR_LAYOUT_RECOVERY_R229.py': 'INVOICE_OCR_LAYOUT_RECOVERY_R229.py',
 }
 
 
