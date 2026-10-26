@@ -23,6 +23,9 @@ on:
       - 'experiments/test_r237_source_field_associations.py'
       - 'experiments/test_r238_qr_review.py'
       - 'experiments/test_r239_gstin_review.py'
+      - 'experiments/test_r245_field_row_anchors.py'
+      - 'experiments/test_r246_grid_table.py'
+      - 'experiments/test_r248_amount_reread.py'
   workflow_dispatch:
 permissions:
   contents: read
