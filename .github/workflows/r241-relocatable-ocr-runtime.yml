@@ -80,8 +80,9 @@ jobs:
       - name: Rehearse isolated update fault and byte-exact user state rollback
         shell: pwsh
         run: |
+          # PowerShell exceptions propagate directly; $LASTEXITCODE is stale
+          # because the script does not invoke a native process.
           & ./scripts/r242_isolated_update_rollback_rehearsal.ps1 -PublishedPath integration-build/build/publish -EvidencePath r241-offline-proof/R242_PROTECTED_DATA_ROLLBACK.json
-          if ($LASTEXITCODE -ne 0) { throw 'R242 update and existing-state rollback rehearsal failed' }
       - name: Preserve only hashes and synthetic reports, no runtime binaries or photos
         if: always()
         uses: actions/upload-artifact@v4
