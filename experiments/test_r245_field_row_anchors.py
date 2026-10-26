@@ -89,6 +89,31 @@ class SourceAnchoredFieldRows(unittest.TestCase):
         self.assertEqual(row["quantity_original_ocr"],"60")
         self.assertEqual(row["amount_original_ocr"],"164.95")
         self.assertFalse(row["row_complete_certified"])
+    def test_three_adjacent_numeric_columns_cannot_replace_pcs(self):
+        words=[
+            token("Product",90,110,w=95),token("Name",189,114,w=55),
+            token("CS",250,121,w=38),token("PES",315,123,w=42),
+            token("Total",385,123,w=58),token("Net",460,128,w=36),
+            token("Ant",503,133,w=39),
+            token("SAMPLE",90,185,w=85),token("BAR",180,188,w=45),
+            token("0",254,185,w=25),token("60",317,185,w=28),
+            token("360",395,185,w=40),token("164.95",495,192,w=63)
+        ]
+        f={"status":"SOURCE_MULTISCALE_ALTERNATIVES_REVIEW_ONLY",
+           "posting_eligible":False,
+           "variants":[
+               {"variant":"gray_2x","posting_eligible":False,
+                "source_boxes_are_original_pixels":True,"source_words":list(words)},
+               {"variant":"clahe_2x","posting_eligible":False,
+                "source_boxes_are_original_pixels":True,"source_words":list(words)}
+           ]}
+        proposal=mod.propose(f,700,500)
+        self.assertEqual(proposal["row_proposals_count"],2)
+        rows=proposal["table_header_anchored_row_proposals"]
+        self.assertTrue(all(q["quantity_original_ocr"]=="60" for q in rows))
+        self.assertTrue(all(q["amount_original_ocr"]=="164.95" for q in rows))
+        self.assertEqual(proposal["verified_table_rows"],0)
+
     def test_unanchored_amounts_cannot_be_assumed_final_total(self):
         src=fixture()
         for v in src["variants"]:
