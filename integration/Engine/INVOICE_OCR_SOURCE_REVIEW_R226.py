@@ -139,6 +139,20 @@ def review(image, raw_tsv):
         queue={'status':'REVIEW_UNAVAILABLE','error_type':type(exc).__name__,
                'posting_eligible':False,'accounting_write_permitted':False,
                'release_approved':False}
+    try:
+        consistency_path=Path(__file__).with_name('INVOICE_OCR_FIELD_CONSISTENCY_R235.py')
+        spec=importlib.util.spec_from_file_location('_child_r235_field_consistency',consistency_path)
+        if spec is None or spec.loader is None:
+            raise RuntimeError('R235 field evidence module unavailable')
+        consistency_module=importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(consistency_module)
+        consistency=consistency_module.inspect(texts,boxes)
+    except Exception as exc:
+        consistency={'status':'REVIEW_UNAVAILABLE',
+                     'error_type':type(exc).__name__,
+                     'posting_eligible':False,
+                     'accounting_write_permitted':False,
+                     'release_approved':False}
     return {
         'status': 'UNVERIFIED_SOURCE_GEOMETRY_REVIEW_ONLY',
         'source_kind': 'decoded_child_image_frame',
@@ -148,6 +162,7 @@ def review(image, raw_tsv):
         'row_hypotheses': rows, 'layout_recovery_review': recovered_rows,
         'date_flags': date_flags,
         'manual_review_queue': queue,
+        'field_consistency_review': consistency,
         'all_values_require_human_review': True,
         'field_accuracy_certified': False,
         'posting_eligible': False, 'accounting_write_permitted': False,
