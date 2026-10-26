@@ -56,6 +56,10 @@ internal sealed partial class InvoiceVisionWindow
         Text="No source-label or table-row associations loaded.",
         TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,5,0,8),
         Foreground=System.Windows.Media.Brushes.DarkGoldenrod };
+    private readonly TextBlock _r246GridTable=new() {
+        Text="No printed table-grid OCR review loaded.",
+        TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,4,0,8),
+        Foreground=System.Windows.Media.Brushes.DarkGoldenrod };
     private readonly System.Windows.Controls.ListBox _r233List = new() { Height=132,MinWidth=210 };
     private readonly TextBlock _r233Original = new() {
         TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,6,0,4),
@@ -79,6 +83,7 @@ internal sealed partial class InvoiceVisionWindow
         body.Children.Add(_r243AlternativeOcr);
         body.Children.Add(_r244LowConfidence);
         body.Children.Add(_r245FieldRows);
+        body.Children.Add(_r246GridTable);
         body.Children.Add(_r233List);
         body.Children.Add(_r233Original);
         body.Children.Add(new TextBlock {
@@ -130,6 +135,7 @@ internal sealed partial class InvoiceVisionWindow
         _r243AlternativeOcr.Text="No alternate high-resolution OCR source evidence for this invoice.";
         _r244LowConfidence.Text="No uncertain source-word reread available for this invoice.";
         _r245FieldRows.Text="No source-label or table-row associations for this invoice.";
+        _r246GridTable.Text="No grid-separated source OCR table rows for this invoice.";
         if (!_r233NativePanelBuilt ||
             !Regex.IsMatch(verifiedPhotoHash,@"\A[0-9a-fA-F]{64}\z") ||
             analysis.ValueKind!=JsonValueKind.Object ||
@@ -418,6 +424,37 @@ internal sealed partial class InvoiceVisionWindow
                 : "Untrusted source field/table association rejected; no values approved.";
         }
         else _r245FieldRows.Text="Source field/table mapping unavailable; no values approved.";
+        if(refinement.TryGetProperty("source_grid_table_review_r246",out var ruled) &&
+           ruled.ValueKind==JsonValueKind.Object &&
+           R233GetString(ruled,"status")=="GRID_RULING_SOURCE_REVIEW_ONLY" &&
+           ruled.TryGetProperty("posting_eligible",out var gp) &&
+           gp.ValueKind==JsonValueKind.False &&
+           ruled.TryGetProperty("source_field_row_anchors",out var gram) &&
+           gram.ValueKind==JsonValueKind.Object &&
+           gram.TryGetProperty("table_header_anchored_row_proposals",out var gridRows) &&
+           gridRows.ValueKind==JsonValueKind.Array && gridRows.GetArrayLength()<=24)
+        {
+            var preview=new List<string>();
+            bool safe=true;
+            foreach(var row in gridRows.EnumerateArray())
+            {
+                string qty=R233GetString(row,"quantity_original_ocr");
+                string amount=R233GetString(row,"amount_original_ocr");
+                if(row.ValueKind!=JsonValueKind.Object || qty.Length>80 ||
+                   amount.Length>80 || qty.Length==0 || amount.Length==0 ||
+                   !row.TryGetProperty("posting_eligible",out var grpost) ||
+                   grpost.ValueKind!=JsonValueKind.False)
+                {safe=false;break;}
+                if(preview.Count<4)preview.Add("qty "+qty+" / amount "+amount);
+            }
+            _r246GridTable.Text=safe
+                ? gridRows.GetArrayLength()+" provisional table rows after temporary source-grid suppression. "+
+                  (preview.Count>0 ? string.Join("; ",preview)+". " : "")+
+                  "Original invoice pixels, OCR and accounting unchanged."
+                : "Unsafe table-grid OCR source rows rejected. No data approved.";
+        }
+        else _r246GridTable.Text="No verified gridline-suppressed source table candidates; no values approved.";
+
 
 
         if(refinement.TryGetProperty("alternate_multiscale_source_review",out var alternate) &&
