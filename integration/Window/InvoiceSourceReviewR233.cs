@@ -48,6 +48,10 @@ internal sealed partial class InvoiceVisionWindow
         Text="No high-resolution alternate OCR evidence loaded.",
         TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,5,0,8),
         Foreground=System.Windows.Media.Brushes.DimGray };
+    private readonly TextBlock _r244LowConfidence=new() {
+        Text="No low-confidence source-token crop rereads available.",
+        TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,4,0,8),
+        Foreground=System.Windows.Media.Brushes.DarkGoldenrod };
     private readonly System.Windows.Controls.ListBox _r233List = new() { Height=132,MinWidth=210 };
     private readonly TextBlock _r233Original = new() {
         TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,6,0,4),
@@ -69,6 +73,7 @@ internal sealed partial class InvoiceVisionWindow
         body.Children.Add(_r238QrStatus);
         body.Children.Add(_r239GstinReview);
         body.Children.Add(_r243AlternativeOcr);
+        body.Children.Add(_r244LowConfidence);
         body.Children.Add(_r233List);
         body.Children.Add(_r233Original);
         body.Children.Add(new TextBlock {
@@ -118,6 +123,7 @@ internal sealed partial class InvoiceVisionWindow
         _r238QrStatus.Text="QR source document ID not yet corroborated.";
         _r239GstinReview.Text="GSTIN check digits not verified for this invoice.";
         _r243AlternativeOcr.Text="No alternate high-resolution OCR source evidence for this invoice.";
+        _r244LowConfidence.Text="No uncertain source-word reread available for this invoice.";
         if (!_r233NativePanelBuilt ||
             !Regex.IsMatch(verifiedPhotoHash,@"\A[0-9a-fA-F]{64}\z") ||
             analysis.ValueKind!=JsonValueKind.Object ||
@@ -328,6 +334,47 @@ internal sealed partial class InvoiceVisionWindow
                                    : "No checksum mismatch detected; supplier identity still unverified.");
         }
         else _r239GstinReview.Text="GSTIN source-check status unavailable; no values approved.";
+        if(source.TryGetProperty("low_confidence_crop_rereads",out var crop) &&
+           crop.ValueKind==JsonValueKind.Object &&
+           R233GetString(crop,"status")=="UNCERTAIN_SOURCE_TOKEN_REREADS_REVIEW_ONLY" &&
+           crop.TryGetProperty("posting_eligible",out var cropPost) &&
+           cropPost.ValueKind==JsonValueKind.False &&
+           crop.TryGetProperty("review_items",out var suspects) &&
+           suspects.ValueKind==JsonValueKind.Array && suspects.GetArrayLength()<=8)
+        {
+            var notes=new List<string>();
+            bool safe=true;
+            foreach(var suspect in suspects.EnumerateArray())
+            {
+                string original=R233GetString(suspect,"raw_source_text");
+                if(original.Length<1 || original.Length>1500 ||
+                   !suspect.TryGetProperty("posting_eligible",out var neverPost) ||
+                   neverPost.ValueKind!=JsonValueKind.False ||
+                   !suspect.TryGetProperty("source_box",out var physical) ||
+                   physical.ValueKind!=JsonValueKind.Array || physical.GetArrayLength()!=4 ||
+                   !suspect.TryGetProperty("reread_observations",out var candidates) ||
+                   candidates.ValueKind!=JsonValueKind.Array || candidates.GetArrayLength()>4)
+                { safe=false;break; }
+                var readings=new List<string>();
+                foreach(var o in candidates.EnumerateArray())
+                {
+                    string t=R233GetString(o,"reading");
+                    if(t.Length>220) { safe=false;break; }
+                    if(t.Length>0 && !readings.Contains(t)) readings.Add(t);
+                }
+                if(!safe)break;
+                notes.Add(original[..Math.Min(original.Length,50)]+" ⇒ "+
+                    (readings.Count>0
+                        ? string.Join(" | ",readings.Select(x=>x[..Math.Min(x.Length,40)]))
+                        : "no valid local reread"));
+            }
+            _r244LowConfidence.Text=safe
+                ? suspects.GetArrayLength()+" uncertain source cells. Reread alternatives (unverified): "+
+                  string.Join("; ",notes)
+                : "Untrusted source-cell reread rejected; accounting not approved.";
+        }
+        else _r244LowConfidence.Text="Low-confidence source crop OCR unavailable; no values approved.";
+
         if(refinement.TryGetProperty("alternate_multiscale_source_review",out var alternate) &&
            alternate.ValueKind==JsonValueKind.Object &&
            R233GetString(alternate,"status")=="SOURCE_MULTISCALE_ALTERNATIVES_REVIEW_ONLY" &&
