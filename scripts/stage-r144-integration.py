@@ -25,6 +25,7 @@ REVIEW_MODULES={
     'integration/Engine/INVOICE_OCR_QR_REVIEW_R238.py': 'INVOICE_OCR_QR_REVIEW_R238.py',
     'integration/Engine/INVOICE_OCR_GSTIN_REVIEW_R239.py': 'INVOICE_OCR_GSTIN_REVIEW_R239.py',
     'integration/Engine/INVOICE_OCR_MULTISCALE_REVIEW_R243.py': 'INVOICE_OCR_MULTISCALE_REVIEW_R243.py',
+    'integration/Engine/INVOICE_OCR_FIELD_CROP_REVIEW_R244.py': 'INVOICE_OCR_FIELD_CROP_REVIEW_R244.py',
 }
 
 
@@ -107,7 +108,8 @@ def stage(build):
     before='psi.ArgumentList.Add("-u"); psi.ArgumentList.Add(_categoryEngine);'
     after=(before+'\n        if (arguments.Length > 0 && arguments[0] == "analyze") { '
            'psi.Environment["INVOICEVISION_SOURCE_REVIEW_R226"] = "1"; '
-           'psi.Environment["INVOICEVISION_R236_TARGETED_RECHECK"] = "1"; }')
+           'psi.Environment["INVOICEVISION_R236_TARGETED_RECHECK"] = "1"; '
+           'psi.Environment["INVOICEVISION_R244_FIELD_CROP_REVIEW"] = "1"; }')
     if code.count(before)!=1:
         raise ValueError('Verified category analysis launch hook changed')
     before_sha=hashlib.sha256(category_path.read_bytes()).hexdigest()
