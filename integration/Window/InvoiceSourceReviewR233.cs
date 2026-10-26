@@ -708,6 +708,20 @@ internal sealed partial class InvoiceVisionWindow
                             new {original_quantity="20",original_amount="1140.00",posting_eligible=false},
                             new {original_quantity="20",original_amount="1140.00",posting_eligible=false}
                          }}
+                },
+                source_amount_cell_rereads_r248=new {
+                    status="SOURCE_TABLE_AMOUNT_CELL_REREAD_ONLY",
+                    posting_eligible=false,
+                    row_amount_rereads=new [] {new {
+                        original_amount_ocr="1.75",
+                        posting_eligible=false,
+                        alternate_readings=new [] {
+                            new {posting_eligible=false,
+                                 decimal_candidates_unverified=new [] {"81.75"}},
+                            new {posting_eligible=false,
+                                 decimal_candidates_unverified=new [] {"1.75"}}
+                        }
+                    }}
                 }
             }}
         };
@@ -722,7 +736,8 @@ internal sealed partial class InvoiceVisionWindow
                !_r243AlternativeOcr.Text.Contains("clahe_2x: 23 OCR source words") ||
                !_r244LowConfidence.Text.Contains("20 | 30") ||
                !_r245FieldRows.Text.Contains("TEST2026A17") ||
-               !_r246GridTable.Text.Contains("1 distinct provisional printed item rows"))
+               !_r246GridTable.Text.Contains("1 distinct provisional printed item rows") ||
+               !_r248AmountReadings.Text.Contains("1.75 ⇒ 81.75 | 1.75"))
                 throw new InvalidOperationException("R233 native source queue did not display synthetic evidence.");
         }
         using (var empty=JsonDocument.Parse("{}"))
@@ -736,7 +751,8 @@ internal sealed partial class InvoiceVisionWindow
                _r243AlternativeOcr.Text.Contains("23 OCR source words") ||
                _r244LowConfidence.Text.Contains("20 | 30") ||
                _r245FieldRows.Text.Contains("TEST2026A17") ||
-               _r246GridTable.Text.Contains("1 distinct provisional printed item rows"))
+               _r246GridTable.Text.Contains("1 distinct provisional printed item rows") ||
+               _r248AmountReadings.Text.Contains("1.75 ⇒ 81.75 | 1.75"))
                 throw new InvalidOperationException("R233 leaked review data between source invoices.");
         }
     }
