@@ -58,7 +58,7 @@ internal sealed partial class InvoiceVisionWindow
         body.Children.Add(new TextBlock {
             Text="Original OCR, source boxes and image stay unchanged. " +
                  "Corrections are local and cannot authorize accounting posting.",
-            Foreground=Brushes.DimGray,TextWrapping=TextWrapping.Wrap });
+            Foreground=System.Windows.Media.Brushes.DimGray,TextWrapping=TextWrapping.Wrap });
         _r233List.SelectionChanged += (_,_) => {
             _r233Correction.Text="";
             var item=_r233List.SelectedItem as R233ReviewItem;
@@ -201,7 +201,7 @@ internal sealed partial class InvoiceVisionWindow
         }
         catch(Exception ex)
         {
-            MessageBox.Show("Correction could not be saved: "+ex.Message,
+            System.Windows.MessageBox.Show("Correction could not be saved: "+ex.Message,
                 "Source review error",MessageBoxButton.OK,MessageBoxImage.Error);
         }
     }
