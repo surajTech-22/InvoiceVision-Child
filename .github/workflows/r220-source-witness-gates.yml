@@ -1,0 +1,28 @@
+name: InvoiceVision R220 source witness safety
+on:
+  push:
+    branches: [research/invoicevision-r220-source-witness]
+    paths:
+      - 'experiments/r220_github_source_witness_adapter.py'
+      - 'experiments/test_r220_github_source_witness_adapter.py'
+      - '.github/workflows/r220-source-witness-gates.yml'
+  pull_request:
+    branches: [research/invoicevision-r153-source-associations]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  review-only-evidence:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify source-evidence adapter and no-accounting-write safety
+        run: python experiments/test_r220_github_source_witness_adapter.py
