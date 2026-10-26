@@ -73,9 +73,12 @@ def _draw(path):
 def _ensure(cond,message):
     if not cond:raise AssertionError(message)
 
-def run(engine,out):
+def run(engine,out,python_executable=None):
     engine=Path(engine).resolve()
     out=Path(out).resolve()
+    python_executable=(Path(python_executable).resolve()
+                       if python_executable else Path(sys.executable).resolve())
+    _ensure(python_executable.is_file(),"Specific offline Python runtime is missing")
     _ensure((engine/"INVOICE_OCR_CATEGORY_FIRST_R101.py").is_file(),
             "Actual Child category-first entrypoint absent")
     out.mkdir(parents=True,exist_ok=True)
@@ -85,7 +88,7 @@ def run(engine,out):
     analyze=out/"synthetic_analysis.zip"
     script=engine/"INVOICE_OCR_CATEGORY_FIRST_R101.py"
     print("R240 invoking actual Child analyze with synthetic source",flush=True)
-    _run([sys.executable,str(script),"analyze",str(image),"--rotation","0",
+    _run([str(python_executable),str(script),"analyze",str(image),"--rotation","0",
           "--output",str(analyze)],engine)
     with zipfile.ZipFile(analyze) as archive:
         summary=json.loads(archive.read("SUMMARY.json"))
@@ -138,7 +141,7 @@ def run(engine,out):
     reviewfile.write_text(json.dumps(reviewed,indent=2),encoding="utf-8")
     recognized=out/"synthetic_approved_ocr.zip"
     print("R240 invoking actual Child approved-region OCR",flush=True)
-    _run([sys.executable,str(script),"ocr","--review",str(reviewfile),
+    _run([str(python_executable),str(script),"ocr","--review",str(reviewfile),
           "--image",str(image),"--output",str(recognized)],engine)
     with zipfile.ZipFile(recognized) as archive:
         result=json.loads(archive.read("CATEGORY_OCR_RESULTS.json"))
@@ -176,5 +179,6 @@ if __name__=="__main__":
     p=argparse.ArgumentParser()
     p.add_argument("--engine",required=True,type=Path)
     p.add_argument("--out",required=True,type=Path)
+    p.add_argument("--python-executable",type=Path,default=None)
     a=p.parse_args()
-    run(a.engine,a.out)
+    run(a.engine,a.out,a.python_executable)
