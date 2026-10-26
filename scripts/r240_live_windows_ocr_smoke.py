@@ -114,6 +114,30 @@ def run(engine,out,python_executable=None):
         _ensure(analysis.get("source_pixels_changed") is False or
                 analysis.get("source_pixels_changed") is None,
                 "Analyzer mutated original image")
+        # R243 must actually execute the two high-resolution views, and
+        # preserve all alternative OCR boxes in original source dimensions.
+        alt=analysis.get("zone_refinement",{}).get("alternate_multiscale_source_review")
+        _ensure(isinstance(alt,dict) and
+                alt.get("status")=="SOURCE_MULTISCALE_ALTERNATIVES_REVIEW_ONLY",
+                "R243 live Child did not emit multiscale source review")
+        variants=alt.get("variants",[])
+        _ensure(len(variants)==2 and
+                set(v.get("variant") for v in variants)=={"gray_2x","clahe_2x"},
+                "R243 two source views missing")
+        _ensure(all(v.get("source_ocr_words_total",0)>0 and
+                    v.get("source_boxes_are_original_pixels") is True and
+                    not v.get("posting_eligible") for v in variants),
+                "R243 Tesseract did not produce source-box alternatives")
+        for variant in variants:
+            for token in variant.get("source_words",[]):
+                x0,y0,x1,y1=token["original_source_box"]
+                _ensure(0<=x0<x1<=width and 0<=y0<y1<=height,
+                        "R243 unscaled OCR rectangle outside original pixels")
+        _ensure(not alt["original_OCR_text_overwritten"] and
+                alt["accepted_field_values"]==0,
+                "R243 wrongly replaced original source or approved a field")
+        print("R243_REAL_CHILD_MULTISCALE_SOURCE_BOXES_PASS",
+              [v["source_ocr_words_total"] for v in variants],flush=True)
         review=analysis.get("zone_refinement",{}).get("source_row_and_date_review")
         print("R240_SYNTHETIC_ANALYSIS_REVIEW_STATUS",
               {"review_status":review.get("status") if isinstance(review,dict) else None,
