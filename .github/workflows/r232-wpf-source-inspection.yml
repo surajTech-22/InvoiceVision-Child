@@ -27,7 +27,7 @@ jobs:
                   p=Path(name)
                   if p.is_absolute() or '..' in p.parts:raise ValueError('Unsafe input path')
                   if not name.startswith('InvoiceVisionChild/'):continue
-                  if not name.lower().endswith(('.cs','.xaml','.csproj','.json','.config')):continue
+                  if not name.lower().endswith(('.cs','.xaml','.csproj','.json','.config','.py')):continue
                   if '/obj/' in name.lower() or '/bin/' in name.lower():continue
                   if '/engine/' in name.lower() and p.name not in (
                       'INVOICE_OCR_CATEGORY_FIRST_R101.py',
