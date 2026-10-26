@@ -103,6 +103,13 @@ def run(engine,out):
                 analysis.get("source_pixels_changed") is None,
                 "Analyzer mutated original image")
         review=analysis.get("zone_refinement",{}).get("source_row_and_date_review")
+        print("R240_SYNTHETIC_ANALYSIS_REVIEW_STATUS",
+              {"review_status":review.get("status") if isinstance(review,dict) else None,
+               "review_error":review.get("error_type") if isinstance(review,dict) else None,
+               "ocr_engine_status":analysis.get("zone_refinement",{}).get("ocr_engine_status"),
+               "ocr_error":analysis.get("zone_refinement",{}).get("ocr_error"),
+               "raw_ocr_lines":analysis.get("zone_refinement",{}).get("raw_line_count")},
+              flush=True)
         _ensure(isinstance(review,dict) and
                 review.get("status")=="UNVERIFIED_SOURCE_GEOMETRY_REVIEW_ONLY",
                 "Actual staged Child failed to emit source-locked OCR review")
