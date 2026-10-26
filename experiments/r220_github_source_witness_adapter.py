@@ -6,6 +6,11 @@ from decimal import Decimal
 from r221_strict_currency_words import parse_amount_words
 
 NUM = re.compile(r'^(?:\d{1,11}[.,]\d{2}|\d{1,3}(?:,\d{3})+\.\d{2})$')
+def money(raw):
+ text=str(raw).strip()
+ if not NUM.fullmatch(text):return None
+ return Decimal(text.replace(',','.') if re.fullmatch(r'\d{1,11},\d{2}',text) else text.replace(',',''))
+
 def words_value(raw):
  amount=parse_amount_words(raw)
  return int(amount) if amount is not None and amount % 1 == 0 else None
