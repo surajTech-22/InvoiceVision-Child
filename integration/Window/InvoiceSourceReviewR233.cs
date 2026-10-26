@@ -52,6 +52,10 @@ internal sealed partial class InvoiceVisionWindow
         Text="No low-confidence source-token crop rereads available.",
         TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,4,0,8),
         Foreground=System.Windows.Media.Brushes.DarkGoldenrod };
+    private readonly TextBlock _r245FieldRows=new() {
+        Text="No source-label or table-row associations loaded.",
+        TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,5,0,8),
+        Foreground=System.Windows.Media.Brushes.DarkGoldenrod };
     private readonly System.Windows.Controls.ListBox _r233List = new() { Height=132,MinWidth=210 };
     private readonly TextBlock _r233Original = new() {
         TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,6,0,4),
@@ -74,6 +78,7 @@ internal sealed partial class InvoiceVisionWindow
         body.Children.Add(_r239GstinReview);
         body.Children.Add(_r243AlternativeOcr);
         body.Children.Add(_r244LowConfidence);
+        body.Children.Add(_r245FieldRows);
         body.Children.Add(_r233List);
         body.Children.Add(_r233Original);
         body.Children.Add(new TextBlock {
@@ -124,6 +129,7 @@ internal sealed partial class InvoiceVisionWindow
         _r239GstinReview.Text="GSTIN check digits not verified for this invoice.";
         _r243AlternativeOcr.Text="No alternate high-resolution OCR source evidence for this invoice.";
         _r244LowConfidence.Text="No uncertain source-word reread available for this invoice.";
+        _r245FieldRows.Text="No source-label or table-row associations for this invoice.";
         if (!_r233NativePanelBuilt ||
             !Regex.IsMatch(verifiedPhotoHash,@"\A[0-9a-fA-F]{64}\z") ||
             analysis.ValueKind!=JsonValueKind.Object ||
@@ -374,6 +380,45 @@ internal sealed partial class InvoiceVisionWindow
                 : "Untrusted source-cell reread rejected; accounting not approved.";
         }
         else _r244LowConfidence.Text="Low-confidence source crop OCR unavailable; no values approved.";
+        if(refinement.TryGetProperty("source_field_row_anchors_r245",out var labeled) &&
+           labeled.ValueKind==JsonValueKind.Object &&
+           R233GetString(labeled,"status")=="SOURCE_FIELD_AND_ITEM_ROW_ASSOCIATIONS_REVIEW_ONLY" &&
+           labeled.TryGetProperty("posting_eligible",out var lp) && lp.ValueKind==JsonValueKind.False &&
+           labeled.TryGetProperty("field_label_anchored_proposals",out var fields) &&
+           fields.ValueKind==JsonValueKind.Array && fields.GetArrayLength()<=40 &&
+           labeled.TryGetProperty("table_header_anchored_row_proposals",out var rows) &&
+           rows.ValueKind==JsonValueKind.Array && rows.GetArrayLength()<=20)
+        {
+            var examples=new List<string>();
+            bool valid=true;
+            foreach(var item in fields.EnumerateArray())
+            {
+                var category=R233GetString(item,"category");
+                var value=R233GetString(item,"candidate_text");
+                if(category is not ("invoice_number" or "invoice_date" or "net_total") ||
+                   value.Length==0 || value.Length>200 ||
+                   !item.TryGetProperty("posting_eligible",out var fpost) ||
+                   fpost.ValueKind!=JsonValueKind.False) { valid=false;break; }
+                if(examples.Count<3)examples.Add(category.Replace('_',' ')+": "+value);
+            }
+            if(valid)
+            {
+                foreach(var rowItem in rows.EnumerateArray())
+                {
+                    if(rowItem.ValueKind!=JsonValueKind.Object ||
+                       !rowItem.TryGetProperty("posting_eligible",out var rpost) ||
+                       rpost.ValueKind!=JsonValueKind.False) {valid=false;break;}
+                }
+            }
+            _r245FieldRows.Text=valid
+                ? fields.GetArrayLength()+" label-anchored field candidates; "+
+                  rows.GetArrayLength()+" source-header-anchored item rows. "+
+                  (examples.Count>0 ? string.Join("; ",examples)+". " : "")+
+                  "All provisional; original OCR unchanged."
+                : "Untrusted source field/table association rejected; no values approved.";
+        }
+        else _r245FieldRows.Text="Source field/table mapping unavailable; no values approved.";
+
 
         if(refinement.TryGetProperty("alternate_multiscale_source_review",out var alternate) &&
            alternate.ValueKind==JsonValueKind.Object &&
