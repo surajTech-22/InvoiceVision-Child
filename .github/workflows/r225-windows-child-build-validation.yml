@@ -65,6 +65,18 @@ jobs:
         run: |
           python -m unittest discover -s experiments -p 'test_r22*.py' -v
           if ($LASTEXITCODE -ne 0) { throw 'R220-R223 research regression failure' }
+      - name: Run R222 source-date safety with the real image processing dependencies
+        shell: pwsh
+        run: |
+          python -m pip install 'numpy>=1.26,<3' 'opencv-python-headless==4.11.0.86'
+          if ($LASTEXITCODE -ne 0) { throw 'R222 image dependencies failed' }
+          python experiments/check_r222_original_source_dates_synthetic.py
+          if ($LASTEXITCODE -ne 0) { throw 'R222 date validation failed' }
+      - name: Ensure unverified Setup and Update executables remain blocked
+        shell: pwsh
+        run: |
+          & ./scripts/test-r146-release-gate.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Installer acceptance gate safety regression failed' }
       - name: Show build evidence but withhold production installers
         shell: pwsh
         run: |
