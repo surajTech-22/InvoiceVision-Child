@@ -220,6 +220,20 @@ def review(image, raw_tsv):
         targeted={'status':'RECHECK_UNAVAILABLE','error_type':type(exc).__name__,
                   'hints':[],'rereads':[],'posting_eligible':False,
                   'release_approved':False}
+    # R237 source-bound field associations: literal OCR substrings only,
+    # never an approved or altered invoice field.
+    try:
+        association_path=Path(__file__).with_name('INVOICE_OCR_SOURCE_FIELD_ASSOCIATIONS_R237.py')
+        spec=importlib.util.spec_from_file_location('_child_r237_source_associations',association_path)
+        if spec is None or spec.loader is None:
+            raise RuntimeError('R237 source field module unavailable')
+        associations_module=importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(associations_module)
+        source_associations=associations_module.propose(texts,boxes,w,h)
+    except Exception as exc:
+        source_associations={
+            'status':'REVIEW_UNAVAILABLE','error_type':type(exc).__name__,
+            'proposals':[],'posting_eligible':False,'release_approved':False}
     return {
         'status': 'UNVERIFIED_SOURCE_GEOMETRY_REVIEW_ONLY',
         'source_kind': 'decoded_child_image_frame',
@@ -231,6 +245,7 @@ def review(image, raw_tsv):
         'manual_review_queue': queue,
         'field_consistency_review': consistency,
         'targeted_numeric_source_review': targeted,
+        'source_field_associations': source_associations,
         'all_values_require_human_review': True,
         'field_accuracy_certified': False,
         'posting_eligible': False, 'accounting_write_permitted': False,
