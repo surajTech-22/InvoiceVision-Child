@@ -1,0 +1,85 @@
+name: R225 Windows Child compilation and startup (no installer)
+on:
+  push:
+    branches: [research/invoicevision-r220-source-witness]
+    paths:
+      - '.github/workflows/r225-windows-child-build-validation.yml'
+      - 'scripts/stage-r144-integration.py'
+      - 'scripts/build-windows.ps1'
+      - 'integration/Engine/**'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows-child-compile:
+    name: R225 real Child .NET and startup smoke
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Verify exact 73-file baseline archive and safe extraction
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $archivePath='source/INVOICE_OCR_CHILD_R113_R4_R2_VERIFIED_UPDATE.zip'
+          if (-not (Test-Path -LiteralPath $archivePath -PathType Leaf)) { throw 'Original Child archive absent' }
+          $actual = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -cne 'ad4720d1037558e637fd42abf8e40bce34b505f6cfa73f29dcc3a67816a9ac59') {
+            throw "Original Child source hash mismatch: $actual"
+          }
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [IO.Compression.ZipFile]::OpenRead((Resolve-Path $archivePath).Path)
+          try {
+            foreach ($entry in $zip.Entries) {
+              $name=$entry.FullName.Replace('\','/')
+              if ($name.StartsWith('/') -or $name -match '(^|/)\.\.(/|$)' -or $name -match '^[A-Za-z]:') {
+                throw "Unsafe source archive entry: $name"
+              }
+            }
+          } finally { $zip.Dispose() }
+          Expand-Archive -LiteralPath $archivePath -DestinationPath integration-build -Force
+          if (-not (Test-Path integration-build/CHILD_SOURCE_SHA256.json)) { throw 'Original source manifest missing' }
+          if (-not (Test-Path integration-build/InvoiceVisionChild/InvoiceVisionChild.csproj)) { throw 'Original WPF project missing' }
+          Write-Host 'R225_PINNED_SOURCE_ARCHIVE_VERIFIED'
+      - name: Stage reviewed engine overlays in isolated tree only
+        shell: pwsh
+        run: |
+          python scripts/stage-r144-integration.py integration-build
+          if ($LASTEXITCODE -ne 0) { throw 'Isolated overlay verification failed' }
+          New-Item -ItemType Directory integration-build/scripts -Force | Out-Null
+          Copy-Item scripts/build-windows.ps1 integration-build/scripts/build-windows.ps1
+          Write-Host 'R225_RESEARCH_OVERLAY_STAGED_NOT_INSTALLED'
+      - name: Compile real .NET 10 WPF Child and run original startup self-test
+        shell: pwsh
+        run: |
+          & ./integration-build/scripts/build-windows.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Real Windows Child build or smoke verification failed' }
+      - name: Check latest R220-R223 review-only regression tests
+        shell: pwsh
+        run: |
+          python -m unittest discover -s experiments -p 'test_r22*.py' -v
+          if ($LASTEXITCODE -ne 0) { throw 'R220-R223 research regression failure' }
+      - name: Show build evidence but withhold production installers
+        shell: pwsh
+        run: |
+          if (Test-Path integration-build/release/InvoiceVisionChild_Setup.exe) { throw 'Unexpected unapproved setup executable' }
+          if (Test-Path integration-build/release/InvoiceVisionChild_Update.exe) { throw 'Unexpected unapproved update executable' }
+          Get-Content integration-build/release/BUILD_VERIFICATION.json
+          Write-Host 'R225_NO_INSTALLER_OR_RELEASE_APPROVED'
+      - name: Archive source verified build evidence (not installer)
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: InvoiceVision-R225-Windows-Child-Build-Evidence-Unreleased
+          path: |
+            integration-build/R144_INTEGRATION_PROVENANCE.json
+            integration-build/release/BUILD_VERIFICATION.json
+            integration-build/build/startup-smoke.txt
+          if-no-files-found: warn
+          retention-days: 14
