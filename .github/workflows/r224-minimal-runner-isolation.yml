@@ -1,0 +1,20 @@
+name: InvoiceVision minimal runner isolation
+on:
+  push:
+    branches: [research/invoicevision-r220-source-witness]
+    paths:
+      - '.github/workflows/r224-minimal-runner-isolation.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  bare-ubuntu:
+    runs-on: ubuntu-latest
+    steps:
+      - name: GitHub-hosted Linux runner verification
+        run: echo "IV_R224_LINUX_RUNNER_STARTED"
+  bare-windows:
+    runs-on: windows-latest
+    steps:
+      - name: GitHub-hosted Windows runner verification
+        run: Write-Output "IV_R224_WINDOWS_RUNNER_STARTED"
