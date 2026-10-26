@@ -5,6 +5,7 @@ on:
     paths:
       - 'scripts/r241_prepare_offline_runtime.ps1'
       - 'scripts/r240_live_windows_ocr_smoke.py'
+      - 'scripts/r242_isolated_update_rollback_rehearsal.ps1'
       - 'scripts/stage-r144-integration.py'
       - 'scripts/build-windows.ps1'
       - 'integration/Window/InvoiceChildBundledRuntimeR241.cs'
@@ -76,6 +77,11 @@ jobs:
           python scripts/r240_live_windows_ocr_smoke.py --engine "$publish/Engine" --out r241-offline-proof --python-executable "$publish/Runtime/Python/python.exe"
           if ($LASTEXITCODE -ne 0) { throw 'Published relocated bundled offline OCR did not work' }
           Write-Host 'R241_BUNDLED_OFFLINE_CPU_CHILD_ANALYZE_AND_OCR_PASS'
+      - name: Rehearse isolated update fault and byte-exact user state rollback
+        shell: pwsh
+        run: |
+          & ./scripts/r242_isolated_update_rollback_rehearsal.ps1 -PublishedPath integration-build/build/publish -EvidencePath r241-offline-proof/R242_PROTECTED_DATA_ROLLBACK.json
+          if ($LASTEXITCODE -ne 0) { throw 'R242 update and existing-state rollback rehearsal failed' }
       - name: Preserve only hashes and synthetic reports, no runtime binaries or photos
         if: always()
         uses: actions/upload-artifact@v4
@@ -85,6 +91,7 @@ jobs:
             integration-build/Runtime/R241_RUNTIME_VERIFICATION.json
             integration-build/release/BUILD_VERIFICATION.json
             r241-offline-proof/R240_LIVE_OCR_VERIFICATION.json
+            r241-offline-proof/R242_PROTECTED_DATA_ROLLBACK.json
             integration-build/build/startup-smoke.txt
           if-no-files-found: warn
           retention-days: 7
