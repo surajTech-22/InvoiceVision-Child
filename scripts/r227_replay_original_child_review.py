@@ -82,6 +82,12 @@ def run(checkpoint, engine, out, compare_zones=True):
             tsv=_tsv(case)
             proposal=review.review(image,tsv)
             rows=proposal['row_hypotheses']
+            recovered=proposal.get('layout_recovery_review')
+            if (not isinstance(recovered,dict) or
+                recovered.get('total_provisional_rows') is None or
+                recovered.get('posting_eligible') is not False or
+                recovered.get('release_approved') is not False):
+                raise ValueError('R229 source-layout review unavailable or unsafe')
             if (proposal['source_observations']!=len(case['raw_texts']) or
                 proposal['original_jpeg_sha256_verified'] or
                 proposal['decoded_frame_sha256']!=hashlib.sha256(source_pixels).hexdigest() or
@@ -112,6 +118,9 @@ def run(checkpoint, engine, out, compare_zones=True):
                 'decoded_frame_sha256':proposal['decoded_frame_sha256'],
                 'raw_original_ocr_observations':len(case['raw_texts']),
                 'proposed_item_rows':rows['proposed_row_count'],
+                'r229_provisional_item_rows':recovered['total_provisional_rows'],
+                'r229_sideways_row_hypotheses':recovered['sideways_additional_rows'],
+                'r229_hsn_row_hypotheses':recovered['hsn_additional_rows'],
                 'proposed_tables':rows['proposed_table_count'],
                 'date_anomalies':len(proposal['date_flags']),
                 'unassigned_observations':len(rows['unassigned_source_indices']),
@@ -126,6 +135,8 @@ def run(checkpoint, engine, out, compare_zones=True):
         'original_jpeg_sha256_verified':len(output),
         'saved_ocr_observations_replayed':sum(x['raw_original_ocr_observations'] for x in output),
         'proposed_item_rows':sum(x['proposed_item_rows'] for x in output),
+        'r229_provisional_item_rows':sum(x['r229_provisional_item_rows'] for x in output),
+        'invoices_without_r229_item_proposals':sum(x['r229_provisional_item_rows']==0 for x in output),
         'invoices_without_item_row_proposals':sum(x['proposed_item_rows']==0 for x in output),
         'date_anomalies':sum(x['date_anomalies'] for x in output),
         'raw_OCR_confidence_available':False,
@@ -137,13 +148,15 @@ def run(checkpoint, engine, out, compare_zones=True):
     }
     if (result['original_jpeg_sha256_verified']!=15 or
         result['saved_ocr_observations_replayed']!=2361 or
-        result['proposed_item_rows']!=26 or
-        result['invoices_without_item_row_proposals']!=6 or
+        result['proposed_item_rows']!=28 or
+        result['invoices_without_item_row_proposals']!=4 or
+        result['r229_provisional_item_rows']!=50 or
+        result['invoices_without_r229_item_proposals']!=0 or
         result['date_anomalies']!=7):
         raise ValueError('Original-corpus regression mismatch; do not substitute inferred data')
     out=Path(out);out.parent.mkdir(parents=True,exist_ok=True)
     out.write_text(json.dumps(result,indent=2),encoding='utf-8')
-    print('R227_15_ORIGINAL_JPEG_HASH_PASS_2361_SOURCE_LINES_26_ROWS_7_DATE_FLAGS')
+    print('R229_15_ORIGINAL_JPEG_HASH_PASS_2361_SOURCE_LINES_50_PROVISIONAL_ROWS_7_DATE_FLAGS')
     print('FULL_INVOICE_ACCURACY_NOT_CERTIFIED_AND_NO_INSTALLER')
     return result
 
