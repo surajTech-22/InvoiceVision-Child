@@ -46,7 +46,7 @@ def inspect(texts, boxes):
             raise ValueError('Source box is not positive')
         for m in _DATE.finditer(raw):
             try:
-                parsed = date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+                parsed = date(int(m.group(4)), int(m.group(3)), int(m.group(1)))
             except ValueError:
                 warnings.append(_warn(i, box, 'INVALID_SOURCE_DATE', raw,
                                       original_date_text=m.group(0)))
