@@ -105,6 +105,8 @@ def distinct_source_rows(proposals,max_rows=24):
             "original_description":item["description_original_ocr"],
             "original_quantity":item["quantity_original_ocr"],
             "original_amount":item["amount_original_ocr"],
+            "quantity_source_box":list(item["quantity_source_box"]),
+            "amount_source_box":list(item["amount_source_box"]),
             "source_row_box":list(b),
             "field_value_verified":False,"posting_eligible":False
         }
