@@ -8,7 +8,9 @@ on:
       - 'scripts/r242_isolated_update_rollback_rehearsal.ps1'
       - 'scripts/stage-r144-integration.py'
       - 'scripts/build-windows.ps1'
-      - 'integration/Window/InvoiceChildBundledRuntimeR241.cs'
+      - 'integration/Window/**'
+      - 'integration/Engine/**'
+      - 'experiments/test_r244_field_crop_review.py'
       - '.github/workflows/r241-relocatable-ocr-runtime.yml'
   workflow_dispatch:
 permissions:
