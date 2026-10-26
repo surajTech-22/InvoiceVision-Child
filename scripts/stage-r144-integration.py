@@ -101,8 +101,9 @@ def stage(build):
     category_path=build/category_rel
     code=category_path.read_text(encoding='utf-8-sig')
     before='psi.ArgumentList.Add("-u"); psi.ArgumentList.Add(_categoryEngine);'
-    after=(before+'\n        if (arguments.Length > 0 && arguments[0] == "analyze") '
-           'psi.Environment["INVOICEVISION_SOURCE_REVIEW_R226"] = "1";')
+    after=(before+'\n        if (arguments.Length > 0 && arguments[0] == "analyze") { '
+           'psi.Environment["INVOICEVISION_SOURCE_REVIEW_R226"] = "1"; '
+           'psi.Environment["INVOICEVISION_R236_TARGETED_RECHECK"] = "1"; }')
     if code.count(before)!=1:
         raise ValueError('Verified category analysis launch hook changed')
     before_sha=hashlib.sha256(category_path.read_bytes()).hexdigest()
