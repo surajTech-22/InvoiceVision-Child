@@ -211,5 +211,38 @@ internal sealed partial class InvoiceVisionWindow
         if(!_r233NativePanelBuilt || _r233List is null ||
            _r233Summary is null || _r233Correction.MaxLength!=350)
             throw new InvalidOperationException("R233 native source-linked review UI missing.");
+        // Actual native WPF smoke: display a synthetic source-locked queue item
+        // and reject an unrelated/empty invoice, without reading any user files.
+        var synthetic=new {
+            zone_refinement=new { source_row_and_date_review=new {
+                manual_review_queue=new {
+                    status="IMMUTABLE_SOURCE_REVIEW_REQUIRED",
+                    posting_eligible=false,release_approved=false,
+                    items=new [] { new {
+                        review_id="IVR231-"+new string('a',24),
+                        review_kind="ITEM_ROW_HSN_ANCHOR",
+                        source_frame_sha256=new string('b',64),
+                        review_required=true,posting_eligible=false,
+                        original_observations=new [] {new {
+                            original_ocr_text="SYNTHETIC TEST ITEM",
+                            original_box=new [] {1,2,100,24}
+                        }}
+                    }}
+                }
+            }}
+        };
+        using (var syntheticDoc=JsonDocument.Parse(JsonSerializer.Serialize(synthetic)))
+        {
+            LoadSourceReviewQueueR233(syntheticDoc.RootElement,new string('c',64));
+            if(_r233Queue.Count!=1 || _r233List.Items.Count!=1 ||
+               !_r233Summary.Text.Contains("1 original-source item"))
+                throw new InvalidOperationException("R233 native source queue did not display synthetic evidence.");
+        }
+        using (var empty=JsonDocument.Parse("{}"))
+        {
+            LoadSourceReviewQueueR233(empty.RootElement,new string('d',64));
+            if(_r233Queue.Count!=0 || _r233List.Items.Count!=0 || _r233PhotoHash is not null)
+                throw new InvalidOperationException("R233 leaked review data between source invoices.");
+        }
     }
 }
