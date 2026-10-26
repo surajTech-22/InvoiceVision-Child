@@ -59,6 +59,44 @@ class SourceAnchoredFieldRows(unittest.TestCase):
              if x["category"]=="invoice_number"]
         self.assertEqual(set(ids),{"TEST2026A17","TEST2026A18"})
         self.assertEqual(result["verified_invoice_fields"],0)
+    def test_two_line_product_pcs_net_amt_headings(self):
+        # Table heading OCR comes from multiple print baselines, including
+        # a conservative 'Pes' alias for the heading 'Pcs' and 'Ant' for 'Amt'.
+        header=[
+            token("Product",90,110,w=95),
+            token("Name",189,114,w=55),
+            token("Pes",315,123,w=42),
+            token("Net",460,128,w=36),
+            token("Ant",503,133,w=39),
+            token("SAMPLE",90,185,w=85),
+            token("BAR",180,188,w=45),
+            token("60",317,185,w=28),
+            token("164.95",495,192,w=63)
+        ]
+        src={"status":"SOURCE_MULTISCALE_ALTERNATIVES_REVIEW_ONLY",
+             "posting_eligible":False,
+             "variants":[
+                 {"variant":"grid_removed_psm11_2x","posting_eligible":False,
+                  "source_boxes_are_original_pixels":True,
+                  "source_words":list(header)},
+                 {"variant":"grid_removed_psm6_2x","posting_eligible":False,
+                  "source_boxes_are_original_pixels":True,
+                  "source_words":list(header)}
+             ]}
+        result=mod.propose(src,700,500)
+        self.assertEqual(result["row_proposals_count"],2)
+        row=result["table_header_anchored_row_proposals"][0]
+        self.assertEqual(row["quantity_original_ocr"],"60")
+        self.assertEqual(row["amount_original_ocr"],"164.95")
+        self.assertFalse(row["row_complete_certified"])
+    def test_unanchored_amounts_cannot_be_assumed_final_total(self):
+        src=fixture()
+        for v in src["variants"]:
+            v["source_words"]=[token("PES",315,110),token("NET",460,110),
+                               token("ANT",500,110),token("20",317,180),
+                               token("1140.00",500,180)]
+        self.assertEqual(mod.propose(src,700,500)["row_proposals_count"],0)
+
     def test_missing_amount_header_blocks_row_proposals(self):
         result=mod.propose(fixture(missing_headers=True),600,700)
         self.assertEqual(result["row_proposals_count"],0)
