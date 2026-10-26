@@ -234,6 +234,22 @@ def review(image, raw_tsv):
         source_associations={
             'status':'REVIEW_UNAVAILABLE','error_type':type(exc).__name__,
             'proposals':[],'posting_eligible':False,'release_approved':False}
+    # Read-only local QR corroboration; never release raw/sensitive QR payload.
+    try:
+        p=Path(__file__).with_name('INVOICE_OCR_QR_REVIEW_R238.py')
+        spec=importlib.util.spec_from_file_location('_child_source_qr_r238',p)
+        if spec is None or spec.loader is None:
+            raise RuntimeError('QR source crosscheck unavailable')
+        qr_module=importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(qr_module)
+        qr_source_review=qr_module.review(image)
+    except Exception as exc:
+        qr_source_review={'status':'SOURCE_QR_REVIEW_UNAVAILABLE',
+                          'error_type':type(exc).__name__,
+                          'qr_invoice_id_candidates':[],
+                          'invoice_number_certified':False,
+                          'posting_eligible':False,
+                          'release_approved':False}
     return {
         'status': 'UNVERIFIED_SOURCE_GEOMETRY_REVIEW_ONLY',
         'source_kind': 'decoded_child_image_frame',
@@ -246,6 +262,7 @@ def review(image, raw_tsv):
         'field_consistency_review': consistency,
         'targeted_numeric_source_review': targeted,
         'source_field_associations': source_associations,
+        'qr_invoice_crosscheck': qr_source_review,
         'all_values_require_human_review': True,
         'field_accuracy_certified': False,
         'posting_eligible': False, 'accounting_write_permitted': False,
