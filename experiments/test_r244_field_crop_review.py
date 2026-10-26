@@ -8,7 +8,7 @@ source=Path(__file__).resolve().parents[1]/"integration/Engine/INVOICE_OCR_FIELD
 spec=importlib.util.spec_from_file_location("_r244_crop_source_review",source)
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 HEAD="\t".join(m.HEADER)
-def tsv(conf=35,text="2"):
+def tsv(conf=35,text="2x"):
     return HEAD+"\r\n"+(
         "1\t1\t0\t0\t0\t0\t0\t0\t300\t200\t-1\t\r\n"
         "5\t1\t1\t1\t1\t1\t110\t44\t20\t18\t%s\t%s\r\n"%(conf,text)
@@ -22,7 +22,7 @@ class FieldCropReview(unittest.TestCase):
         z=m.review(self.image,tsv(),lambda _crop,psm:"20")
         self.assertEqual(z["source_tokens_selected"],1)
         item=z["review_items"][0]
-        self.assertEqual(item["raw_source_text"],"2" if len("2")>=2 else item["raw_source_text"])
+        self.assertEqual(item["raw_source_text"],"2x")
         self.assertEqual(len(item["reread_observations"]),4)
         self.assertFalse(z["release_approved"])
         self.assertFalse(z["posting_eligible"])
