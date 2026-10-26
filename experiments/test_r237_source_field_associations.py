@@ -60,6 +60,13 @@ class SourceFieldAssociations(unittest.TestCase):
         z=m.propose(t,b,900,1600)
         self.assertNotIn('HEADER_SUPPLIER_NAME_FRAGMENTS',[p['type'] for p in z['proposals']])
 
+    def test_city_postcode_cannot_prefix_supplier(self):
+        t,b=fixture()
+        t[0]='DISTRICT-572103'
+        z=m.propose(t,b,900,1600)
+        self.assertNotIn('HEADER_SUPPLIER_NAME_FRAGMENTS',
+                         [p['type'] for p in z['proposals']])
+
     def test_malformed_boxes_fail_closed(self):
         t,b=fixture();b[2]=[-1,0,70,20]
         with self.assertRaises(ValueError):m.propose(t,b,900,1600)
