@@ -28,7 +28,11 @@ jobs:
                   if p.is_absolute() or '..' in p.parts:raise ValueError('Unsafe input path')
                   if not name.startswith('InvoiceVisionChild/'):continue
                   if not name.lower().endswith(('.cs','.xaml','.csproj','.json','.config')):continue
-                  if '/engine/' in name.lower() or '/obj/' in name.lower() or '/bin/' in name.lower():continue
+                  if '/obj/' in name.lower() or '/bin/' in name.lower():continue
+                  if '/engine/' in name.lower() and p.name not in (
+                      'INVOICE_OCR_CATEGORY_FIRST_R101.py',
+                      'INVOICE_OCR_RECURSIVE_ZONES_R109.py'):continue
+                  if '/engine/' in name.lower() and not name.endswith('.py'):continue
                   if entry.file_size>250000:raise ValueError('unexpected source size')
                   data=z.read(entry)
                   data.decode('utf-8-sig')
