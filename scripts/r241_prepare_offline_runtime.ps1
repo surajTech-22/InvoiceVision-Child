@@ -1,10 +1,10 @@
 #requires -Version 7.2
-$ErrorActionPreference='Stop'
-Set-StrictMode -Version Latest
 param(
   [Parameter(Mandatory=$true)][string]$Destination,
   [Parameter(Mandatory=$true)][string]$TesseractSource
 )
+$ErrorActionPreference='Stop'
+Set-StrictMode -Version Latest
 # R241: build an ISOLATED TEST COPY from preinstalled, toolchain-managed binaries.
 # Never install software or modify an existing AAH / Child / bank OCR directory.
 $source=$env:pythonLocation
