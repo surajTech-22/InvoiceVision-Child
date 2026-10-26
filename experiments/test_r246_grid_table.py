@@ -57,6 +57,8 @@ class RulingLines(unittest.TestCase):
         base={"posting_eligible":False,
               "source_view":"grid_removed_psm11_2x",
               "row_box":[35,300,590,344],
+              "quantity_source_box":[330,305,365,333],
+              "amount_source_box":[500,309,568,338],
               "description_original_ocr":"TEST PART",
               "quantity_original_ocr":"20",
               "amount_original_ocr":"1140.00"}
