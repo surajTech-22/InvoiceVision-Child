@@ -118,7 +118,8 @@ jobs:
               'INVOICE_OCR_LAYOUT_RECOVERY_R229.py',
               'INVOICE_OCR_REVIEW_QUEUE_R231.py',
               'INVOICE_OCR_FIELD_CONSISTENCY_R235.py',
-              'INVOICE_OCR_TARGETED_RECHECK_R236.py')) {
+              'INVOICE_OCR_TARGETED_RECHECK_R236.py',
+              'INVOICE_OCR_SOURCE_FIELD_ASSOCIATIONS_R237.py')) {
             $source = Join-Path 'integration-build/InvoiceVisionChild/Engine' $name
             $published = Join-Path 'integration-build/build/publish/Engine' $name
             if (-not (Test-Path -LiteralPath $source -PathType Leaf) -or
@@ -168,6 +169,11 @@ jobs:
         run: |
           python -m unittest discover -s experiments -p 'test_r236_targeted_recheck.py' -v
           if ($LASTEXITCODE -ne 0) { throw 'R236 numeric source-crop verification failed' }
+      - name: Verify R237 source-bound HSN tax and supplier associations
+        shell: pwsh
+        run: |
+          python -m unittest discover -s experiments -p 'test_r237_source_field_associations.py' -v
+          if ($LASTEXITCODE -ne 0) { throw 'R237 source-associated field review failed' }
       - name: Verify R226 review hook inside staged WPF Child Engine
         shell: pwsh
         run: |
@@ -204,5 +210,6 @@ jobs:
             integration-build/InvoiceVisionChild/Engine/INVOICE_OCR_REVIEW_QUEUE_R231.py
             integration-build/InvoiceVisionChild/Engine/INVOICE_OCR_FIELD_CONSISTENCY_R235.py
             integration-build/InvoiceVisionChild/Engine/INVOICE_OCR_TARGETED_RECHECK_R236.py
+            integration-build/InvoiceVisionChild/Engine/INVOICE_OCR_SOURCE_FIELD_ASSOCIATIONS_R237.py
           if-no-files-found: warn
           retention-days: 14
