@@ -5,7 +5,7 @@ identity. Never modify OCR source data or authorize accounting posting.
 """
 import re
 A="0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-FORM=re.compile(r"\\A[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]Z[0-9A-Z]\\Z")
+FORM=re.compile(r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]Z[0-9A-Z]$")
 FIND=re.compile(r"(?<![A-Za-z0-9])([0-9]{2}[A-Za-z]{5}[0-9]{4}[A-Za-z][A-Za-z0-9]Z[A-Za-z0-9])(?![A-Za-z0-9])")
 
 def check_digit(value):
