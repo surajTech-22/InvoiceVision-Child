@@ -250,6 +250,21 @@ def review(image, raw_tsv):
                           'invoice_number_certified':False,
                           'posting_eligible':False,
                           'release_approved':False}
+    # R239 verifies only printed GSTIN checksum plausibility; conflicts stay
+    # visible in the original OCR and never authorize accounting values.
+    try:
+        gst_path=Path(__file__).with_name('INVOICE_OCR_GSTIN_REVIEW_R239.py')
+        spec=importlib.util.spec_from_file_location('_child_gstin_r239',gst_path)
+        if spec is None or spec.loader is None:
+            raise RuntimeError('Source GSTIN validator missing')
+        gst_module=importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gst_module)
+        gstin_review=gst_module.review(texts,boxes)
+    except Exception as exc:
+        gstin_review={'status':'GSTIN_REVIEW_UNAVAILABLE',
+                      'error_type':type(exc).__name__,
+                      'candidates':[],'posting_eligible':False,
+                      'release_approved':False}
     return {
         'status': 'UNVERIFIED_SOURCE_GEOMETRY_REVIEW_ONLY',
         'source_kind': 'decoded_child_image_frame',
@@ -263,6 +278,7 @@ def review(image, raw_tsv):
         'targeted_numeric_source_review': targeted,
         'source_field_associations': source_associations,
         'qr_invoice_crosscheck': qr_source_review,
+        'source_gstin_checkdigit_review': gstin_review,
         'all_values_require_human_review': True,
         'field_accuracy_certified': False,
         'posting_eligible': False, 'accounting_write_permitted': False,
