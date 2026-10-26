@@ -14,7 +14,7 @@ import importlib.util
 import math
 import re
 
-_DATE = re.compile(r'(?<!\d)(\d{1,2})([/.-])(\d{1,2})\2(\d{4})(?!\d)')
+_DATE = re.compile(r'(?<!\d)(\d{1,2})([/.-])(\d{1,2})\2(\d{4})')
 _TIME = re.compile(r'^\d{1,2}:\d{2}(?::\d{2})?(?:\s*(?:AM|PM))?', re.I)
 _HEADER = ('level', 'page_num', 'block_num', 'par_num', 'line_num',
            'word_num', 'left', 'top', 'width', 'height', 'conf', 'text')
