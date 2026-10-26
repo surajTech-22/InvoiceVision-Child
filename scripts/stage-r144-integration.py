@@ -6,11 +6,18 @@ Never run this against an installed Child or a user accounting directory.
 import argparse
 import hashlib
 import json
+import shutil
 from pathlib import Path
 
 ROOT=Path(__file__).resolve().parents[1]
 TARGETS=['InvoiceVisionChild/Engine/INVOICE_OCR_PADDLE_ADAPTER_R112.py',
          'InvoiceVisionChild/Engine/INVOICE_OCR_RECURSIVE_ZONES_R109.py']
+
+# Additive, review-only modules (not among the verified original 73 files).
+REVIEW_MODULES={
+    'experiments/r223_source_table_rows.py': 'INVOICE_OCR_SOURCE_ROWS_R223.py',
+    'integration/Engine/INVOICE_OCR_SOURCE_REVIEW_R226.py': 'INVOICE_OCR_SOURCE_REVIEW_R226.py',
+}
 
 
 def stage(build):
@@ -37,6 +44,19 @@ def stage(build):
             if entry['path']==target:
                 entry['sha256']=after
                 if 'size_bytes' in entry:entry['size_bytes']=len(replacement)
+    # Preserve original manifest identity and stage extra source-only files.
+    engine=build/'InvoiceVisionChild/Engine'
+    if not engine.is_dir():
+        raise ValueError('Staged Child Engine folder is absent')
+    for source_rel, dest_name in REVIEW_MODULES.items():
+        source=ROOT/source_rel
+        destination=engine/dest_name
+        if not source.is_file() or destination.exists():
+            raise ValueError('Additive review module missing or collides with baseline: '+source_rel)
+        shutil.copyfile(source,destination)
+        changes.append({'type':'ADDITIVE_REVIEW_MODULE_NOT_BASELINE',
+                        'target':str(destination.relative_to(build)).replace(chr(92),'/'),
+                        'overlay_sha256':hashlib.sha256(destination.read_bytes()).hexdigest()})
     manifest_path.write_text(json.dumps(manifest,indent=2))
     (build/'R144_INTEGRATION_PROVENANCE.json').write_text(json.dumps({
         'changes':changes,
