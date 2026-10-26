@@ -93,6 +93,26 @@ def stage(build):
     changes.append({'type':'R233_ADDITIVE_WPF_SOURCE_NOT_ORIGINAL_BASELINE',
                     'target':'InvoiceVisionChild/InvoiceSourceReviewR233.cs',
                     'overlay_sha256':hashlib.sha256(add_target.read_bytes()).hexdigest()})
+    # R233: request read-only geometry review only for source analysis.
+    # No OCR writes or posting permissions are ever enabled by this variable.
+    category_rel='InvoiceVisionChild/InvoiceCategoryFirst.cs'
+    category_path=build/category_rel
+    code=category_path.read_text(encoding='utf-8-sig')
+    before='psi.ArgumentList.Add("-u"); psi.ArgumentList.Add(_categoryEngine);'
+    after=(before+'\n        if (arguments.Length > 0 && arguments[0] == "analyze") '
+           'psi.Environment["INVOICEVISION_SOURCE_REVIEW_R226"] = "1";')
+    if code.count(before)!=1:
+        raise ValueError('Verified category analysis launch hook changed')
+    before_sha=hashlib.sha256(category_path.read_bytes()).hexdigest()
+    category_path.write_text(code.replace(before,after),encoding='utf-8')
+    after_sha=hashlib.sha256(category_path.read_bytes()).hexdigest()
+    matches=[e for e in manifest['files'] if e['path']==category_rel]
+    if len(matches)!=1:raise ValueError('Sealed category WPF source not present')
+    matches[0]['sha256']=after_sha
+    if 'size_bytes' in matches[0]:matches[0]['size_bytes']=category_path.stat().st_size
+    changes.append({'type':'R233_ENABLE_SOURCE_REVIEW_IN_ANALYSIS_ONLY',
+                    'target':category_rel,'previous_sha256':before_sha,
+                    'overlay_sha256':after_sha})
     manifest_path.write_text(json.dumps(manifest,indent=2))
     (build/'R144_INTEGRATION_PROVENANCE.json').write_text(json.dumps({
         'changes':changes,
