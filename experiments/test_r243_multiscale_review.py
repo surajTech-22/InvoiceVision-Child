@@ -33,6 +33,12 @@ class MultiscaleReview(unittest.TestCase):
         x=mod.source_words(tsv(),300,200)
         self.assertEqual(len(x),1)
         self.assertEqual(x[0]['source_tsv_row_number'],3)
+    def test_real_windows_tesseract_crlf_lines_supported(self):
+        encoded=tsv().replace("\n","\r\n")
+        words=mod.source_words(encoded,300,200)
+        self.assertEqual(len(words),1)
+        self.assertEqual(words[0]['original_source_box'],[50,25,70,37])
+
     def test_reject_out_of_frame_source_boxes(self):
         with self.assertRaises(ValueError):
             mod.source_words(tsv(box=(580,20,30,15)),300,200)
