@@ -107,14 +107,31 @@ def review(image, raw_tsv):
     case = {'file': 'CHILD_DECODED_FRAME_NOT_ORIGINAL_JPEG',
             'source_sha256': digest, 'source_width': w, 'source_height': h,
             'raw_texts': texts, 'raw_boxes': boxes}
-    rows = _r223().propose(case, frame)
+    source_rows = _r223()
+    rows = source_rows.propose(case, frame)
+    # R229 is an optional auxiliary review, never a replacement for source
+    # OCR or the existing Child zone classifications. Fail closed if absent.
+    try:
+        recovery_path = Path(__file__).with_name('INVOICE_OCR_LAYOUT_RECOVERY_R229.py')
+        if not recovery_path.is_file():
+            raise RuntimeError('R229 layout review module unavailable')
+        spec = importlib.util.spec_from_file_location('_child_r229_layout_review', recovery_path)
+        if spec is None or spec.loader is None:
+            raise RuntimeError('Cannot load staged R229 source module')
+        recovery = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(recovery)
+        recovered_rows = recovery.propose(case, frame, source_rows)
+    except Exception as exc:
+        recovered_rows = {'status':'REVIEW_UNAVAILABLE','error_type':type(exc).__name__,
+                          'posting_eligible':False,'release_approved':False}
     return {
         'status': 'UNVERIFIED_SOURCE_GEOMETRY_REVIEW_ONLY',
         'source_kind': 'decoded_child_image_frame',
         'decoded_frame_sha256': digest, 'original_jpeg_sha256_verified': False,
         'source_observations': len(texts), 'source_tsv_row_numbers': row_ids,
         'unmodified_tsv': True, 'unmodified_image': True,
-        'row_hypotheses': rows, 'date_flags': _date_flags(texts, boxes),
+        'row_hypotheses': rows, 'layout_recovery_review': recovered_rows,
+        'date_flags': _date_flags(texts, boxes),
         'all_values_require_human_review': True,
         'field_accuracy_certified': False,
         'posting_eligible': False, 'accounting_write_permitted': False,
