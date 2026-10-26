@@ -509,6 +509,19 @@ internal sealed partial class InvoiceVisionWindow
                     status="SOURCE_QR_INVOICE_CANDIDATE_UNVERIFIED",
                     posting_eligible=false,
                     qr_invoice_id_candidates=new [] {"TEST-QR-0049"}
+                },
+                low_confidence_crop_rereads=new {
+                    status="UNCERTAIN_SOURCE_TOKEN_REREADS_REVIEW_ONLY",
+                    posting_eligible=false,
+                    review_items=new [] {new {
+                        raw_source_text="2x",
+                        posting_eligible=false,
+                        source_box=new [] {10,12,35,28},
+                        reread_observations=new [] {
+                            new {reading="20",posting_eligible=false},
+                            new {reading="30",posting_eligible=false}
+                        }
+                    }}
                 }
             }, alternate_multiscale_source_review=new {
                 status="SOURCE_MULTISCALE_ALTERNATIVES_REVIEW_ONLY",
@@ -529,7 +542,8 @@ internal sealed partial class InvoiceVisionWindow
                !_r235FieldWarnings.Text.Contains("NINE_DIGIT_HSN_WITH_POSSIBLE_LEADING_SERIAL") ||
                !_r237SourceSplitCandidates.Text.Contains("33051090") ||
                !_r238QrStatus.Text.Contains("TEST-QR-0049") ||
-               !_r243AlternativeOcr.Text.Contains("clahe_2x: 23 OCR source words"))
+               !_r243AlternativeOcr.Text.Contains("clahe_2x: 23 OCR source words") ||
+               !_r244LowConfidence.Text.Contains("20 | 30"))
                 throw new InvalidOperationException("R233 native source queue did not display synthetic evidence.");
         }
         using (var empty=JsonDocument.Parse("{}"))
@@ -540,7 +554,8 @@ internal sealed partial class InvoiceVisionWindow
                _r235FieldWarnings.Text.Contains("SYNTHETIC PRODUCT") ||
                _r237SourceSplitCandidates.Text.Contains("33051090") ||
                _r238QrStatus.Text.Contains("TEST-QR-0049") ||
-               _r243AlternativeOcr.Text.Contains("23 OCR source words"))
+               _r243AlternativeOcr.Text.Contains("23 OCR source words") ||
+               _r244LowConfidence.Text.Contains("20 | 30"))
                 throw new InvalidOperationException("R233 leaked review data between source invoices.");
         }
     }
