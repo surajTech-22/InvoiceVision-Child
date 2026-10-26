@@ -43,12 +43,32 @@ class RulingLines(unittest.TestCase):
         self.assertEqual(out["status"],"GRID_RULING_SOURCE_REVIEW_ONLY")
         self.assertEqual(len(out["source_views"]),2)
         self.assertGreaterEqual(out["provisional_table_rows"],1)
+        self.assertEqual(out["source_unique_item_row_count"],1)
+        self.assertEqual(out["physical_row_duplicate_evidence_count"],1)
+        self.assertEqual(len(out["source_unique_item_rows"][0]["source_variants"]),2)
+        self.assertFalse(out["source_unique_item_rows"][0]["conflicting_ocr_alternatives"])
         rows=out["source_field_row_anchors"]["table_header_anchored_row_proposals"]
         self.assertEqual(rows[0]["quantity_original_ocr"],"20")
         self.assertEqual(rows[0]["amount_original_ocr"],"1140.00")
         self.assertFalse(out["posting_eligible"])
         self.assertEqual(out["accepted_item_rows"],0)
         self.assertTrue(np.array_equal(img,before))
+    def test_source_row_conflicting_readings_are_not_silently_resolved(self):
+        base={"posting_eligible":False,
+              "source_view":"grid_removed_psm11_2x",
+              "row_box":[35,300,590,344],
+              "description_original_ocr":"TEST PART",
+              "quantity_original_ocr":"20",
+              "amount_original_ocr":"1140.00"}
+        alt={**base,"source_view":"grid_removed_psm6_2x",
+             "quantity_original_ocr":"30"}
+        groups=m.distinct_source_rows([base,alt])
+        self.assertEqual(len(groups),1)
+        self.assertTrue(groups[0]["conflicting_ocr_alternatives"])
+        self.assertEqual([x["original_quantity"] for x in groups[0]["source_variants"]],
+                         ["20","30"])
+        self.assertFalse(groups[0]["distinct_row_certified"])
+
     def test_blank_page_cannot_invent_item_rows(self):
         img=np.full((500,500,3),255,np.uint8)
         result=m.review(img,lambda _view,_psm:synthetic_tsv())
