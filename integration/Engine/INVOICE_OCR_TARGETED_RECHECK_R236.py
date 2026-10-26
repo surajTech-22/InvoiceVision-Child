@@ -30,7 +30,11 @@ def numeric_quantity_candidates(texts, boxes, max_candidates=24):
             sideways=(hx0>=x1 and hx0-x1<=max(65,3*(x1-x0)) and
                       min(y1,hy1)-max(y0,hy0)>=.50*(y1-y0))
             # Upright invoice: source number under a short table header.
-            upright=(y0>=hy1 and y0-hy1<=max(140,8*(y1-y0)) and
+            # Upright table headings have a horizontal text baseline. A
+            # tall rotated heading must never claim later rate/price columns
+            # merely because their x-coordinates happen to be nearby.
+            upright=((hx1-hx0)>1.15*(hy1-hy0) and
+                     y0>=hy1 and y0-hy1<=max(80,5*(y1-y0)) and
                      abs((hx0+hx1)/2-(x0+x1)/2)<=max(32,(hx1-hx0)*.75))
             if sideways or upright:
                 result.append({'source_token_index':i,'header_source_token_index':h,
