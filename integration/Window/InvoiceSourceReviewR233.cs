@@ -35,6 +35,11 @@ internal sealed partial class InvoiceVisionWindow
         Text="No original-source split-field review available.",
         TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,4,0,8),
         Foreground=System.Windows.Media.Brushes.DarkGoldenrod };
+    private readonly TextBlock _r238QrStatus=new() {
+        Text="QR invoice cross-check not loaded.",
+        TextWrapping=TextWrapping.Wrap,
+        Margin=new Thickness(0,4,0,8),
+        Foreground=System.Windows.Media.Brushes.DarkGoldenrod };
     private readonly System.Windows.Controls.ListBox _r233List = new() { Height=132,MinWidth=210 };
     private readonly TextBlock _r233Original = new() {
         TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,6,0,4),
@@ -53,6 +58,7 @@ internal sealed partial class InvoiceVisionWindow
         body.Children.Add(_r233Summary);
         body.Children.Add(_r235FieldWarnings);
         body.Children.Add(_r237SourceSplitCandidates);
+        body.Children.Add(_r238QrStatus);
         body.Children.Add(_r233List);
         body.Children.Add(_r233Original);
         body.Children.Add(new TextBlock {
@@ -99,6 +105,7 @@ internal sealed partial class InvoiceVisionWindow
         _r233Summary.Text="No source-linked OCR review for this analysis. All recognition remains unverified.";
         _r235FieldWarnings.Text="No source-field consistency evidence. Full accuracy not certified.";
         _r237SourceSplitCandidates.Text="No source-linked field candidates for this invoice.";
+        _r238QrStatus.Text="QR source document ID not yet corroborated.";
         if (!_r233NativePanelBuilt ||
             !Regex.IsMatch(verifiedPhotoHash,@"\A[0-9a-fA-F]{64}\z") ||
             analysis.ValueKind!=JsonValueKind.Object ||
@@ -247,6 +254,36 @@ internal sealed partial class InvoiceVisionWindow
                      "No candidate requires review.");
         }
         else _r237SourceSplitCandidates.Text="Source field associations unavailable; no values approved.";
+        if(source.TryGetProperty("qr_invoice_crosscheck",out var qr) &&
+           qr.ValueKind==JsonValueKind.Object &&
+           qr.TryGetProperty("posting_eligible",out var qrPosting) &&
+           qrPosting.ValueKind==JsonValueKind.False &&
+           qr.TryGetProperty("qr_invoice_id_candidates",out var qrCandidates) &&
+           qrCandidates.ValueKind==JsonValueKind.Array && qrCandidates.GetArrayLength()<=10)
+        {
+            var options=new List<string>();
+            bool valid=true;
+            foreach(var v in qrCandidates.EnumerateArray())
+            {
+                if(v.ValueKind!=JsonValueKind.String) { valid=false;break; }
+                string number=v.GetString()??"";
+                if(!Regex.IsMatch(number,@"\A[A-Za-z0-9][A-Za-z0-9/_-]{1,49}\z"))
+                { valid=false;break; }
+                options.Add(number);
+            }
+            string status=R233GetString(qr,"status");
+            if(!valid) _r238QrStatus.Text="Unsafe QR candidate rejected; no field approved.";
+            else if(status=="SOURCE_QR_INVOICE_CANDIDATE_UNVERIFIED" && options.Count==1)
+                _r238QrStatus.Text="QR-encoded invoice ID candidate: "+options[0]+
+                   " (not independently verified; original printed invoice ID still required)";
+            else if(status=="SOURCE_QR_UNREADABLE_REVIEW_REQUIRED")
+                _r238QrStatus.Text="QR was not readable from this original photograph.";
+            else
+                _r238QrStatus.Text="QR cross-check: "+status+
+                    "; no printed invoice identifier certified.";
+        }
+        else _r238QrStatus.Text="No trusted QR source evidence; invoice ID not certified.";
+
 
 
     }
