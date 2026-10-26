@@ -40,6 +40,10 @@ internal sealed partial class InvoiceVisionWindow
         TextWrapping=TextWrapping.Wrap,
         Margin=new Thickness(0,4,0,8),
         Foreground=System.Windows.Media.Brushes.DarkGoldenrod };
+    private readonly TextBlock _r239GstinReview=new() {
+        Text="GSTIN OCR check digit has not been checked.",
+        TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,4,0,8),
+        Foreground=System.Windows.Media.Brushes.DarkGoldenrod };
     private readonly System.Windows.Controls.ListBox _r233List = new() { Height=132,MinWidth=210 };
     private readonly TextBlock _r233Original = new() {
         TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,6,0,4),
@@ -59,6 +63,7 @@ internal sealed partial class InvoiceVisionWindow
         body.Children.Add(_r235FieldWarnings);
         body.Children.Add(_r237SourceSplitCandidates);
         body.Children.Add(_r238QrStatus);
+        body.Children.Add(_r239GstinReview);
         body.Children.Add(_r233List);
         body.Children.Add(_r233Original);
         body.Children.Add(new TextBlock {
@@ -106,6 +111,7 @@ internal sealed partial class InvoiceVisionWindow
         _r235FieldWarnings.Text="No source-field consistency evidence. Full accuracy not certified.";
         _r237SourceSplitCandidates.Text="No source-linked field candidates for this invoice.";
         _r238QrStatus.Text="QR source document ID not yet corroborated.";
+        _r239GstinReview.Text="GSTIN check digits not verified for this invoice.";
         if (!_r233NativePanelBuilt ||
             !Regex.IsMatch(verifiedPhotoHash,@"\A[0-9a-fA-F]{64}\z") ||
             analysis.ValueKind!=JsonValueKind.Object ||
@@ -283,6 +289,40 @@ internal sealed partial class InvoiceVisionWindow
                     "; no printed invoice identifier certified.";
         }
         else _r238QrStatus.Text="No trusted QR source evidence; invoice ID not certified.";
+        // GSTIN check digit is a typo detector, never proof of supplier role.
+        if(source.TryGetProperty("source_gstin_checkdigit_review",out var gst) &&
+           gst.ValueKind==JsonValueKind.Object &&
+           R233GetString(gst,"status")=="GSTIN_SOURCE_CHECKDIGIT_REVIEW_ONLY" &&
+           gst.TryGetProperty("posting_eligible",out var gstPosted) &&
+           gstPosted.ValueKind==JsonValueKind.False &&
+           gst.TryGetProperty("candidates",out var gstRows) &&
+           gstRows.ValueKind==JsonValueKind.Array && gstRows.GetArrayLength()<=50)
+        {
+            var wrong=new List<string>();
+            bool safe=true;
+            foreach(var item in gstRows.EnumerateArray())
+            {
+                if(item.ValueKind!=JsonValueKind.Object ||
+                   !item.TryGetProperty("posting_eligible",out var ok) ||
+                   ok.ValueKind!=JsonValueKind.False)
+                { safe=false;break; }
+                bool valid=item.TryGetProperty("checksum_valid",out var chk) &&
+                           chk.ValueKind==JsonValueKind.True;
+                if(!valid) {
+                    var raw=R233GetString(item,"literal_source_text");
+                    if(raw.Length!=15) { safe=false;break; }
+                    if(wrong.Count<8)wrong.Add(raw);
+                }
+            }
+            _r239GstinReview.Text=!safe
+                ? "Untrusted GSTIN OCR evidence refused; no values approved."
+                : gstRows.GetArrayLength()+" GSTIN OCR readings checked. "+
+                    (wrong.Count>0 ? "Checksum mismatch (source review required): "+
+                                     string.Join(", ",wrong)
+                                   : "No checksum mismatch detected; supplier identity still unverified.");
+        }
+        else _r239GstinReview.Text="GSTIN source-check status unavailable; no values approved.";
+
 
 
 
