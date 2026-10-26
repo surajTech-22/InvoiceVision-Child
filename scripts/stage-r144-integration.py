@@ -28,6 +28,7 @@ REVIEW_MODULES={
     'integration/Engine/INVOICE_OCR_FIELD_CROP_REVIEW_R244.py': 'INVOICE_OCR_FIELD_CROP_REVIEW_R244.py',
     'integration/Engine/INVOICE_OCR_FIELD_ROW_ANCHORS_R245.py': 'INVOICE_OCR_FIELD_ROW_ANCHORS_R245.py',
     'integration/Engine/INVOICE_OCR_GRID_TABLE_R246.py': 'INVOICE_OCR_GRID_TABLE_R246.py',
+    'integration/Engine/INVOICE_OCR_ITEM_AMOUNT_REREAD_R248.py': 'INVOICE_OCR_ITEM_AMOUNT_REREAD_R248.py',
 }
 
 
@@ -250,7 +251,10 @@ def stage(build):
     if gspec is None or gspec.loader is None:
      raise RuntimeError('R246 grid source table module missing')
     gmodule=importlib.util.module_from_spec(gspec);gspec.loader.exec_module(gmodule)
-    refinement['source_grid_table_review_r246']=gmodule.review(oriented,local_read)
+    def local_plain(view,psm):
+     return ts_exec(binary,view,psm=str(psm),tsv=False,deadline=24)
+    refinement['source_grid_table_review_r246']=gmodule.review(
+     oriented,local_read,local_plain)
    except Exception as grid_error:
     refinement['source_grid_table_review_r246']={
      'status':'GRID_TABLE_REVIEW_UNAVAILABLE',
