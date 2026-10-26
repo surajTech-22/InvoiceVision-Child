@@ -128,5 +128,8 @@ jobs:
             integration-build/R144_INTEGRATION_PROVENANCE.json
             integration-build/release/BUILD_VERIFICATION.json
             integration-build/build/startup-smoke.txt
+            integration-build/InvoiceVisionChild/Engine/INVOICE_OCR_RECURSIVE_ZONES_R109.py
+            integration-build/InvoiceVisionChild/Engine/INVOICE_OCR_SOURCE_REVIEW_R226.py
+            integration-build/InvoiceVisionChild/Engine/INVOICE_OCR_SOURCE_ROWS_R223.py
           if-no-files-found: warn
           retention-days: 14
