@@ -75,8 +75,10 @@ jobs:
       - name: Ensure unverified Setup and Update executables remain blocked
         shell: pwsh
         run: |
+          # The safety script uses native PowerShell exceptions (not a native process
+          # exit code). Its own failures terminate this step; do not inspect
+          # $LASTEXITCODE, which is unset in a fresh pwsh session.
           & ./scripts/test-r146-release-gate.ps1
-          if ($LASTEXITCODE -ne 0) { throw 'Installer acceptance gate safety regression failed' }
       - name: Show build evidence but withhold production installers
         shell: pwsh
         run: |
