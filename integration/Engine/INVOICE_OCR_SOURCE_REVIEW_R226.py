@@ -153,6 +153,73 @@ def review(image, raw_tsv):
                      'posting_eligible':False,
                      'accounting_write_permitted':False,
                      'release_approved':False}
+    # R236: inspect only OCR source cells near an actual quantity heading.
+    # The optional secondary backend is local-only; no model download, cloud
+    # calls, automatic digit replacement or accounting permission.
+    targeted={'status':'NUMERIC_RECHECK_NOT_AVAILABLE','hints':[],
+              'rereads':[],'posting_eligible':False,'release_approved':False}
+    try:
+        import os
+        import shutil
+        import subprocess
+        path=Path(__file__).with_name('INVOICE_OCR_TARGETED_RECHECK_R236.py')
+        spec=importlib.util.spec_from_file_location('_child_r236_source_recheck',path)
+        if spec is None or spec.loader is None:
+            raise RuntimeError('Source crop recheck module missing')
+        module=importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        hints=module.numeric_quantity_candidates(texts,boxes,max_candidates=6)
+        targeted['hints']=hints
+        targeted['status']='SOURCE_CROP_RECHECK_HINTS_REVIEW_ONLY'
+        if os.environ.get('INVOICEVISION_R236_TARGETED_RECHECK')=='1' and hints:
+            exe=shutil.which('tesseract')
+            if exe:
+                def local_reader(crop,psm):
+                    import cv2
+                    ok,png=cv2.imencode('.png',crop)
+                    if not ok:raise RuntimeError('Cannot encode local OCR crop')
+                    answer=subprocess.run(
+                        [exe,'stdin','stdout','--psm',str(psm),'-l','eng',
+                         '-c','tessedit_char_whitelist=0123456789.'],
+                        input=png.tobytes(),capture_output=True,timeout=8,
+                        check=False)
+                    if answer.returncode!=0:
+                        raise RuntimeError('Local OCR backend rejected crop')
+                    return answer.stdout.decode('utf-8',errors='replace').strip()
+                for hint in hints[:4]:
+                    try:
+                        rec=module.reread(img,hint['original_ocr_text'],
+                                          hint['source_box'],hint['suggested_rotation'],
+                                          local_reader)
+                        rec['source_token_index']=hint['source_token_index']
+                        rec['header_source_token_index']=hint['header_source_token_index']
+                        targeted['rereads'].append(rec)
+                        if rec['candidate_disagrees_with_original']:
+                            consistency.setdefault('warnings',[]).append({
+                                'issue':'SOURCE_QUANTITY_LOCAL_RECHECK_DIFFERENCE',
+                                'source_token_index':hint['source_token_index'],
+                                'original_source_box':hint['source_box'],
+                                'raw_ocr_text':hint['original_ocr_text'],
+                                'reread_candidate_for_review':
+                                    rec['correlated_consensus_candidate'],
+                                'source_backend_independent_ground_truth':False,
+                                'requires_original_print_review':True,
+                                'posting_eligible':False,'field_value_certified':False})
+                    except Exception as exc:
+                        targeted['rereads'].append({
+                            'status':'RECHECK_UNAVAILABLE',
+                            'source_token_index':hint['source_token_index'],
+                            'error_type':type(exc).__name__,
+                            'posting_eligible':False})
+                targeted['status']='LOCAL_CROP_REREADS_REVIEW_ONLY'
+            else:
+                targeted['status']='LOCAL_SECONDARY_OCR_NOT_INSTALLED'
+        if consistency.get('status')=='SOURCE_EVIDENCE_CONSISTENCY_REVIEW_ONLY':
+            consistency['warnings_count']=len(consistency.get('warnings',[]))
+    except Exception as exc:
+        targeted={'status':'RECHECK_UNAVAILABLE','error_type':type(exc).__name__,
+                  'hints':[],'rereads':[],'posting_eligible':False,
+                  'release_approved':False}
     return {
         'status': 'UNVERIFIED_SOURCE_GEOMETRY_REVIEW_ONLY',
         'source_kind': 'decoded_child_image_frame',
@@ -163,6 +230,7 @@ def review(image, raw_tsv):
         'date_flags': date_flags,
         'manual_review_queue': queue,
         'field_consistency_review': consistency,
+        'targeted_numeric_source_review': targeted,
         'all_values_require_human_review': True,
         'field_accuracy_certified': False,
         'posting_eligible': False, 'accounting_write_permitted': False,
