@@ -179,6 +179,10 @@ def _table(lines,view,width,height,max_rows):
                 abs((x["box"][1]+x["box"][3])/2-cy)<=21 and
                 _NUM_RE.fullmatch(x["text"].strip("()|").replace(",",""))]
             amount_words=[x for x in all_words if
+                # The nearby RATE value is not an AMOUNT value even if
+                # OCR bounding boxes drift. Respect the printed AMOUNT
+                # header's left edge to avoid matching two money columns.
+                x["box"][0]>=max((qty_x+amount_x)/2,amount["box"][0]-22) and
                 abs((x["box"][0]+x["box"][2])/2-amount_x)<=90 and
                 abs((x["box"][1]+x["box"][3])/2-cy)<=21 and
                 _NUM_RE.fullmatch(x["text"].strip("()|").replace(",",""))]
