@@ -172,7 +172,8 @@ def propose(alternate,width,height,*,max_fields=30,max_rows=15):
         if not isinstance(view,dict) or view.get("posting_eligible") is not False or view.get("source_boxes_are_original_pixels") is not True:
             raise ValueError("Variant lacks trusted source geometry")
         name=view.get("variant")
-        if name not in ("gray_2x","clahe_2x") or name in seen:
+        if name not in ("gray_2x","clahe_2x","grid_removed_psm11_2x",
+                        "grid_removed_psm6_2x") or name in seen:
             raise ValueError("Unexpected or duplicate source OCR view")
         seen.add(name)
         source=view.get("source_words")
