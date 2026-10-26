@@ -380,6 +380,11 @@ internal sealed partial class InvoiceVisionWindow
                         candidate_text="33051090",
                         posting_eligible=false
                     }}
+                },
+                qr_invoice_crosscheck=new {
+                    status="SOURCE_QR_INVOICE_CANDIDATE_UNVERIFIED",
+                    posting_eligible=false,
+                    qr_invoice_id_candidates=new [] {"TEST-QR-0049"}
                 }
             }}
         };
@@ -389,7 +394,8 @@ internal sealed partial class InvoiceVisionWindow
             if(_r233Queue.Count!=1 || _r233List.Items.Count!=1 ||
                !_r233Summary.Text.Contains("1 original-source item") ||
                !_r235FieldWarnings.Text.Contains("NINE_DIGIT_HSN_WITH_POSSIBLE_LEADING_SERIAL") ||
-               !_r237SourceSplitCandidates.Text.Contains("33051090"))
+               !_r237SourceSplitCandidates.Text.Contains("33051090") ||
+               !_r238QrStatus.Text.Contains("TEST-QR-0049"))
                 throw new InvalidOperationException("R233 native source queue did not display synthetic evidence.");
         }
         using (var empty=JsonDocument.Parse("{}"))
@@ -398,7 +404,8 @@ internal sealed partial class InvoiceVisionWindow
             if(_r233Queue.Count!=0 || _r233List.Items.Count!=0 ||
                _r233PhotoHash is not null ||
                _r235FieldWarnings.Text.Contains("SYNTHETIC PRODUCT") ||
-               _r237SourceSplitCandidates.Text.Contains("33051090"))
+               _r237SourceSplitCandidates.Text.Contains("33051090") ||
+               _r238QrStatus.Text.Contains("TEST-QR-0049"))
                 throw new InvalidOperationException("R233 leaked review data between source invoices.");
         }
     }
