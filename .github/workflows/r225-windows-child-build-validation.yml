@@ -85,6 +85,25 @@ jobs:
         run: |
           & ./integration-build/scripts/build-windows.ps1
           if ($LASTEXITCODE -ne 0) { throw 'Real Windows Child build or smoke verification failed' }
+      - name: Verify real Child publish does not contain private customer invoices
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $publish='integration-build/build/publish'
+          if (Test-Path -LiteralPath "$publish/Engine/VISUAL_BENCHMARK_15_PHOTOS.zip") {
+            throw 'Private invoice photographs were included in executable publish output'
+          }
+          $native = Get-Content 'integration-build/InvoiceVisionChild/Program.cs' -Raw
+          if ($native.Contains('LoadBenchmarkPreview();') -or
+              $native.Contains('Run 15 Real Example Photos') -or
+              $native.Contains('if (autoBenchmark && !previouslyCompleted)')) {
+            throw 'Native Child can still auto-display/process the private original photo benchmark'
+          }
+          $analyze=Get-Content 'integration-build/InvoiceVisionChild/InvoiceCategoryFirst.cs' -Raw
+          if (-not $analyze.Contains('psi.Environment["INVOICEVISION_SOURCE_REVIEW_R226"] = "1"')) {
+            throw 'Native analyze action has no source-linked review connection'
+          }
+          Write-Host 'R234_PRIVATE_PHOTOS_EXCLUDED_AND_NATIVE_REVIEW_CONNECTED'
       - name: Verify R226 review modules were copied into real Windows publish output
         shell: pwsh
         run: |
