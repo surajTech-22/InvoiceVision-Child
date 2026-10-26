@@ -8,6 +8,7 @@ missing or uncertain, preserve the coarse zone for explicit human review.
 """
 import re
 import math
+import os
 from collections import defaultdict
 
 CUES = {
@@ -272,9 +273,29 @@ def refine_regions(img,coarse,raw_tsv=None,max_depth=3,max_leaves=70):
         if len(leaves)>=max_leaves:
             raise ValueError('Zone refinement safety limit reached; refusing incomplete output')
         visit(zone)
-    return leaves,{'method':'bounded_semantic_spatial_recursive','ocr_available':bool(raw_tsv),
-                   'raw_line_count':len(text_lines),'initial_count':len(coarse),
-                   'leaf_count':len(leaves),'splits':decisions,'max_depth':max_depth,
-                   'stage':'PROVISIONAL_REVIEW_REQUIRED','source_pixels_changed':False,
-                   'review_warnings':['Mixed or ambiguous content is not automatically split or approved.',
-                                      'No OCR value may authorize accounting posting.']},text_lines
+    metadata={'method':'bounded_semantic_spatial_recursive','ocr_available':bool(raw_tsv),
+              'raw_line_count':len(text_lines),'initial_count':len(coarse),
+              'leaf_count':len(leaves),'splits':decisions,'max_depth':max_depth,
+              'stage':'PROVISIONAL_REVIEW_REQUIRED','source_pixels_changed':False,
+              'review_warnings':['Mixed or ambiguous content is not automatically split or approved.',
+                                 'No OCR value may authorize accounting posting.']}
+    # R226 is an opt-in additive review field. It never changes leaf-zone
+    # content, original image pixels or OCR TSV and is never a posting gate.
+    # Existing Child behavior is identical when this switch is not enabled.
+    if os.environ.get('INVOICEVISION_SOURCE_REVIEW_R226') == '1' and raw_tsv:
+        try:
+            import importlib.util
+            from pathlib import Path
+            path=Path(__file__).with_name('INVOICE_OCR_SOURCE_REVIEW_R226.py')
+            spec=importlib.util.spec_from_file_location('_child_source_review_r226',path)
+            if spec is None or spec.loader is None:
+                raise RuntimeError('R226 source-review implementation is unavailable')
+            module=importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            metadata['source_row_and_date_review']=module.review(img,raw_tsv)
+        except Exception as exc:
+            metadata['source_row_and_date_review']={
+                'status':'REVIEW_UNAVAILABLE','error_type':type(exc).__name__,
+                'accounting_write_permitted':False,'posting_eligible':False,
+                'release_approved':False}
+    return leaves,metadata,text_lines
