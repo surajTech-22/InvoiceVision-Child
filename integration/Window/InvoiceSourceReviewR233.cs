@@ -60,6 +60,10 @@ internal sealed partial class InvoiceVisionWindow
         Text="No printed table-grid OCR review loaded.",
         TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,4,0,8),
         Foreground=System.Windows.Media.Brushes.DarkGoldenrod };
+    private readonly TextBlock _r248AmountReadings=new() {
+        Text="No source amount-cell recheck available.",
+        TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,4,0,8),
+        Foreground=System.Windows.Media.Brushes.DarkGoldenrod };
     private readonly System.Windows.Controls.ListBox _r233List = new() { Height=132,MinWidth=210 };
     private readonly TextBlock _r233Original = new() {
         TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,6,0,4),
@@ -84,6 +88,7 @@ internal sealed partial class InvoiceVisionWindow
         body.Children.Add(_r244LowConfidence);
         body.Children.Add(_r245FieldRows);
         body.Children.Add(_r246GridTable);
+        body.Children.Add(_r248AmountReadings);
         body.Children.Add(_r233List);
         body.Children.Add(_r233Original);
         body.Children.Add(new TextBlock {
@@ -136,6 +141,7 @@ internal sealed partial class InvoiceVisionWindow
         _r244LowConfidence.Text="No uncertain source-word reread available for this invoice.";
         _r245FieldRows.Text="No source-label or table-row associations for this invoice.";
         _r246GridTable.Text="No grid-separated source OCR table rows for this invoice.";
+        _r248AmountReadings.Text="No amount-cell rereads for this invoice.";
         if (!_r233NativePanelBuilt ||
             !Regex.IsMatch(verifiedPhotoHash,@"\A[0-9a-fA-F]{64}\z") ||
             analysis.ValueKind!=JsonValueKind.Object ||
@@ -468,6 +474,62 @@ internal sealed partial class InvoiceVisionWindow
                 : "Unsafe source table-row evidence rejected; no data approved.";
         }
         else _r246GridTable.Text="No verified gridline-suppressed source table candidates; no values approved.";
+        if(refinement.TryGetProperty("source_grid_table_review_r246",out var r248Parent) &&
+           r248Parent.ValueKind==JsonValueKind.Object &&
+           r248Parent.TryGetProperty("source_amount_cell_rereads_r248",out var r248Source) &&
+           r248Source.ValueKind==JsonValueKind.Object &&
+           R233GetString(r248Source,"status")=="SOURCE_TABLE_AMOUNT_CELL_REREAD_ONLY" &&
+           r248Source.TryGetProperty("posting_eligible",out var r248NoPost) &&
+           r248NoPost.ValueKind==JsonValueKind.False &&
+           r248Source.TryGetProperty("row_amount_rereads",out var r248Items) &&
+           r248Items.ValueKind==JsonValueKind.Array && r248Items.GetArrayLength()<=4)
+        {
+            var r248Summaries=new List<string>();
+            bool r248Trusted=true;
+            foreach(var r248Item in r248Items.EnumerateArray())
+            {
+                var original=R233GetString(r248Item,"original_amount_ocr");
+                if(r248Item.ValueKind!=JsonValueKind.Object || original.Length==0 ||
+                   original.Length>120 ||
+                   !r248Item.TryGetProperty("posting_eligible",out var r248ItemPost) ||
+                   r248ItemPost.ValueKind!=JsonValueKind.False ||
+                   !r248Item.TryGetProperty("alternate_readings",out var r248Variants) ||
+                   r248Variants.ValueKind!=JsonValueKind.Array ||
+                   r248Variants.GetArrayLength()>4)
+                {r248Trusted=false;break;}
+                var r248Numbers=new List<string>();
+                foreach(var r248View in r248Variants.EnumerateArray())
+                {
+                    if(!r248View.TryGetProperty("posting_eligible",out var r248VPost) ||
+                       r248VPost.ValueKind!=JsonValueKind.False)
+                    {r248Trusted=false;break;}
+                    if(!r248View.TryGetProperty("decimal_candidates_unverified",out var r248Candidates) ||
+                       r248Candidates.ValueKind!=JsonValueKind.Array ||
+                       r248Candidates.GetArrayLength()>15)
+                    {r248Trusted=false;break;}
+                    foreach(var r248Number in r248Candidates.EnumerateArray())
+                    {
+                        if(r248Number.ValueKind!=JsonValueKind.String)
+                        {r248Trusted=false;break;}
+                        string r248Value=r248Number.GetString()??"";
+                        if(r248Value.Length>30) {r248Trusted=false;break;}
+                        if(r248Value.Length>0 && !r248Numbers.Contains(r248Value))
+                            r248Numbers.Add(r248Value);
+                    }
+                    if(!r248Trusted)break;
+                }
+                if(!r248Trusted)break;
+                r248Summaries.Add(original+" ⇒ "+
+                    (r248Numbers.Count>0 ? string.Join(" | ",r248Numbers.Take(8))
+                                          : "no readable alternative"));
+            }
+            _r248AmountReadings.Text=r248Trusted
+                ? "Original amount vs local OCR alternatives (NOT accepted): "+
+                  string.Join("; ",r248Summaries)
+                : "Malformed amount-cell OCR evidence refused; no value approved.";
+        }
+        else _r248AmountReadings.Text="No trusted source amount-cell rechecks; original values remain unverified.";
+
 
 
 
