@@ -343,7 +343,7 @@ internal sealed partial class InvoiceVisionWindow
            suspects.ValueKind==JsonValueKind.Array && suspects.GetArrayLength()<=8)
         {
             var notes=new List<string>();
-            bool safe=true;
+            bool r244EvidenceSafe=true;
             foreach(var suspect in suspects.EnumerateArray())
             {
                 string original=R233GetString(suspect,"raw_source_text");
@@ -354,21 +354,21 @@ internal sealed partial class InvoiceVisionWindow
                    physical.ValueKind!=JsonValueKind.Array || physical.GetArrayLength()!=4 ||
                    !suspect.TryGetProperty("reread_observations",out var candidates) ||
                    candidates.ValueKind!=JsonValueKind.Array || candidates.GetArrayLength()>4)
-                { safe=false;break; }
+                { r244EvidenceSafe=false;break; }
                 var readings=new List<string>();
                 foreach(var o in candidates.EnumerateArray())
                 {
                     string t=R233GetString(o,"reading");
-                    if(t.Length>220) { safe=false;break; }
+                    if(t.Length>220) { r244EvidenceSafe=false;break; }
                     if(t.Length>0 && !readings.Contains(t)) readings.Add(t);
                 }
-                if(!safe)break;
+                if(!r244EvidenceSafe)break;
                 notes.Add(original[..Math.Min(original.Length,50)]+" ⇒ "+
                     (readings.Count>0
                         ? string.Join(" | ",readings.Select(x=>x[..Math.Min(x.Length,40)]))
                         : "no valid local reread"));
             }
-            _r244LowConfidence.Text=safe
+            _r244LowConfidence.Text=r244EvidenceSafe
                 ? suspects.GetArrayLength()+" uncertain source cells. Reread alternatives (unverified): "+
                   string.Join("; ",notes)
                 : "Untrusted source-cell reread rejected; accounting not approved.";
