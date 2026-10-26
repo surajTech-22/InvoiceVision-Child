@@ -27,6 +27,10 @@ internal sealed partial class InvoiceVisionWindow
     private readonly TextBlock _r233Summary = new() {
         Text="No source-linked rows loaded. Analyze a photograph to see review items.",
         TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,3,0,8) };
+    private readonly TextBlock _r235FieldWarnings=new() {
+        Text="No independent field-consistency checks loaded. Recognition is unverified.",
+        TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,4,0,7),
+        Foreground=System.Windows.Media.Brushes.DarkRed };
     private readonly System.Windows.Controls.ListBox _r233List = new() { Height=132,MinWidth=210 };
     private readonly TextBlock _r233Original = new() {
         TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,6,0,4),
@@ -43,6 +47,7 @@ internal sealed partial class InvoiceVisionWindow
         if (_r233NativePanelBuilt) throw new InvalidOperationException("Review panel created twice.");
         var body=new StackPanel { Margin=new Thickness(5,5,5,6) };
         body.Children.Add(_r233Summary);
+        body.Children.Add(_r235FieldWarnings);
         body.Children.Add(_r233List);
         body.Children.Add(_r233Original);
         body.Children.Add(new TextBlock {
@@ -87,6 +92,7 @@ internal sealed partial class InvoiceVisionWindow
         _r233PhotoHash=null;
         _r233Correction.Text="";
         _r233Summary.Text="No source-linked OCR review for this analysis. All recognition remains unverified.";
+        _r235FieldWarnings.Text="No source-field consistency evidence. Full accuracy not certified.";
         if (!_r233NativePanelBuilt ||
             !Regex.IsMatch(verifiedPhotoHash,@"\A[0-9a-fA-F]{64}\z") ||
             analysis.ValueKind!=JsonValueKind.Object ||
@@ -154,6 +160,39 @@ internal sealed partial class InvoiceVisionWindow
         _r233List.ItemsSource=_r233Queue;
         _r233Summary.Text=loaded.Count+" original-source item/date flags • " +
                           "not accuracy-certified • select one to inspect and annotate";
+        if(source.TryGetProperty("field_consistency_review",out var consistency) &&
+           consistency.ValueKind==JsonValueKind.Object &&
+           R233GetString(consistency,"status")=="SOURCE_EVIDENCE_CONSISTENCY_REVIEW_ONLY" &&
+           consistency.TryGetProperty("posting_eligible",out var postFlag) &&
+           postFlag.ValueKind==JsonValueKind.False &&
+           consistency.TryGetProperty("warnings",out var warnings) &&
+           warnings.ValueKind==JsonValueKind.Array &&
+           warnings.GetArrayLength()<=200)
+        {
+            var display=new List<string>();
+            foreach(var warning in warnings.EnumerateArray())
+            {
+                if(warning.ValueKind!=JsonValueKind.Object ||
+                   !warning.TryGetProperty("posting_eligible",out var wpost) ||
+                   wpost.ValueKind!=JsonValueKind.False) {
+                    display.Clear();break;
+                }
+                string issue=R233GetString(warning,"issue");
+                string raw=R233GetString(warning,"raw_ocr_text");
+                if(issue.Length==0 || issue.Length>100 || raw.Length>4000) {
+                    display.Clear();break;
+                }
+                if(display.Count<12) display.Add(issue+" — "+raw[..Math.Min(raw.Length,90)]);
+            }
+            if(display.Count>0 || warnings.GetArrayLength()==0)
+                _r235FieldWarnings.Text=warnings.GetArrayLength()+" OCR source-consistency flags. "+
+                   (display.Count>0 ? string.Join("\n",display) :
+                       "No source conflict detected; accuracy still not certified.");
+            else
+                _r235FieldWarnings.Text="Invalid OCR warnings refused; no values approved.";
+        }
+        else _r235FieldWarnings.Text="Field consistency review unavailable; no value approved.";
+
     }
 
     private void SaveSourceAnnotationR233()
@@ -211,6 +250,8 @@ internal sealed partial class InvoiceVisionWindow
         if(!_r233NativePanelBuilt || _r233List is null ||
            _r233Summary is null || _r233Correction.MaxLength!=350)
             throw new InvalidOperationException("R233 native source-linked review UI missing.");
+        if(_r235FieldWarnings is null)
+            throw new InvalidOperationException("R235 source warning display missing.");
         // Actual native WPF smoke: display a synthetic source-locked queue item
         // and reject an unrelated/empty invoice, without reading any user files.
         var synthetic=new {
