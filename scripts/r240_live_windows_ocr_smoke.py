@@ -79,6 +79,15 @@ def run(engine,out,python_executable=None):
     python_executable=(Path(python_executable).resolve()
                        if python_executable else Path(sys.executable).resolve())
     _ensure(python_executable.is_file(),"Specific offline Python runtime is missing")
+    runtime_dir=python_executable.parent.parent
+    bundled_runtime=(
+        runtime_dir.name.lower()=="runtime" and
+        (runtime_dir/"R241_RUNTIME_VERIFICATION.json").is_file() and
+        (runtime_dir/"Tesseract"/"tesseract.exe").is_file() and
+        (runtime_dir/"Tesseract"/"tessdata"/"eng.traineddata").is_file() and
+        os.path.normcase(os.path.abspath(os.environ.get("TESSERACT_EXE",""))) ==
+        os.path.normcase(os.path.abspath(str(runtime_dir/"Tesseract"/"tesseract.exe")))
+    )
     _ensure((engine/"INVOICE_OCR_CATEGORY_FIRST_R101.py").is_file(),
             "Actual Child category-first entrypoint absent")
     out.mkdir(parents=True,exist_ok=True)
@@ -165,7 +174,10 @@ def run(engine,out,python_executable=None):
        "actual_approved_region_ocr_executed":True,
        "clear_source_text_recognized":True,
        "customer_invoices_tested":0,
-       "offline_python_runtime_bundled":False,
+       "offline_python_runtime_bundled":bool(bundled_runtime),
+       "ocr_runtime_execution_kind":(
+           "relocated_published_application_runtime" if bundled_runtime else
+           "runner_provisioned_local_ocr"),
        "printed_character_accuracy_certified":False,
        "production_installer_authorized":False,
        "accounting_write_permitted":False
