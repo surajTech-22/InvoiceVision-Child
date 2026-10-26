@@ -71,6 +71,14 @@ class TargetedReread(unittest.TestCase):
             [[100,3,135,16],[99,60,130,76],[0,60,25,76]])
         self.assertEqual([h['source_token_index'] for h in hints],[1])
 
+    def test_rotated_quantity_heading_does_not_capture_distant_price_column(self):
+        t=['QTY FREE','2','65.00','54.29','1085.71']
+        b=[[690,674,720,804],[669,680,686,703],
+           [662,852,688,903],[662,941,688,992],[667,1263,686,1323]]
+        got=mod.numeric_quantity_candidates(t,b)
+        self.assertEqual([v['source_token_index'] for v in got],[1])
+        self.assertEqual(got[0]['suggested_rotation'],'90_CCW')
+
     def test_ocr_backend_must_return_text(self):
         with self.assertRaises(ValueError):
             mod.reread(self.img,'2',[55,35,79,55],'90_CCW',lambda v,p:None)
