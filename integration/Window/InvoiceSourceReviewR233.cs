@@ -429,29 +429,43 @@ internal sealed partial class InvoiceVisionWindow
            R233GetString(ruled,"status")=="GRID_RULING_SOURCE_REVIEW_ONLY" &&
            ruled.TryGetProperty("posting_eligible",out var gp) &&
            gp.ValueKind==JsonValueKind.False &&
-           ruled.TryGetProperty("source_field_row_anchors",out var gram) &&
-           gram.ValueKind==JsonValueKind.Object &&
-           gram.TryGetProperty("table_header_anchored_row_proposals",out var gridRows) &&
-           gridRows.ValueKind==JsonValueKind.Array && gridRows.GetArrayLength()<=24)
+           ruled.TryGetProperty("source_unique_item_rows",out var sourceRows) &&
+           sourceRows.ValueKind==JsonValueKind.Array && sourceRows.GetArrayLength()<=24)
         {
             var preview=new List<string>();
-            bool safe=true;
-            foreach(var row in gridRows.EnumerateArray())
+            bool gridEvidenceSafe=true;
+            int conflicting=0;
+            foreach(var row in sourceRows.EnumerateArray())
             {
-                string qty=R233GetString(row,"quantity_original_ocr");
-                string amount=R233GetString(row,"amount_original_ocr");
-                if(row.ValueKind!=JsonValueKind.Object || qty.Length>80 ||
-                   amount.Length>80 || qty.Length==0 || amount.Length==0 ||
+                if(row.ValueKind!=JsonValueKind.Object ||
                    !row.TryGetProperty("posting_eligible",out var grpost) ||
-                   grpost.ValueKind!=JsonValueKind.False)
-                {safe=false;break;}
-                if(preview.Count<4)preview.Add("qty "+qty+" / amount "+amount);
+                   grpost.ValueKind!=JsonValueKind.False ||
+                   !row.TryGetProperty("source_variants",out var obs) ||
+                   obs.ValueKind!=JsonValueKind.Array ||
+                   obs.GetArrayLength()<1 || obs.GetArrayLength()>2)
+                {gridEvidenceSafe=false;break;}
+                var options=new List<string>();
+                foreach(var o in obs.EnumerateArray())
+                {
+                    string qty=R233GetString(o,"original_quantity");
+                    string amount=R233GetString(o,"original_amount");
+                    if(qty.Length==0 || amount.Length==0 || qty.Length>80 || amount.Length>80 ||
+                       !o.TryGetProperty("posting_eligible",out var op) || op.ValueKind!=JsonValueKind.False)
+                    {gridEvidenceSafe=false;break;}
+                    string pair="qty "+qty+" / amount "+amount;
+                    if(!options.Contains(pair)) options.Add(pair);
+                }
+                if(!gridEvidenceSafe)break;
+                if(options.Count>1)conflicting++;
+                if(preview.Count<4)preview.Add(string.Join(" OR ",options));
             }
-            _r246GridTable.Text=safe
-                ? gridRows.GetArrayLength()+" provisional table rows after temporary source-grid suppression. "+
+            _r246GridTable.Text=gridEvidenceSafe
+                ? sourceRows.GetArrayLength()+" distinct provisional printed item rows "+
+                  "from gridline-suppressed OCR. "+
+                  (conflicting>0 ? conflicting+" rows contain conflicting OCR readings. " : "")+
                   (preview.Count>0 ? string.Join("; ",preview)+". " : "")+
-                  "Original invoice pixels, OCR and accounting unchanged."
-                : "Unsafe table-grid OCR source rows rejected. No data approved.";
+                  "Original source and accounting unchanged."
+                : "Unsafe source table-row evidence rejected; no data approved.";
         }
         else _r246GridTable.Text="No verified gridline-suppressed source table candidates; no values approved.";
 
