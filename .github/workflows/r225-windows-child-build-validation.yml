@@ -13,6 +13,8 @@ on:
       - 'integration/Engine/INVOICE_OCR_REVIEW_QUEUE_R231.py'
       - 'experiments/test_r231_review_queue.py'
       - 'scripts/build-windows.ps1'
+      - 'scripts/package-installers.ps1'
+      - 'scripts/test-r146-release-gate.ps1'
       - 'integration/Engine/**'
       - 'integration/Window/**'
       - 'integration/Engine/INVOICE_OCR_FIELD_CONSISTENCY_R235.py'
