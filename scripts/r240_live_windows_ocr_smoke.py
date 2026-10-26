@@ -160,7 +160,9 @@ def run(engine,out,python_executable=None):
                 not gridded.get("posting_eligible") and
                 not gridded.get("original_first_pass_ocr_replaced") and
                 gridded.get("accepted_item_rows")==0 and
-                gridded.get("provisional_table_rows",0)>=1,
+                gridded.get("provisional_table_rows",0)>=2 and
+                gridded.get("source_unique_item_row_count")==1 and
+                gridded.get("accepted_item_rows")==0,
                 "R246 de-ruled grid table did not produce a provisional source-aligned item row")
         print("R246_REAL_CHILD_RULING_REMOVED_ITEM_ROWS_PASS",
               gridded.get("provisional_table_rows"),flush=True)
