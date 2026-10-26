@@ -1,0 +1,28 @@
+name: InvoiceVision R222 read-only original-source date safety
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  review-only-linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install numpy opencv-python-headless
+      - run: python -m py_compile experiments/r222_original_source_date_review.py
+      - run: python experiments/check_r222_original_source_dates_synthetic.py
+  review-only-windows:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install numpy opencv-python-headless
+      - run: python -m py_compile experiments/r222_original_source_date_review.py
+      - run: python experiments/check_r222_original_source_dates_synthetic.py
