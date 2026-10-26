@@ -26,6 +26,7 @@ REVIEW_MODULES={
     'integration/Engine/INVOICE_OCR_GSTIN_REVIEW_R239.py': 'INVOICE_OCR_GSTIN_REVIEW_R239.py',
     'integration/Engine/INVOICE_OCR_MULTISCALE_REVIEW_R243.py': 'INVOICE_OCR_MULTISCALE_REVIEW_R243.py',
     'integration/Engine/INVOICE_OCR_FIELD_CROP_REVIEW_R244.py': 'INVOICE_OCR_FIELD_CROP_REVIEW_R244.py',
+    'integration/Engine/INVOICE_OCR_FIELD_ROW_ANCHORS_R245.py': 'INVOICE_OCR_FIELD_ROW_ANCHORS_R245.py',
 }
 
 
@@ -225,6 +226,21 @@ def stage(build):
    def local_read(view,psm):
     return ts_exec(binary,view,psm=str(psm),tsv=True,deadline=38)
    refinement['alternate_multiscale_source_review']=module.review(oriented,local_read,max_words=480)
+   try:
+    anchors=Path(__file__).with_name('INVOICE_OCR_FIELD_ROW_ANCHORS_R245.py')
+    aspec=importlib.util.spec_from_file_location('_child_r245_field_row_anchors',anchors)
+    if aspec is None or aspec.loader is None:
+     raise RuntimeError('R245 source field/row engine unavailable')
+    amodule=importlib.util.module_from_spec(aspec)
+    aspec.loader.exec_module(amodule)
+    ah,aw=oriented.shape[:2]
+    refinement['source_field_row_anchors_r245']=amodule.propose(
+     refinement['alternate_multiscale_source_review'],aw,ah)
+   except Exception as anchor_error:
+    refinement['source_field_row_anchors_r245']={
+     'status':'SOURCE_FIELD_ROW_ANCHORS_UNAVAILABLE',
+     'error_type':type(anchor_error).__name__,
+     'posting_eligible':False,'release_approved':False}
   else:
    refinement['alternate_multiscale_source_review']={
     'status':'CPU_ALTERNATE_OCR_UNAVAILABLE','posting_eligible':False,
