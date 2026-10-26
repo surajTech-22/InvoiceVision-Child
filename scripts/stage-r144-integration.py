@@ -113,6 +113,34 @@ def stage(build):
     changes.append({'type':'R233_ENABLE_SOURCE_REVIEW_IN_ANALYSIS_ONLY',
                     'target':category_rel,'previous_sha256':before_sha,
                     'overlay_sha256':after_sha})
+    # R234 privacy: source repository remains separately restricted by owner,
+    # but no customer invoice example is embedded/launched in a candidate app.
+    program_rel='InvoiceVisionChild/Program.cs'
+    program=build/program_rel
+    contents=program.read_text(encoding='utf-8-sig')
+    deprecated=[
+        ('            LoadBenchmarkPreview();',
+         '            // R234: bundled customer-invoice previews disabled.'),
+        ('            if (autoBenchmark && !previouslyCompleted)\n'
+         '                Dispatcher.BeginInvoke(new Action(async () => await RunAsync("benchmark")), DispatcherPriority.ContextIdle);',
+         '            // R234: automatic customer-invoice benchmark execution disabled.'),
+        ('        AddButton(advancedPanel, "Run 15 Real Example Photos", async () => await RunAsync("benchmark"));',
+         '        // R234: private benchmark source is never presented as a demo option.'),
+    ]
+    for before,after in deprecated:
+        if contents.count(before)!=1:
+            raise ValueError('Unexpected sealed native Program.cs benchmark hook')
+        contents=contents.replace(before,after)
+    old_program=hashlib.sha256(program.read_bytes()).hexdigest()
+    program.write_text(contents,encoding='utf-8')
+    new_program=hashlib.sha256(program.read_bytes()).hexdigest()
+    matches=[e for e in manifest['files'] if e['path']==program_rel]
+    if len(matches)!=1:raise ValueError('Sealed native Program.cs absent')
+    matches[0]['sha256']=new_program
+    if 'size_bytes' in matches[0]:matches[0]['size_bytes']=program.stat().st_size
+    changes.append({'type':'R234_DISABLE_CUSTOMER_CORPUS_UI_AND_AUTO_BENCHMARK',
+                    'target':program_rel,'previous_sha256':old_program,
+                    'overlay_sha256':new_program})
     manifest_path.write_text(json.dumps(manifest,indent=2))
     (build/'R144_INTEGRATION_PROVENANCE.json').write_text(json.dumps({
         'changes':changes,
