@@ -154,6 +154,17 @@ def run(engine,out,python_executable=None):
         _ensure(isinstance(review,dict) and
                 review.get("status")=="UNVERIFIED_SOURCE_GEOMETRY_REVIEW_ONLY",
                 "Actual staged Child failed to emit source-locked OCR review")
+        anchored=analysis.get("zone_refinement",{}).get("source_field_row_anchors_r245")
+        _ensure(isinstance(anchored,dict) and
+                anchored.get("status")=="SOURCE_FIELD_AND_ITEM_ROW_ASSOCIATIONS_REVIEW_ONLY" and
+                not anchored.get("posting_eligible") and
+                not anchored.get("source_values_overwritten") and
+                anchored.get("verified_invoice_fields")==0 and
+                anchored.get("verified_table_rows")==0,
+                "R245 actual Child source field/row association absent or unsafe")
+        print("R245_REAL_CHILD_FIELD_ROW_ASSOCIATIONS_PASS",
+              anchored.get("field_proposals_count",0),
+              anchored.get("row_proposals_count",0),flush=True)
         rereads=review.get("low_confidence_crop_rereads")
         _ensure(isinstance(rereads,dict) and
                 rereads.get("status")=="UNCERTAIN_SOURCE_TOKEN_REREADS_REVIEW_ONLY" and
