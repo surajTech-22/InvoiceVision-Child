@@ -69,6 +69,22 @@ class RulingLines(unittest.TestCase):
                          ["20","30"])
         self.assertFalse(groups[0]["distinct_row_certified"])
 
+    def test_grey_phone_photo_background_does_not_delete_image(self):
+        # A photographed receipt can have broad grey vignetting. A global
+        # Otsu mask incorrectly treated 14-19% of real source as long ruling.
+        frame=invoice()
+        gray=cv2.cvtColor(frame,cv2.COLOR_BGR2GRAY)
+        yy,xx=np.indices(gray.shape)
+        background=(20*(xx/gray.shape[1])).astype(np.uint8)
+        shaded=np.clip(gray.astype(np.int16)-background,0,255).astype(np.uint8)
+        shaded=cv2.cvtColor(shaded,cv2.COLOR_GRAY2BGR)
+        original=shaded.copy()
+        cleaned,meta=m.remove_long_ruling_lines(shaded)
+        self.assertTrue(meta["detected_long_ruling_lines"])
+        self.assertLess(meta["ruling_line_pixel_fraction"],.12)
+        self.assertTrue(np.array_equal(shaded,original))
+        self.assertEqual(cleaned.shape[:2],(1600,1200))
+
     def test_blank_page_cannot_invent_item_rows(self):
         img=np.full((500,500,3),255,np.uint8)
         result=m.review(img,lambda _view,_psm:synthetic_tsv())
