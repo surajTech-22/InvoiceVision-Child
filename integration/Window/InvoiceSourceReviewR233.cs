@@ -577,6 +577,15 @@ internal sealed partial class InvoiceVisionWindow
                     new {variant="clahe_2x",posting_eligible=false,
                         source_ocr_words_total=23,source_boxes_are_original_pixels=true}
                 }
+            }, source_field_row_anchors_r245=new {
+                status="SOURCE_FIELD_AND_ITEM_ROW_ASSOCIATIONS_REVIEW_ONLY",
+                posting_eligible=false,
+                field_label_anchored_proposals=new [] {
+                    new {category="invoice_number",candidate_text="TEST2026A17",posting_eligible=false}
+                },
+                table_header_anchored_row_proposals=new [] {
+                    new {type="HEADER_COLUMN_ITEM_ROW_UNVERIFIED",posting_eligible=false}
+                }
             }}
         };
         using (var syntheticDoc=JsonDocument.Parse(JsonSerializer.Serialize(synthetic)))
@@ -588,7 +597,8 @@ internal sealed partial class InvoiceVisionWindow
                !_r237SourceSplitCandidates.Text.Contains("33051090") ||
                !_r238QrStatus.Text.Contains("TEST-QR-0049") ||
                !_r243AlternativeOcr.Text.Contains("clahe_2x: 23 OCR source words") ||
-               !_r244LowConfidence.Text.Contains("20 | 30"))
+               !_r244LowConfidence.Text.Contains("20 | 30") ||
+               !_r245FieldRows.Text.Contains("TEST2026A17"))
                 throw new InvalidOperationException("R233 native source queue did not display synthetic evidence.");
         }
         using (var empty=JsonDocument.Parse("{}"))
@@ -600,7 +610,8 @@ internal sealed partial class InvoiceVisionWindow
                _r237SourceSplitCandidates.Text.Contains("33051090") ||
                _r238QrStatus.Text.Contains("TEST-QR-0049") ||
                _r243AlternativeOcr.Text.Contains("23 OCR source words") ||
-               _r244LowConfidence.Text.Contains("20 | 30"))
+               _r244LowConfidence.Text.Contains("20 | 30") ||
+               _r245FieldRows.Text.Contains("TEST2026A17"))
                 throw new InvalidOperationException("R233 leaked review data between source invoices.");
         }
     }
