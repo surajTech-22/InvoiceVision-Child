@@ -24,6 +24,7 @@ REVIEW_MODULES={
     'integration/Engine/INVOICE_OCR_SOURCE_FIELD_ASSOCIATIONS_R237.py': 'INVOICE_OCR_SOURCE_FIELD_ASSOCIATIONS_R237.py',
     'integration/Engine/INVOICE_OCR_QR_REVIEW_R238.py': 'INVOICE_OCR_QR_REVIEW_R238.py',
     'integration/Engine/INVOICE_OCR_GSTIN_REVIEW_R239.py': 'INVOICE_OCR_GSTIN_REVIEW_R239.py',
+    'integration/Engine/INVOICE_OCR_MULTISCALE_REVIEW_R243.py': 'INVOICE_OCR_MULTISCALE_REVIEW_R243.py',
 }
 
 
@@ -203,6 +204,47 @@ def stage(build):
     changes.append({'type':'R241_PRIVATE_CHILD_PROCESS_ONLY_OCR_ENVIRONMENT',
                     'previous_sha256':before_sha,
                     'overlay_sha256':after_sha})
+    # R243: integrate actual source-preserving 2x OCR evidence into the
+    # original Child category-first analyzer. No auto-selected values change.
+    analyzer_rel='InvoiceVisionChild/Engine/INVOICE_OCR_CATEGORY_FIRST_R101.py'
+    analyzer_path=build/analyzer_rel
+    analyzer=analyzer_path.read_text(encoding='utf-8-sig')
+    before=' regions,refinement,content_lines=refine_regions(oriented,coarse,content_tsv)'
+    after=before+'''
+ # R243 only adds alternative original-pixel-bound OCR review metadata.
+ # Original first-pass OCR/boxes, zone decisions and posting permissions stay.
+ try:
+  if binary and binary!='__PADDLEOCR3__':
+   import importlib.util
+   alt=Path(__file__).with_name('INVOICE_OCR_MULTISCALE_REVIEW_R243.py')
+   spec=importlib.util.spec_from_file_location('_child_r243_multiscale_review',alt)
+   if spec is None or spec.loader is None:raise RuntimeError('R243 source review missing')
+   module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+   def local_read(view,psm):
+    return ts_exec(binary,view,psm=str(psm),tsv=True,deadline=38)
+   refinement['alternate_multiscale_source_review']=module.review(oriented,local_read,max_words=480)
+  else:
+   refinement['alternate_multiscale_source_review']={
+    'status':'CPU_ALTERNATE_OCR_UNAVAILABLE','posting_eligible':False,
+    'release_approved':False}
+ except Exception as exc:
+  refinement['alternate_multiscale_source_review']={
+   'status':'REVIEW_UNAVAILABLE','error_type':type(exc).__name__,
+   'posting_eligible':False,'release_approved':False}
+'''
+    if analyzer.count(before)!=1:
+        raise ValueError('R243 genuine source analyzer OCR review anchor unexpectedly changed')
+    old_sha=hashlib.sha256(analyzer_path.read_bytes()).hexdigest()
+    analyzer_path.write_text(analyzer.replace(before,after),encoding='utf-8')
+    new_sha=hashlib.sha256(analyzer_path.read_bytes()).hexdigest()
+    records=[x for x in manifest['files'] if x['path']==analyzer_rel]
+    if len(records)!=1:raise ValueError('R243 actual category-first analyzer source missing')
+    records[0]['sha256']=new_sha
+    if 'size_bytes' in records[0]:
+        records[0]['size_bytes']=analyzer_path.stat().st_size
+    changes.append({'type':'R243_TWO_ALTERNATE_SOURCE_VIEW_OCR_AFTER_BASELINE',
+                    'target':analyzer_rel,'previous_sha256':old_sha,
+                    'overlay_sha256':new_sha})
     manifest_path.write_text(json.dumps(manifest,indent=2))
     (build/'R144_INTEGRATION_PROVENANCE.json').write_text(json.dumps({
         'changes':changes,
