@@ -62,6 +62,63 @@ def _load(name,module_name):
     spec.loader.exec_module(obj)
     return obj
 
+def distinct_source_rows(proposals,max_rows=24):
+    """Deduplicate *physical rows*, preserving disagreeing OCR alternatives.
+
+    Repeated PSM views of the same source line are not distinct invoice items.
+    If quantities/amounts conflict, preserve BOTH literal OCR readings and
+    refuse to certify the grouped row.
+    """
+    if not isinstance(proposals,list) or len(proposals)>80:
+        raise ValueError("Excessive source-row proposals")
+    groups=[]
+    for item in proposals:
+        if not isinstance(item,dict) or item.get("posting_eligible") is not False:
+            raise ValueError("Unsafe row candidate")
+        b=item.get("row_box")
+        if (not isinstance(b,list) or len(b)!=4 or
+            any(type(x)!=int for x in b) or not (b[0]<b[2] and b[1]<b[3])):
+            raise ValueError("Source row lacks physical source coordinates")
+        center_y=(b[1]+b[3])/2
+        height=b[3]-b[1]
+        group=None
+        for existing in groups:
+            e=existing["source_row_box"]
+            y=(e[1]+e[3])/2
+            height2=e[3]-e[1]
+            x_intersection=max(0,min(e[2],b[2])-max(e[0],b[0]))
+            x_support=x_intersection/max(1,min(e[2]-e[0],b[2]-b[0]))
+            if abs(center_y-y)<=max(7,min(height,height2)*.65) and x_support>=.5:
+                group=existing
+                break
+        value={
+            "source_view":item["source_view"],
+            "original_description":item["description_original_ocr"],
+            "original_quantity":item["quantity_original_ocr"],
+            "original_amount":item["amount_original_ocr"],
+            "source_row_box":list(b),
+            "field_value_verified":False,"posting_eligible":False
+        }
+        if group is None:
+            group={"source_row_box":list(b),"source_variants":[value],
+                   "conflicting_ocr_alternatives":False,
+                   "distinct_row_certified":False,
+                   "posting_eligible":False}
+            groups.append(group)
+        else:
+            group["source_variants"].append(value)
+            group["source_row_box"]=[
+                min(group["source_row_box"][0],b[0]),
+                min(group["source_row_box"][1],b[1]),
+                max(group["source_row_box"][2],b[2]),
+                max(group["source_row_box"][3],b[3])]
+            pairs={(v["original_description"],v["original_quantity"],
+                    v["original_amount"]) for v in group["source_variants"]}
+            group["conflicting_ocr_alternatives"]=len(pairs)>1
+        if len(groups)>max_rows:
+            raise ValueError("Too many physical table rows; fail closed")
+    return groups
+
 def review(image,reader):
     """reader(temp_image, psm) returns unmodified local Tesseract TSV."""
     if not callable(reader):raise ValueError("Offline OCR callback unavailable")
@@ -100,6 +157,10 @@ def review(image,reader):
          "posting_eligible":False,"variants":views}
     proposals=anchors.propose(alt,w,h,max_fields=24,max_rows=12)
     out["source_field_row_anchors"]=proposals
+    physical_rows=distinct_source_rows(proposals["table_header_anchored_row_proposals"])
+    out["source_unique_item_rows"]=physical_rows
+    out["source_unique_item_row_count"]=len(physical_rows)
+    out["physical_row_duplicate_evidence_count"]=max(0,proposals["row_proposals_count"]-len(physical_rows))
     out["provisional_table_rows"]=proposals["row_proposals_count"]
     out["provisional_label_fields"]=proposals["field_proposals_count"]
     if hashlib.sha256(image.tobytes(order="C")).hexdigest()!=evidence["source_decoded_sha256"]:
