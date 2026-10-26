@@ -21,8 +21,12 @@ def remove_long_ruling_lines(image):
     gray=(cv2.cvtColor(image,cv2.COLOR_BGR2GRAY)
           if image.ndim==3 else image.copy())
     up=cv2.resize(gray,None,fx=2,fy=2,interpolation=cv2.INTER_CUBIC)
-    binary=cv2.threshold(up,0,255,
-                         cv2.THRESH_BINARY_INV+cv2.THRESH_OTSU)[1]
+    # Uniform Otsu threshold mistakes grey phone-photo shadows/background
+    # for continuous black table lines; this falsely deletes real source ink.
+    # Locally adaptive foreground isolates printed rules despite vignetting.
+    binary=cv2.adaptiveThreshold(
+        up,255,cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY_INV,61,18)
     # Kernel sizes are proportional to whole-page source geometry, not
     # invoice/vendor-specific coordinates.
     kw=max(110,min(650,round(w*2*.085)))
