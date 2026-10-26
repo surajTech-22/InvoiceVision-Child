@@ -74,7 +74,11 @@ def propose(texts,boxes,width,height):
     candidates=[]
     for i,first in enumerate(texts):
         brand=first.strip()
-        if not _BRAND.fullmatch(brand) or boxes[i][1]>=height*.35:continue
+        # A postcode or phone tail is not a logo/brand: otherwise words like
+        # TOWN-572103 get spuriously attached to a valid supplier line.
+        if (not _BRAND.fullmatch(brand) or
+            sum(ch.isdigit() for ch in brand)>2 or
+            boxes[i][1]>=height*.35):continue
         fx=(boxes[i][0]+boxes[i][2])/2
         for j,legal in enumerate(texts):
             if i==j or not _NAME_ENDING.search(legal) or boxes[j][1]>=height*.35:continue
