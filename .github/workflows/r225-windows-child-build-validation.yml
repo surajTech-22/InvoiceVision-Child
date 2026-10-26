@@ -60,6 +60,26 @@ jobs:
         run: |
           & ./integration-build/scripts/build-windows.ps1
           if ($LASTEXITCODE -ne 0) { throw 'Real Windows Child build or smoke verification failed' }
+      - name: Verify R226 review modules were copied into real Windows publish output
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($name in @(
+              'INVOICE_OCR_PADDLE_ADAPTER_R112.py',
+              'INVOICE_OCR_RECURSIVE_ZONES_R109.py',
+              'INVOICE_OCR_SOURCE_ROWS_R223.py',
+              'INVOICE_OCR_SOURCE_REVIEW_R226.py')) {
+            $source = Join-Path 'integration-build/InvoiceVisionChild/Engine' $name
+            $published = Join-Path 'integration-build/build/publish/Engine' $name
+            if (-not (Test-Path -LiteralPath $source -PathType Leaf) -or
+                -not (Test-Path -LiteralPath $published -PathType Leaf)) {
+              throw "Real published Child is missing Engine source: $name"
+            }
+            $a = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash
+            $b = (Get-FileHash -LiteralPath $published -Algorithm SHA256).Hash
+            if ($a -cne $b) { throw "Published Child Engine hash mismatch: $name" }
+          }
+          Write-Host 'R226_WINDOWS_PUBLISHED_REVIEW_MODULE_HASH_PASS'
       - name: Check latest R220-R223 review-only regression tests
         shell: pwsh
         run: |
