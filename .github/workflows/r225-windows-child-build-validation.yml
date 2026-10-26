@@ -10,6 +10,8 @@ on:
       - 'integration/Engine/INVOICE_OCR_SOURCE_REVIEW_R226.py'
       - 'integration/Engine/INVOICE_OCR_LAYOUT_RECOVERY_R229.py'
       - 'experiments/test_r229_layout_recovery.py'
+      - 'integration/Engine/INVOICE_OCR_REVIEW_QUEUE_R231.py'
+      - 'experiments/test_r231_review_queue.py'
       - 'scripts/build-windows.ps1'
       - 'integration/Engine/**'
   workflow_dispatch:
@@ -74,7 +76,8 @@ jobs:
               'INVOICE_OCR_RECURSIVE_ZONES_R109.py',
               'INVOICE_OCR_SOURCE_ROWS_R223.py',
               'INVOICE_OCR_SOURCE_REVIEW_R226.py',
-              'INVOICE_OCR_LAYOUT_RECOVERY_R229.py')) {
+              'INVOICE_OCR_LAYOUT_RECOVERY_R229.py',
+              'INVOICE_OCR_REVIEW_QUEUE_R231.py')) {
             $source = Join-Path 'integration-build/InvoiceVisionChild/Engine' $name
             $published = Join-Path 'integration-build/build/publish/Engine' $name
             if (-not (Test-Path -LiteralPath $source -PathType Leaf) -or
@@ -109,6 +112,11 @@ jobs:
         run: |
           python -m unittest discover -s experiments -p 'test_r229_layout_recovery.py' -v
           if ($LASTEXITCODE -ne 0) { throw 'R229 source geometry regression failed' }
+      - name: Verify R231 immutable source queue safety
+        shell: pwsh
+        run: |
+          python -m unittest discover -s experiments -p 'test_r231_review_queue.py' -v
+          if ($LASTEXITCODE -ne 0) { throw 'R231 exact-source review queue regression failed' }
       - name: Verify R226 review hook inside staged WPF Child Engine
         shell: pwsh
         run: |
@@ -142,5 +150,6 @@ jobs:
             integration-build/InvoiceVisionChild/Engine/INVOICE_OCR_SOURCE_REVIEW_R226.py
             integration-build/InvoiceVisionChild/Engine/INVOICE_OCR_SOURCE_ROWS_R223.py
             integration-build/InvoiceVisionChild/Engine/INVOICE_OCR_LAYOUT_RECOVERY_R229.py
+            integration-build/InvoiceVisionChild/Engine/INVOICE_OCR_REVIEW_QUEUE_R231.py
           if-no-files-found: warn
           retention-days: 14
