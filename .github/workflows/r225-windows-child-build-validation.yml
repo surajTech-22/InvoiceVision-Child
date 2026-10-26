@@ -127,7 +127,8 @@ jobs:
               'INVOICE_OCR_TARGETED_RECHECK_R236.py',
               'INVOICE_OCR_SOURCE_FIELD_ASSOCIATIONS_R237.py',
               'INVOICE_OCR_QR_REVIEW_R238.py',
-              'INVOICE_OCR_GSTIN_REVIEW_R239.py')) {
+              'INVOICE_OCR_GSTIN_REVIEW_R239.py',
+              'INVOICE_OCR_MULTISCALE_REVIEW_R243.py')) {
             $source = Join-Path 'integration-build/InvoiceVisionChild/Engine' $name
             $published = Join-Path 'integration-build/build/publish/Engine' $name
             if (-not (Test-Path -LiteralPath $source -PathType Leaf) -or
@@ -192,6 +193,11 @@ jobs:
         run: |
           python -m unittest discover -s experiments -p 'test_r239_gstin_review.py' -v
           if ($LASTEXITCODE -ne 0) { throw 'R239 GSTIN source checksum regressions failed' }
+      - name: Verify R243 original-coordinate 2x OCR review and no-posting guards
+        shell: pwsh
+        run: |
+          python -m unittest discover -s experiments -p 'test_r243_multiscale_review.py' -v
+          if ($LASTEXITCODE -ne 0) { throw 'R243 source-box and multiscale safety tests failed' }
       - name: Verify R226 review hook inside staged WPF Child Engine
         shell: pwsh
         run: |
@@ -231,5 +237,6 @@ jobs:
             integration-build/InvoiceVisionChild/Engine/INVOICE_OCR_SOURCE_FIELD_ASSOCIATIONS_R237.py
             integration-build/InvoiceVisionChild/Engine/INVOICE_OCR_QR_REVIEW_R238.py
             integration-build/InvoiceVisionChild/Engine/INVOICE_OCR_GSTIN_REVIEW_R239.py
+            integration-build/InvoiceVisionChild/Engine/INVOICE_OCR_MULTISCALE_REVIEW_R243.py
           if-no-files-found: warn
           retention-days: 14
