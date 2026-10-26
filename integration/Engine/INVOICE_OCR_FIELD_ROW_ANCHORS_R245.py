@@ -118,7 +118,7 @@ def _table(lines,view,width,height,max_rows):
         # Source table headings can span two printed lines; group only within
         # 32 original pixels vertically, then require DESCRIPTION<QTY<AMOUNT.
         band=[x for x in all_words if
-              line["cy"]-5 <= (x["box"][1]+x["box"][3])/2 <= line["cy"]+32]
+              line["cy"]-22 <= (x["box"][1]+x["box"][3])/2 <= line["cy"]+32]
         if len(band)>80:continue
         description=[x for x in band if re.fullmatch(
             r"(?i:DESCRIPTION|PRODUCT|PARTICULARS|ITEM|GOODS)",x["text"].strip(":|"))]
