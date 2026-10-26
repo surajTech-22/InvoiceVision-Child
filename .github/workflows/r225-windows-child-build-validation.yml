@@ -131,7 +131,8 @@ jobs:
               'INVOICE_OCR_MULTISCALE_REVIEW_R243.py',
               'INVOICE_OCR_FIELD_CROP_REVIEW_R244.py',
               'INVOICE_OCR_FIELD_ROW_ANCHORS_R245.py',
-              'INVOICE_OCR_GRID_TABLE_R246.py')) {
+              'INVOICE_OCR_GRID_TABLE_R246.py',
+              'INVOICE_OCR_ITEM_AMOUNT_REREAD_R248.py')) {
             $source = Join-Path 'integration-build/InvoiceVisionChild/Engine' $name
             $published = Join-Path 'integration-build/build/publish/Engine' $name
             if (-not (Test-Path -LiteralPath $source -PathType Leaf) -or
@@ -216,6 +217,11 @@ jobs:
         run: |
           python -m unittest discover -s experiments -p 'test_r246_grid_table.py' -v
           if ($LASTEXITCODE -ne 0) { throw 'R246 synthetic invoice grid table regression failed' }
+      - name: Verify R248 source-amount missing-digit rechecks cannot accept untrusted OCR
+        shell: pwsh
+        run: |
+          python -m unittest discover -s experiments -p 'test_r248_amount_reread.py' -v
+          if ($LASTEXITCODE -ne 0) { throw 'R248 source amount recheck safety tests failed' }
       - name: Verify R226 review hook inside staged WPF Child Engine
         shell: pwsh
         run: |
@@ -259,5 +265,6 @@ jobs:
             integration-build/InvoiceVisionChild/Engine/INVOICE_OCR_FIELD_CROP_REVIEW_R244.py
             integration-build/InvoiceVisionChild/Engine/INVOICE_OCR_FIELD_ROW_ANCHORS_R245.py
             integration-build/InvoiceVisionChild/Engine/INVOICE_OCR_GRID_TABLE_R246.py
+            integration-build/InvoiceVisionChild/Engine/INVOICE_OCR_ITEM_AMOUNT_REREAD_R248.py
           if-no-files-found: warn
           retention-days: 14
