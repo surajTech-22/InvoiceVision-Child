@@ -147,6 +147,62 @@ def stage(build):
     changes.append({'type':'R234_DISABLE_CUSTOMER_CORPUS_UI_AND_AUTO_BENCHMARK',
                     'target':program_rel,'previous_sha256':old_program,
                     'overlay_sha256':new_program})
+    # R241: isolated, fully local OCR runtime support in the real Child.
+    # Preserve the sealed source archive. All substitutions are one-time,
+    # exact-match and fail if the baseline handoff changed unexpectedly.
+    bundled_source=ROOT/'integration/Window/InvoiceChildBundledRuntimeR241.cs'
+    bundled_target=build/'InvoiceVisionChild/InvoiceChildBundledRuntimeR241.cs'
+    if not bundled_source.is_file() or bundled_target.exists():
+        raise ValueError('R241 bundled runtime helper missing or source collision')
+    shutil.copyfile(bundled_source,bundled_target)
+    changes.append({'type':'R241_ADDITIVE_LOCAL_OCR_RUNTIME_SOURCE',
+                    'target':'InvoiceVisionChild/InvoiceChildBundledRuntimeR241.cs',
+                    'overlay_sha256':hashlib.sha256(bundled_target.read_bytes()).hexdigest()})
+    # Existing verified Paddle user runtimes retain precedence, and bundled
+    # local Tesseract is an additional verified, self-contained candidate.
+    handoff_rel='InvoiceVisionChild/AahInvoiceHandoff.cs'
+    handoff_path=build/handoff_rel
+    handoff=handoff_path.read_text(encoding='utf-8-sig')
+    handoff_before='var candidates = new[] {\n            verifiedPython,\n'
+    handoff_after=('var candidates = new[] {\n            verifiedPython,\n'
+                   '            InvoiceChildBundledRuntimeR241.PythonExecutable,\n')
+    subprocess_before='            start.ArgumentList.Add("-u"); start.ArgumentList.Add(engine);'
+    subprocess_after=('            InvoiceChildBundledRuntimeR241.Configure(start);\n'
+                      +subprocess_before)
+    for before,after in ((handoff_before,handoff_after),
+                         (subprocess_before,subprocess_after)):
+        if handoff.count(before)!=1:
+            raise ValueError('R241 original AAH handoff source changed unexpectedly')
+        handoff=handoff.replace(before,after)
+    handoff_original_sha=hashlib.sha256(handoff_path.read_bytes()).hexdigest()
+    handoff_path.write_text(handoff,encoding='utf-8')
+    handoff_new_sha=hashlib.sha256(handoff_path.read_bytes()).hexdigest()
+    handoff_matches=[v for v in manifest['files'] if v['path']==handoff_rel]
+    if len(handoff_matches)!=1:raise ValueError('Original handoff not in sealed manifest')
+    handoff_matches[0]['sha256']=handoff_new_sha
+    if 'size_bytes' in handoff_matches[0]:
+        handoff_matches[0]['size_bytes']=handoff_path.stat().st_size
+    changes.append({'type':'R241_OFFLINE_RUNTIME_AAH_HANDOFF',
+                    'previous_sha256':handoff_original_sha,
+                    'overlay_sha256':handoff_new_sha})
+    # Native category Analyze/OCR invokes the same isolated launcher.
+    cat=category_path.read_text(encoding='utf-8')
+    config_before='        foreach (var arg in arguments) psi.ArgumentList.Add(arg);'
+    config_after=('        InvoiceChildBundledRuntimeR241.Configure(psi);\n'
+                  +config_before)
+    if cat.count(config_before)!=1:raise ValueError('R241 Child OCR launch hook missing')
+    cat=cat.replace(config_before,config_after)
+    before_sha=hashlib.sha256(category_path.read_bytes()).hexdigest()
+    category_path.write_text(cat,encoding='utf-8')
+    after_sha=hashlib.sha256(category_path.read_bytes()).hexdigest()
+    cat_matches=[v for v in manifest['files'] if v['path']==category_rel]
+    if len(cat_matches)!=1:raise ValueError('Category source absent during runtime overlay')
+    cat_matches[0]['sha256']=after_sha
+    if 'size_bytes' in cat_matches[0]:
+        cat_matches[0]['size_bytes']=category_path.stat().st_size
+    changes.append({'type':'R241_PRIVATE_CHILD_PROCESS_ONLY_OCR_ENVIRONMENT',
+                    'previous_sha256':before_sha,
+                    'overlay_sha256':after_sha})
     manifest_path.write_text(json.dumps(manifest,indent=2))
     (build/'R144_INTEGRATION_PROVENANCE.json').write_text(json.dumps({
         'changes':changes,
