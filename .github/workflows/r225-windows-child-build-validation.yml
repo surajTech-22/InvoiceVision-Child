@@ -5,6 +5,7 @@ on:
     paths:
       - '.github/workflows/r225-windows-child-build-validation.yml'
       - 'scripts/stage-r144-integration.py'
+      - 'scripts/r227_replay_original_child_review.py'
       - 'scripts/build-windows.ps1'
       - 'integration/Engine/**'
   workflow_dispatch:
@@ -80,6 +81,12 @@ jobs:
             if ($a -cne $b) { throw "Published Child Engine hash mismatch: $name" }
           }
           Write-Host 'R226_WINDOWS_PUBLISHED_REVIEW_MODULE_HASH_PASS'
+      - name: Verify user-owned original-corpus replay harness syntax
+        shell: pwsh
+        run: |
+          python -m py_compile scripts/r227_replay_original_child_review.py
+          if ($LASTEXITCODE -ne 0) { throw 'R227 original source replay harness syntax failed' }
+          Write-Host 'R227_PRIVATE_ORIGINAL_CORPUS_NOT_UPLOADED_TO_PUBLIC_GITHUB'
       - name: Check latest R220-R223 review-only regression tests
         shell: pwsh
         run: |
