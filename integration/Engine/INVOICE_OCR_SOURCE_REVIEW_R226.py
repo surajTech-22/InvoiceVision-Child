@@ -32,8 +32,17 @@ def _raw_tsv_observations(tsv, width, height):
         if not row.strip():
             continue
         parts = row.split('\t', 11)
-        if len(parts) != 12 or parts[0] != '5':
+        # Real Tesseract TSV contains page/block/paragraph/line hierarchy
+        # (levels 1-4) with conf=-1 and empty text. Synthetic word-only TSV
+        # fixtures omitted these rows and previously concealed this failure.
+        if len(parts) != 12 or parts[0] not in ('1','2','3','4','5'):
             raise ValueError('Unrecognized raw OCR TSV at row %d' % row_id)
+        if parts[0] in ('1','2','3','4'):
+            continue
+        # An empty word-level OCR observation has no printed characters to
+        # preserve; never invent or approve text from conf=-1 placeholders.
+        if not parts[11].strip():
+            continue
         try:
             x, y, w, h = [int(parts[i]) for i in (6, 7, 8, 9)]
             conf = float(parts[10])
@@ -42,9 +51,6 @@ def _raw_tsv_observations(tsv, width, height):
         if not (math.isfinite(conf) and 0 <= conf <= 100 and
                 0 <= x < x + w <= width and 0 <= y < y + h <= height):
             raise ValueError('Source observation is outside source image at row %d' % row_id)
-        if not parts[11].strip():
-            # A blank string has no source evidence, and is NOT repaired.
-            raise ValueError('Empty source text at row %d' % row_id)
         texts.append(parts[11])
         rects.append([x, y, x+w, y+h])
         tsv_rows.append(row_id)
