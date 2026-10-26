@@ -25,12 +25,16 @@ def views(image):
             "clahe_2x":cv2.createCLAHE(clipLimit=2.2,tileGridSize=(12,12)).apply(up)}
 
 def source_words(tsv,width,height,scale=2):
-    if not isinstance(tsv,str) or not tsv.startswith(HEADER+"\n"):
+    # Tesseract TSV is CRLF on some Windows builds and LF on Unix;
+    # parse physical lines without losing or rewriting any OCR word text.
+    if not isinstance(tsv,str):raise ValueError("OCR TSV must be text")
+    lines=tsv.splitlines()
+    if not lines or lines[0]!=HEADER:
         raise ValueError("OCR TSV header invalid")
     if type(scale) is not int or scale<1 or scale>4:
         raise ValueError("Scale out of bounds")
     words=[]
-    for row_id,row in enumerate(tsv.splitlines()[1:],2):
+    for row_id,row in enumerate(lines[1:],2):
         if not row.strip(): continue
         a=row.split("\t",11)
         if len(a)!=12 or a[0] not in ('1','2','3','4','5'):
