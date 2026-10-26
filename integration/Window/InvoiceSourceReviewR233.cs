@@ -269,6 +269,15 @@ internal sealed partial class InvoiceVisionWindow
                             original_box=new [] {1,2,100,24}
                         }}
                     }}
+                },
+                field_consistency_review=new {
+                    status="SOURCE_EVIDENCE_CONSISTENCY_REVIEW_ONLY",
+                    posting_eligible=false,
+                    warnings=new [] {new {
+                        issue="NINE_DIGIT_HSN_WITH_POSSIBLE_LEADING_SERIAL",
+                        raw_ocr_text="433051090 SYNTHETIC PRODUCT",
+                        posting_eligible=false
+                    }}
                 }
             }}
         };
@@ -276,13 +285,16 @@ internal sealed partial class InvoiceVisionWindow
         {
             LoadSourceReviewQueueR233(syntheticDoc.RootElement,new string('c',64));
             if(_r233Queue.Count!=1 || _r233List.Items.Count!=1 ||
-               !_r233Summary.Text.Contains("1 original-source item"))
+               !_r233Summary.Text.Contains("1 original-source item") ||
+               !_r235FieldWarnings.Text.Contains("NINE_DIGIT_HSN_WITH_POSSIBLE_LEADING_SERIAL"))
                 throw new InvalidOperationException("R233 native source queue did not display synthetic evidence.");
         }
         using (var empty=JsonDocument.Parse("{}"))
         {
             LoadSourceReviewQueueR233(empty.RootElement,new string('d',64));
-            if(_r233Queue.Count!=0 || _r233List.Items.Count!=0 || _r233PhotoHash is not null)
+            if(_r233Queue.Count!=0 || _r233List.Items.Count!=0 ||
+               _r233PhotoHash is not null ||
+               _r235FieldWarnings.Text.Contains("SYNTHETIC PRODUCT"))
                 throw new InvalidOperationException("R233 leaked review data between source invoices.");
         }
     }
