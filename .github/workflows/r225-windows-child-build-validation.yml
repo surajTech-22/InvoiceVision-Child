@@ -17,6 +17,8 @@ on:
       - 'integration/Window/**'
       - 'integration/Engine/INVOICE_OCR_FIELD_CONSISTENCY_R235.py'
       - 'experiments/test_r235_source_field_consistency.py'
+      - 'experiments/test_r236_targeted_recheck.py'
+      - 'experiments/test_r237_source_field_associations.py'
   workflow_dispatch:
 permissions:
   contents: read
