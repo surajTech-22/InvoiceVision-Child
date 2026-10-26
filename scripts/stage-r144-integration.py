@@ -27,6 +27,7 @@ REVIEW_MODULES={
     'integration/Engine/INVOICE_OCR_MULTISCALE_REVIEW_R243.py': 'INVOICE_OCR_MULTISCALE_REVIEW_R243.py',
     'integration/Engine/INVOICE_OCR_FIELD_CROP_REVIEW_R244.py': 'INVOICE_OCR_FIELD_CROP_REVIEW_R244.py',
     'integration/Engine/INVOICE_OCR_FIELD_ROW_ANCHORS_R245.py': 'INVOICE_OCR_FIELD_ROW_ANCHORS_R245.py',
+    'integration/Engine/INVOICE_OCR_GRID_TABLE_R246.py': 'INVOICE_OCR_GRID_TABLE_R246.py',
 }
 
 
@@ -240,6 +241,20 @@ def stage(build):
     refinement['source_field_row_anchors_r245']={
      'status':'SOURCE_FIELD_ROW_ANCHORS_UNAVAILABLE',
      'error_type':type(anchor_error).__name__,
+     'posting_eligible':False,'release_approved':False}
+   # R246 treats ruling-line-suppressed OCR only as a separate row hypothesis;
+   # it cannot overwrite R243/R245 first-pass evidence or approve fields.
+   try:
+    grid_path=Path(__file__).with_name('INVOICE_OCR_GRID_TABLE_R246.py')
+    gspec=importlib.util.spec_from_file_location('_child_r246_grid_table',grid_path)
+    if gspec is None or gspec.loader is None:
+     raise RuntimeError('R246 grid source table module missing')
+    gmodule=importlib.util.module_from_spec(gspec);gspec.loader.exec_module(gmodule)
+    refinement['source_grid_table_review_r246']=gmodule.review(oriented,local_read)
+   except Exception as grid_error:
+    refinement['source_grid_table_review_r246']={
+     'status':'GRID_TABLE_REVIEW_UNAVAILABLE',
+     'error_type':type(grid_error).__name__,
      'posting_eligible':False,'release_approved':False}
   else:
    refinement['alternate_multiscale_source_review']={
