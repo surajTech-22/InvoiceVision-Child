@@ -188,7 +188,7 @@ def review(image, raw_tsv):
                     return answer.stdout.decode('utf-8',errors='replace').strip()
                 for hint in hints[:4]:
                     try:
-                        rec=module.reread(img,hint['original_ocr_text'],
+                        rec=module.reread(image,hint['original_ocr_text'],
                                           hint['source_box'],hint['suggested_rotation'],
                                           local_reader)
                         rec['source_token_index']=hint['source_token_index']
