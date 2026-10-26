@@ -62,6 +62,45 @@ if (Test-Path -LiteralPath $customerPhotos) {
 }
 Write-Host 'R234_PRIVATE_CUSTOMER_PHOTO_CORPUS_EXCLUDED_FROM_PUBLISH'
 
+# R241 optional self-contained OCR runtime: never silently call an installer
+# or download files on end-user systems. Validate a complete prebuilt runtime
+# when provided; an absent Runtime is clearly marked NOT BUNDLED.
+$runtimeSource = Join-Path $root 'Runtime'
+$bundledRuntimePresent = Test-Path -LiteralPath $runtimeSource -PathType Container
+if ($bundledRuntimePresent) {
+    $verification = Join-Path $runtimeSource 'R241_RUNTIME_VERIFICATION.json'
+    if (-not (Test-Path -LiteralPath $verification -PathType Leaf)) {
+        throw 'R241 standalone OCR runtime lacks proof of isolated Windows testing'
+    }
+    $requiredFiles = @(
+        'Python\python.exe',
+        'Tesseract\tesseract.exe',
+        'Tesseract\tessdata\eng.traineddata'
+    )
+    foreach ($relative in $requiredFiles) {
+        if (-not (Test-Path -LiteralPath (Join-Path $runtimeSource $relative) -PathType Leaf)) {
+            throw "Incomplete bundled offline OCR runtime: $relative"
+        }
+    }
+    $destination = Join-Path $publish 'Runtime'
+    Copy-Item -LiteralPath $runtimeSource -Destination $destination -Recurse -Force
+    $offlinePython = Join-Path $destination 'Python\python.exe'
+    & $offlinePython -I -c 'import cv2,numpy,sys; assert cv2.__version__; assert numpy.__version__; print("R241_RELOCATED_PYTHON_OPENCV_VERIFIED")'
+    if ($LASTEXITCODE -ne 0) { throw 'Published isolated Python runtime cannot import OpenCV and Numpy' }
+    $bundledTesseract = Join-Path $destination 'Tesseract\tesseract.exe'
+    $oldTessPrefix = $env:TESSDATA_PREFIX
+    try {
+        $env:TESSDATA_PREFIX = Join-Path $destination 'Tesseract\tessdata'
+        & $bundledTesseract --list-langs
+        if ($LASTEXITCODE -ne 0) { throw 'Published isolated Tesseract language models are unavailable' }
+    } finally {
+        $env:TESSDATA_PREFIX = $oldTessPrefix
+    }
+    Write-Host 'R241_ISOLATED_OFFLINE_OCR_RUNTIME_PUBLISHED_AND_READBACK_PASS'
+} else {
+    Write-Host 'R241_OFFLINE_OCR_RUNTIME_NOT_BUNDLED_INSTALLER_STILL_BLOCKED'
+}
+
 # Run the app's REAL startup smoke test. A headless GitHub runner may not
 # provide an interactive desktop; in that case fail instead of certifying.
 $smoke = Join-Path $root 'build\startup-smoke.txt'
@@ -90,6 +129,7 @@ $report = @{
     source_version = 'R113_R4_R2_VERIFIED_BASELINE'
     field_accuracy_certified = $false
     private_invoice_corpus_included = $false
+    offline_runtime_bundled = [bool]$bundledRuntimePresent
     private_invoice_examples_automatically_executed = $false
     note = 'Packaging validation only. Full invoice recognition remains provisional.'
 }
