@@ -20,6 +20,7 @@ on:
       - 'experiments/test_r236_targeted_recheck.py'
       - 'experiments/test_r237_source_field_associations.py'
       - 'experiments/test_r238_qr_review.py'
+      - 'experiments/test_r239_gstin_review.py'
   workflow_dispatch:
 permissions:
   contents: read
@@ -123,7 +124,8 @@ jobs:
               'INVOICE_OCR_FIELD_CONSISTENCY_R235.py',
               'INVOICE_OCR_TARGETED_RECHECK_R236.py',
               'INVOICE_OCR_SOURCE_FIELD_ASSOCIATIONS_R237.py',
-              'INVOICE_OCR_QR_REVIEW_R238.py')) {
+              'INVOICE_OCR_QR_REVIEW_R238.py',
+              'INVOICE_OCR_GSTIN_REVIEW_R239.py')) {
             $source = Join-Path 'integration-build/InvoiceVisionChild/Engine' $name
             $published = Join-Path 'integration-build/build/publish/Engine' $name
             if (-not (Test-Path -LiteralPath $source -PathType Leaf) -or
@@ -183,6 +185,11 @@ jobs:
         run: |
           python -m unittest discover -s experiments -p 'test_r238_qr_review.py' -v
           if ($LASTEXITCODE -ne 0) { throw 'R238 QR source decoding and fail-closed review tests failed' }
+      - name: Verify R239 GSTIN check digit OCR disagreement regressions
+        shell: pwsh
+        run: |
+          python -m unittest discover -s experiments -p 'test_r239_gstin_review.py' -v
+          if ($LASTEXITCODE -ne 0) { throw 'R239 GSTIN source checksum regressions failed' }
       - name: Verify R226 review hook inside staged WPF Child Engine
         shell: pwsh
         run: |
@@ -221,5 +228,6 @@ jobs:
             integration-build/InvoiceVisionChild/Engine/INVOICE_OCR_TARGETED_RECHECK_R236.py
             integration-build/InvoiceVisionChild/Engine/INVOICE_OCR_SOURCE_FIELD_ASSOCIATIONS_R237.py
             integration-build/InvoiceVisionChild/Engine/INVOICE_OCR_QR_REVIEW_R238.py
+            integration-build/InvoiceVisionChild/Engine/INVOICE_OCR_GSTIN_REVIEW_R239.py
           if-no-files-found: warn
           retention-days: 14
