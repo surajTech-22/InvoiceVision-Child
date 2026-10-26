@@ -5,6 +5,9 @@ on:
     paths:
       - 'experiments/r220_github_source_witness_adapter.py'
       - 'experiments/test_r220_github_source_witness_adapter.py'
+      - 'experiments/r221_strict_currency_words.py'
+      - 'experiments/test_r221_strict_currency_words.py'
+      - 'experiments/test_r221_witness_integration.py'
       - '.github/workflows/r220-source-witness-gates.yml'
   pull_request:
     branches: [research/invoicevision-r153-source-associations]
@@ -25,4 +28,4 @@ jobs:
         with:
           python-version: '3.11'
       - name: Verify source-evidence adapter and no-accounting-write safety
-        run: python experiments/test_r220_github_source_witness_adapter.py
+        run: python -m unittest discover -s experiments -p 'test_r22*.py' -v
