@@ -59,4 +59,28 @@ class PrintedRuleBands(unittest.TestCase):
         self.assertFalse(out["accounting_write_permitted"])
     def test_unbounded_crop_output_fails_closed(self):
         with self.assertRaises(ValueError):m.review(scene(),src(),lambda *_:"A"*100001)
+    def test_r260_empty_singleline_uses_separate_original_context_read(self):
+        modes=[]
+        def ocr(image,psm):
+            modes.append(psm)
+            value="RECOVERED" if psm==6 else ""
+            base="level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n"
+            return base+(f"5\t1\t1\t1\t1\t1\t4\t4\t18\t10\t66\t{value}\n" if value else "")
+        out=m.review(scene(),src(),ocr)
+        self.assertEqual(out["detected_physical_row_bands"],7)
+        self.assertTrue(all(len(row["text_view_alternatives"])==2 for row in out["row_bands"]))
+        self.assertTrue(all(row["text_view_alternatives"][1]["original_description_ocr"]=="RECOVERED"
+                            for row in out["row_bands"]))
+        self.assertTrue(all(row["text_view_alternatives"][1]["may_contain_adjacent_source_ink"] is True
+                            for row in out["row_bands"]))
+        self.assertEqual(modes.count(7),7)
+        self.assertEqual(modes.count(6),7)
+        self.assertEqual(out["verified_item_rows"],0)
+        self.assertFalse(out["accounting_write_permitted"])
+    def test_r260_malformed_fallback_tsv_fails_closed(self):
+        def ocr(image,psm):
+            if psm==6:return "bad-tsv-header\ntext"
+            return "level\ttext\n"
+        with self.assertRaises(ValueError):m.review(scene(),src(),ocr)
+
 if __name__=="__main__":unittest.main(verbosity=2)
