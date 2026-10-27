@@ -349,3 +349,129 @@ def propose(alternate,width,height,*,max_fields=30,max_rows=15):
         "posting_eligible":False,
         "release_approved":False
     }
+
+def propose_cross_view_description_rows(alternate,width,height,*,max_rows=8):
+    """Propose only source-supported, split-view OCR rows; never fill a field.
+
+    An intact physical table header and numeric cells must be present in one
+    OCR view. A second view may supply literal description fragments at the
+    exact numeric source baseline if the first view has NO description there.
+    Source indices are kept separately for each view, never concatenated.
+    """
+    if (type(width)!=int or type(height)!=int or
+        not (0<width<=30000 and 0<height<=30000 and 1<=max_rows<=8)):
+        raise ValueError("Unsafe cross-view source bounds")
+    if (not isinstance(alternate,dict) or
+        alternate.get("status")!="SOURCE_MULTISCALE_ALTERNATIVES_REVIEW_ONLY" or
+        alternate.get("posting_eligible") is not False):
+        raise ValueError("Only immutable original-source review allowed")
+    views=alternate.get("variants")
+    if not isinstance(views,list) or len(views)!=2:
+        raise ValueError("Exactly two source OCR witnesses required")
+    records=[];names=set()
+    for view in views:
+        if (not isinstance(view,dict) or view.get("posting_eligible") is not False
+            or view.get("source_boxes_are_original_pixels") is not True
+            or view.get("variant") not in ("gray_2x","clahe_2x",
+                 "grid_removed_psm11_2x","grid_removed_psm6_2x")
+            or view["variant"] in names):
+            raise ValueError("Untrusted source-view provenance")
+        names.add(view["variant"])
+        source=view.get("source_words")
+        if not isinstance(source,list) or len(source)>480:
+            raise ValueError("Excessive source OCR observations")
+        words=[]
+        for i,item in enumerate(source):
+            box,literal=_tokenbox(item,width,height)
+            words.append({"index":i,"text":literal,"box":box})
+        records.append((view["variant"],words))
+    def middle(box):
+        return ((box[0]+box[2])/2,(box[1]+box[3])/2)
+    result=[]
+    for first,second in ((records[0],records[1]),(records[1],records[0])):
+        primary_name,primary=first
+        witness_name,secondary=second
+        descriptions=[x for x in primary if re.fullmatch(
+            r"(?i:DESCRIPTION|PRODUCT|PARTICULARS|ITEM|GOODS)",
+            _header_text(x["text"]))]
+        quantities=[x for x in primary if not _enclosed_unit_note(x["text"])
+            and re.fullmatch(r"(?i:QTY|QUANTITY|PCS|PES|PIECES)",
+                             _header_text(x["text"]))]
+        amounts=[x for x in primary if re.fullmatch(
+            r"(?i:AMOUNT|NETAMT|NETAMOUNT)",_header_text(x["text"]))]
+        bands=[]
+        for d in descriptions:
+            for q in quantities:
+                for a in amounts:
+                    if (middle(d["box"])[0]+35 < middle(q["box"])[0] <
+                        middle(a["box"])[0]-55 and
+                        max(middle(t["box"])[1] for t in (d,q,a))-
+                        min(middle(t["box"])[1] for t in (d,q,a))<=32):
+                        bands.append((d,q,a))
+        if len(bands)>8:
+            raise ValueError("Ambiguous source table heading sets")
+        source_witness={}
+        for d,q,a in bands:
+            bottom=max(d["box"][3],q["box"][3],a["box"][3])
+            end=min(height,bottom+min(max(240,height*.5),900))
+            qx=middle(q["box"])[0];ax=middle(a["box"])[0]
+            desc_min=d["box"][0]-120;desc_max=q["box"][0]-12
+            qnums=[x for x in primary if
+                bottom+3<middle(x["box"])[1]<end and
+                _NUM_RE.fullmatch(x["text"].strip("()|").replace(",","")) and
+                abs(middle(x["box"])[0]-qx)<max(65,min(150,width*.06))]
+            anums=[x for x in primary if
+                bottom+3<middle(x["box"])[1]<end and
+                _NUM_RE.fullmatch(x["text"].strip("()|").replace(",","")) and
+                abs(middle(x["box"])[0]-ax)<max(90,min(320,width*.13))]
+            if len(qnums)>40 or len(anums)>40:
+                raise ValueError("Excessive candidate numeric source cells")
+            for qw in qnums:
+                for aw in anums:
+                    if abs(middle(qw["box"])[1]-middle(aw["box"])[1])>13:
+                        continue
+                    cy=(middle(qw["box"])[1]+middle(aw["box"])[1])/2
+                    # If the primary OCR already has a description on this
+                    # source baseline, leave that reading intact and separate.
+                    if any(desc_min<=x["box"][0] and x["box"][2]<desc_max and
+                           abs(middle(x["box"])[1]-cy)<21 and
+                           re.search(r"[A-Za-z]{2,}",x["text"])
+                           for x in primary):
+                        continue
+                    for item in secondary:
+                        if (desc_min<=item["box"][0] and
+                            item["box"][2]<desc_max and
+                            abs(middle(item["box"])[1]-cy)<20 and
+                            re.search(r"[A-Za-z]{2,}",item["text"])):
+                            source_witness[item["index"]]=item
+        if not source_witness:
+            continue
+        offset=len(primary)
+        # Make transient indices disjoint for _table; discard them before
+        # output in favour of true per-view source OCR token identifiers.
+        attached=[{"index":offset+i,"box":word["box"],
+                   "text":word["text"]}
+                  for i,word in sorted(source_witness.items())]
+        rows=_table(_lines(primary+attached),primary_name,width,height,max_rows)
+        for row in rows:
+            indices=row.pop("source_token_indices")
+            source_desc=indices[:-2]
+            if not source_desc or any(i<offset for i in source_desc):
+                continue
+            if indices[-2]>=offset or indices[-1]>=offset:
+                continue
+            row["type"]="CROSS_VIEW_SOURCE_DESCRIPTION_REVIEW_ONLY"
+            row["source_view"]=primary_name+"__description_from__"+witness_name
+            row["description_source_view"]=witness_name
+            row["quantity_source_view"]=primary_name
+            row["amount_source_view"]=primary_name
+            row["source_token_indices_by_view"]={
+                primary_name:indices[-2:],
+                witness_name:[i-offset for i in source_desc]}
+            row["description_fragment_only"]=True
+            row["row_complete_certified"]=False
+            row["posting_eligible"]=False
+            result.append(row)
+            if len(result)>max_rows:
+                raise ValueError("Too many cross-view row hypotheses")
+    return result
