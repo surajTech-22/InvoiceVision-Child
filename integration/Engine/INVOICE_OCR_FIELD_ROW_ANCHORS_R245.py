@@ -168,6 +168,16 @@ def _table(lines,view,width,height,max_rows):
         if not(desc_x+35<qty_x<amount_x-55):continue
         header_bottom=max(desc["box"][3],qty["box"][3],amount["box"][3])
         table_end=min(height,header_bottom+min(max(140,int(height*.28)),650))
+        # A printed subtotal/total in the DESCRIPTION region marks the end
+        # of the item table. Without this anchor, amounts from later tax/
+        # payment summaries can become phantom item rows.
+        footer_labels=[x for x in all_words if
+                       x["box"][0]<qty["box"][0]-12 and
+                       header_bottom+18<(x["box"][1]+x["box"][3])/2<table_end and
+                       re.fullmatch(r"(?i:SUBTOTAL|TOTAL|GRAND|NET)",
+                                    x["text"].strip(":|"))]
+        footer_stop=min(((x["box"][1]+x["box"][3])/2 for x in footer_labels),
+                        default=table_end+1)
         # Description text determines ROW geometry, not numbers elsewhere.
         anchors=[x for x in all_words if
                  x["box"][0]>=desc["box"][0]-100 and
@@ -187,6 +197,8 @@ def _table(lines,view,width,height,max_rows):
                 centers.append({"center":cy,"words":[word]})
         for group in centers:
             cy=group["center"]
+            if cy>=footer_stop-6:
+                break
             # Require a UNIQUE numeric source observation near each detected
             # physical table column. Ambiguity is omitted, never guessed.
             # Distinguish close CS / PCS / Total Units columns from their
