@@ -116,9 +116,11 @@ def distinct_source_rows(proposals,max_rows=24):
         for existing in groups:
             # Compare against each actual OCR view, not a growing union box:
             # this prevents chained merges of distinct printed item rows.
-            if any(close_source_cell(qty_cell,obs["quantity_source_box"]) and
-                   close_source_cell(amount_cell,obs["amount_source_box"])
-                   for obs in existing["source_variants"]):
+            prior=existing["source_variants"]
+            if (all(obs["source_view"]!=item["source_view"] for obs in prior) and
+                all(close_source_cell(qty_cell,obs["quantity_source_box"]) and
+                    close_source_cell(amount_cell,obs["amount_source_box"])
+                    for obs in prior)):
                 group=existing
                 break
         value={
