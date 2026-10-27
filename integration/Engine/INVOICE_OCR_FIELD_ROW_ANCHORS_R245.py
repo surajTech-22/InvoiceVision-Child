@@ -136,7 +136,7 @@ def _table(lines,view,width,height,max_rows):
         # alone does not prove an item AMOUNT column: require the adjacent
         # source-literal TOTAL label, to the left and on the same table band.
         inclusive_value_tokens=[x for x in band if
-            re.match(r"(?i:^VALUE(?:[(:]?INCL.*)?$)",
+            re.match(r"(?i:^VALUE(?:.{0,3}INCL.*)?$)",
                      re.sub(r"\s+","",x["text"]).strip(":|"))]
         eligible_amounts=[]
         for token in amount_tokens:
