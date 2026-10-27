@@ -25,6 +25,7 @@ on:
       - 'experiments/test_r239_gstin_review.py'
       - 'experiments/test_r245_field_row_anchors.py'
       - 'experiments/test_r246_grid_table.py'
+      - 'experiments/test_r259_rule_bands.py'
       - 'experiments/test_r248_amount_reread.py'
   workflow_dispatch:
 permissions:
@@ -135,6 +136,7 @@ jobs:
               'INVOICE_OCR_FIELD_CROP_REVIEW_R244.py',
               'INVOICE_OCR_FIELD_ROW_ANCHORS_R245.py',
               'INVOICE_OCR_GRID_TABLE_R246.py',
+              'INVOICE_OCR_RULED_ROW_BANDS_R259.py',
               'INVOICE_OCR_ITEM_AMOUNT_REREAD_R248.py')) {
             $source = Join-Path 'integration-build/InvoiceVisionChild/Engine' $name
             $published = Join-Path 'integration-build/build/publish/Engine' $name
@@ -220,6 +222,11 @@ jobs:
         run: |
           python -m unittest discover -s experiments -p 'test_r246_grid_table.py' -v
           if ($LASTEXITCODE -ne 0) { throw 'R246 synthetic invoice grid table regression failed' }
+      - name: Verify R259 skew-aware source-printed row bands are always review-only
+        shell: pwsh
+        run: |
+          python -m unittest discover -s experiments -p 'test_r259_rule_bands.py' -v
+          if ($LASTEXITCODE -ne 0) { throw 'R259 printed table source geometry safety regression failed' }
       - name: Verify R248 source-amount missing-digit rechecks cannot accept untrusted OCR
         shell: pwsh
         run: |
