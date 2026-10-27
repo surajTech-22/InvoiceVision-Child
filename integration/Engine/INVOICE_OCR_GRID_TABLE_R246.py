@@ -125,6 +125,11 @@ def distinct_source_rows(proposals,max_rows=24):
                 break
         value={
             "source_view":item["source_view"],
+            "description_source_view":item.get("description_source_view",item["source_view"]),
+            "quantity_source_view":item.get("quantity_source_view",item["source_view"]),
+            "amount_source_view":item.get("amount_source_view",item["source_view"]),
+            "source_token_indices_by_view":item.get("source_token_indices_by_view",{}),
+            "description_fragment_only":item.get("description_fragment_only",False),
             "original_description":item["description_original_ocr"],
             "original_quantity":item["quantity_original_ocr"],
             "original_amount":item["amount_original_ocr"],
@@ -191,7 +196,13 @@ def review(image,reader,plain_reader=None):
          "posting_eligible":False,"variants":views}
     proposals=anchors.propose(alt,w,h,max_fields=24,max_rows=12)
     out["source_field_row_anchors"]=proposals
-    physical_rows=distinct_source_rows(proposals["table_header_anchored_row_proposals"])
+    # A header/numeric view may have missed the physical description; a
+    # different OCR view can supply literal source fragments as separate,
+    # unverified provenance. Never overwrite either original OCR observation.
+    cross=anchors.propose_cross_view_description_rows(alt,w,h,max_rows=8)
+    out["cross_view_description_row_proposals"]=cross
+    out["source_cross_view_row_count"]=len(cross)
+    physical_rows=distinct_source_rows(proposals["table_header_anchored_row_proposals"]+cross)
     out["source_unique_item_rows"]=physical_rows
     # R248: re-read the actual printed amount cell, including possible
     # missing leading ink. Every result remains a provisional observation.
@@ -213,8 +224,8 @@ def review(image,reader,plain_reader=None):
             "release_approved":False}
 
     out["source_unique_item_row_count"]=len(physical_rows)
-    out["physical_row_duplicate_evidence_count"]=max(0,proposals["row_proposals_count"]-len(physical_rows))
-    out["provisional_table_rows"]=proposals["row_proposals_count"]
+    out["provisional_table_rows"]=proposals["row_proposals_count"]+len(cross)
+    out["physical_row_duplicate_evidence_count"]=max(0,out["provisional_table_rows"]-len(physical_rows))
     out["provisional_label_fields"]=proposals["field_proposals_count"]
     if hashlib.sha256(image.tobytes(order="C")).hexdigest()!=evidence["source_decoded_sha256"]:
         raise RuntimeError("Source image changed during line-removed OCR")
