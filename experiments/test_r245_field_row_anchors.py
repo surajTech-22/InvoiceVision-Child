@@ -229,6 +229,7 @@ class SourceAnchoredFieldRows(unittest.TestCase):
                             and row["posting_eligible"] is False
                             for row in result["table_header_anchored_row_proposals"]))
         self.assertFalse(result["accounting_write_permitted"])
+        self.assertTrue(all(row["header_source_boxes"]["description"]==[35,255,170,275] for row in result["table_header_anchored_row_proposals"]))
 
     def test_r252_punctuated_header_labels_remain_source_literal(self):
         words=[token("DESCRIPTION:",35,255,145),
@@ -261,5 +262,37 @@ class SourceAnchoredFieldRows(unittest.TestCase):
         self.assertEqual(result["row_proposals_count"],0)
         self.assertEqual(result["verified_table_rows"],0)
         self.assertFalse(result["release_approved"])
+    def test_r253_seven_printed_rows_survive_page_fraction_cutoff(self):
+        # Seven physical product rows span almost half the printed page.
+        # The former 28%-height limit suppressed the lower three.
+        words=[token("DESCRIPTION",35,130,140),token("QTY",250,130,42),
+               token("AMOUNT",410,130,92)]
+        for i in range(7):
+            y=195+45*i
+            words.extend([token("PRODUCT",35,y,93),
+                          token("CODE"+str(i+1),135,y,65),
+                          token(str(i+1),251,y,28),
+                          token(str(100+i)+".00",420,y,72)])
+        # Printed financial footer must suppress a fake numeric summary row
+        # even though that row falls within the widened source-search window.
+        words.extend([token("TOTAL",35,510,65),
+                      token("FREIGHT",35,530,88),
+                      token("2",251,530,28),token("25.00",420,530,67)])
+        src={"status":"SOURCE_MULTISCALE_ALTERNATIVES_REVIEW_ONLY",
+             "posting_eligible":False,"variants":[
+                 {"variant":name,"posting_eligible":False,
+                  "source_boxes_are_original_pixels":True,"source_words":words}
+                 for name in ("gray_2x","clahe_2x")]}
+        result=mod.propose(src,650,800)
+        self.assertEqual(result["row_proposals_count"],14)
+        self.assertEqual(
+            [r["description_original_ocr"] for r in
+             result["table_header_anchored_row_proposals"][:7]],
+            ["PRODUCT CODE"+str(i+1) for i in range(7)])
+        self.assertTrue(all(r["posting_eligible"] is False
+                            and r["row_complete_certified"] is False
+                            for r in result["table_header_anchored_row_proposals"]))
+        self.assertEqual(result["verified_table_rows"],0)
+        self.assertFalse(result["accounting_write_permitted"])
 if __name__=="__main__":
     unittest.main(verbosity=2)
