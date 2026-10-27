@@ -117,6 +117,10 @@ def _table(lines,view,width,height,max_rows):
     These are HEADER aliases only; no quantity or amount is auto-corrected.
     """
     output=[]
+    # Source indices identify one physical heading/row *within this OCR view*.
+    # Overlapping line bands may see the same printed header twice.
+    seen_headers=set()
+    seen_numeric_rows=set()
     all_words=[word for line in lines for word in line["words"]]
     for line in lines:
         # Source table headings can span two printed lines; group only within
@@ -170,6 +174,9 @@ def _table(lines,view,width,height,max_rows):
         amount_x=(amount["box"][0]+amount["box"][2])/2
         desc_x=(desc["box"][0]+desc["box"][2])/2
         if not(desc_x+35<qty_x<amount_x-55):continue
+        header_key=(desc["index"],qty["index"],amount["index"])
+        if header_key in seen_headers:continue
+        seen_headers.add(header_key)
         header_bottom=max(desc["box"][3],qty["box"][3],amount["box"][3])
         # The old 28%-of-page search cut off tall printed product tables:
         # seven source rows may span more than the OCR header's first quarter.
@@ -248,7 +255,10 @@ def _table(lines,view,width,height,max_rows):
                 _NUM_RE.fullmatch(x["text"].strip("()|").replace(",",""))]
             if len(qty_words)!=1 or len(amount_words)!=1:continue
             if qty_words[0]["index"]==amount_words[0]["index"]:continue
+            physical_key=(qty_words[0]["index"],amount_words[0]["index"])
+            if physical_key in seen_numeric_rows:continue
             desc_words=sorted(group["words"],key=lambda x:x["box"][0])
+            seen_numeric_rows.add(physical_key)
             output.append({
                 "type":"HEADER_COLUMN_ITEM_ROW_UNVERIFIED",
                 "source_view":view,
@@ -267,11 +277,9 @@ def _table(lines,view,width,height,max_rows):
                 "posting_eligible":False
             })
             if len(output)>=max_rows:return output
-        # An upper-page header may be a duplicate, advertisement or OCR
-        # misread. Only stop after this header actually anchored an item;
-        # otherwise inspect lower physical headers without guessing rows.
-        if output:
-            break
+        # Separate printed product sections are also permitted. A later
+        # complete heading sets the prior table boundary; repeated source
+        # numeric cells are never emitted again from overlapping bands.
     return output
 
 def propose(alternate,width,height,*,max_fields=30,max_rows=15):
