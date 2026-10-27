@@ -194,6 +194,21 @@ def review(image,reader,plain_reader=None):
              "posting_eligible":False})
     alt={"status":"SOURCE_MULTISCALE_ALTERNATIVES_REVIEW_ONLY",
          "posting_eligible":False,"variants":views}
+    # R259: printed ruling geometry generates provisional row BANDS, never
+    # verified line-item fields. Kept separate from source numeric rows.
+    try:
+        ruled=_load("INVOICE_OCR_RULED_ROW_BANDS_R259.py",
+                    "_r259_staged_printed_rulings")
+        out["source_printed_row_bands_r259"]=ruled.review(image,views,reader)
+    except Exception as exc:
+        out["source_printed_row_bands_r259"]={
+            "status":"R259_ROW_BANDS_UNAVAILABLE",
+            "error_type":type(exc).__name__,
+            "detected_physical_row_bands":0,
+            "verified_item_rows":0,"posting_eligible":False,
+            "accounting_write_permitted":False,"release_approved":False}
+    out["source_printed_row_band_count_r259"]=out[
+        "source_printed_row_bands_r259"]["detected_physical_row_bands"]
     proposals=anchors.propose(alt,w,h,max_fields=24,max_rows=12)
     out["source_field_row_anchors"]=proposals
     # A header/numeric view may have missed the physical description; a
