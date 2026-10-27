@@ -239,18 +239,26 @@ def _table(lines,view,width,height,max_rows):
                    if (x["box"][0]+x["box"][2])/2<qty_x-8]
             rights=[(x["box"][0]+x["box"][2])/2 for x in colmarks
                     if (x["box"][0]+x["box"][2])/2>qty_x+8]
-            qty_left=(max(lefts)+qty_x)/2 if lefts else qty_x-42
-            qty_right=(min(rights)+qty_x)/2 if rights else qty_x+42
+            # A fixed 42-pixel window rejects the printed quantity of a
+            # high-resolution photographed invoice when OCR/header text has
+            # different alignment. Grow only within the physical QTY-to-
+            # AMOUNT separation; printed adjacent headings still narrow it.
+            qty_margin=max(42,min(150,round((amount_x-qty_x)*.28),
+                                  round(width*.06)))
+            qty_left=(max(lefts)+qty_x)/2 if lefts else qty_x-qty_margin
+            qty_right=(min(rights)+qty_x)/2 if rights else qty_x+qty_margin
             qty_words=[x for x in all_words if
                 qty_left <= (x["box"][0]+x["box"][2])/2 <= qty_right and
                 abs((x["box"][1]+x["box"][3])/2-cy)<=21 and
                 _NUM_RE.fullmatch(x["text"].strip("()|").replace(",",""))]
+            amount_margin=max(90,min(320,round((amount_x-qty_x)*.45),
+                                      round(width*.13)))
             amount_words=[x for x in all_words if
                 # The nearby RATE value is not an AMOUNT value even if
                 # OCR bounding boxes drift. Respect the printed AMOUNT
                 # header's left edge to avoid matching two money columns.
                 x["box"][0]>=max((qty_x+amount_x)/2,amount["box"][0]-22) and
-                abs((x["box"][0]+x["box"][2])/2-amount_x)<=90 and
+                abs((x["box"][0]+x["box"][2])/2-amount_x)<=amount_margin and
                 abs((x["box"][1]+x["box"][3])/2-cy)<=21 and
                 _NUM_RE.fullmatch(x["text"].strip("()|").replace(",",""))]
             if len(qty_words)!=1 or len(amount_words)!=1:continue
