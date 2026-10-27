@@ -209,6 +209,27 @@ def review(image,reader,plain_reader=None):
             "accounting_write_permitted":False,"release_approved":False}
     out["source_printed_row_band_count_r259"]=out[
         "source_printed_row_bands_r259"]["detected_physical_row_bands"]
+    # R261 never creates accounting fields. Only independent printed header
+    # positions AND local per-column source rulings may associate literal
+    # OCR observations with an already detected physical row.
+    if out["source_printed_row_band_count_r259"]:
+        try:
+            columns=_load("INVOICE_OCR_COLUMN_BANDS_R261.py",
+                          "_r261_staged_source_columns")
+            out["source_printed_numeric_columns_r261"]=columns.review(
+                image,out["source_printed_row_bands_r259"],views,w,h)
+        except Exception as exc:
+            out["source_printed_numeric_columns_r261"]={
+                "status":"R261_COLUMN_ASSOCIATION_UNAVAILABLE",
+                "error_type":type(exc).__name__,"certified_financial_fields":0,
+                "certified_item_rows":0,"accounting_write_permitted":False,
+                "posting_eligible":False,"release_approved":False}
+    else:
+        out["source_printed_numeric_columns_r261"]={
+            "status":"NO_VERIFIED_PRINTED_RULING_COLUMNS",
+            "certified_financial_fields":0,"certified_item_rows":0,
+            "accounting_write_permitted":False,"posting_eligible":False,
+            "release_approved":False}
     proposals=anchors.propose(alt,w,h,max_fields=24,max_rows=12)
     out["source_field_row_anchors"]=proposals
     # A header/numeric view may have missed the physical description; a
