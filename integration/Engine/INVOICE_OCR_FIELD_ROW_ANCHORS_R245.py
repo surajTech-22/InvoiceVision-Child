@@ -129,6 +129,15 @@ def _table(lines,view,width,height,max_rows):
         if not description or not quantities or not amount_tokens:continue
         net_tokens=[x for x in band if re.fullmatch(
             r"(?i:NET)",x["text"].strip(":|"))]
+        total_tokens=[x for x in band if re.fullmatch(
+            r"(?i:TOTAL)",x["text"].strip(":|"))]
+        # Printed headers such as "Total Value (incl. of tax)" often arrive
+        # as "Total" + "ValuetInclof" from a photographed invoice. "Value"
+        # alone does not prove an item AMOUNT column: require the adjacent
+        # source-literal TOTAL label, to the left and on the same table band.
+        inclusive_value_tokens=[x for x in band if
+            re.match(r"(?i:^VALUE(?:[(:]?INCL.*)?$)",
+                     re.sub(r"\\s+","",x["text"]).strip(":|"))]
         eligible_amounts=[]
         for token in amount_tokens:
             name=token["text"].strip(":|").upper()
@@ -138,6 +147,12 @@ def _table(lines,view,width,height,max_rows):
                      abs((token["box"][1]+token["box"][3])/2 -
                          (n["box"][1]+n["box"][3])/2)<24 for n in net_tokens):
                 eligible_amounts.append(token)
+        for value_header in inclusive_value_tokens:
+            if any(0<value_header["box"][0]-tot["box"][0]<105 and
+                   abs((value_header["box"][1]+value_header["box"][3])/2 -
+                       (tot["box"][1]+tot["box"][3])/2)<25
+                   for tot in total_tokens):
+                eligible_amounts.append(value_header)
         if not eligible_amounts:continue
         desc=min(description,key=lambda x:x["box"][0])
         qty=min((x for x in quantities if x["box"][0]>desc["box"][0]+35),
