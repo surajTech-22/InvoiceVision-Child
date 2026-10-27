@@ -294,5 +294,56 @@ class SourceAnchoredFieldRows(unittest.TestCase):
                             for r in result["table_header_anchored_row_proposals"]))
         self.assertEqual(result["verified_table_rows"],0)
         self.assertFalse(result["accounting_write_permitted"])
+    def test_r254_two_separate_printed_item_sections_are_both_proposed(self):
+        # A real page can contain independent goods and services sections.
+        # A valid early item must not mask a later independently headed table.
+        words=[
+            token("DESCRIPTION",35,105,140), token("QTY",250,105,42),
+            token("AMOUNT",410,105,92),
+            token("PART",35,169,85),token("ALPHA",125,169,75),
+            token("2",253,169,25),token("120.00",420,169,74),
+            token("SUBTOTAL",35,262,100),
+            token("DESCRIPTION",35,413,140),token("QTY",250,413,42),
+            token("AMOUNT",410,413,92),
+            token("PART",35,473,85),token("BETA",125,473,75),
+            token("3",253,473,25),token("66.00",420,473,65),
+            token("TOTAL",35,563,67)
+        ]
+        source={"status":"SOURCE_MULTISCALE_ALTERNATIVES_REVIEW_ONLY",
+                "posting_eligible":False,"variants":[
+            {"variant":variant,"posting_eligible":False,
+             "source_boxes_are_original_pixels":True,"source_words":words}
+            for variant in ("gray_2x","clahe_2x")]}
+        result=mod.propose(source,650,800)
+        rows=result["table_header_anchored_row_proposals"]
+        self.assertEqual(len(rows),4)
+        self.assertEqual(
+            sorted((r["description_original_ocr"],r["quantity_original_ocr"],
+                    r["amount_original_ocr"]) for r in rows),
+            [("PART ALPHA","2","120.00"),("PART ALPHA","2","120.00"),
+             ("PART BETA","3","66.00"),("PART BETA","3","66.00")])
+        self.assertEqual(len(set(tuple(r["header_source_boxes"]["description"])
+                                 for r in rows)),2)
+        self.assertEqual(result["verified_table_rows"],0)
+        self.assertFalse(result["accounting_write_permitted"])
+
+    def test_r254_overlapping_header_baselines_do_not_duplicate_source_rows(self):
+        # One physical printed header split over two baselines can be
+        # detected by both header bands: emit a numeric row only once/view.
+        words=[token("DESCRIPTION",35,110,140),
+               token("QTY",250,129,42), token("AMOUNT",410,129,92),
+               token("PRODUCT",35,190,93),token("SAMPLE",135,190,62),
+               token("5",253,190,25),token("125.00",420,190,72)]
+        source={"status":"SOURCE_MULTISCALE_ALTERNATIVES_REVIEW_ONLY",
+                "posting_eligible":False,"variants":[
+            {"variant":variant,"posting_eligible":False,
+             "source_boxes_are_original_pixels":True,"source_words":words}
+            for variant in ("gray_2x","clahe_2x")]}
+        result=mod.propose(source,650,680)
+        self.assertEqual(result["row_proposals_count"],2)
+        self.assertTrue(all(row["description_original_ocr"]=="PRODUCT SAMPLE"
+                            for row in result["table_header_anchored_row_proposals"]))
+        self.assertFalse(result["posting_eligible"])
+
 if __name__=="__main__":
     unittest.main(verbosity=2)
