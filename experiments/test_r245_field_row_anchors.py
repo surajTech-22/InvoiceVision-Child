@@ -424,5 +424,42 @@ class SourceAnchoredFieldRows(unittest.TestCase):
         self.assertEqual(result["verified_table_rows"],0)
         self.assertFalse(result["accounting_write_permitted"])
 
+    def test_r257_hsn_and_free_column_bounds_do_not_steal_quantity(self):
+        # Wide physical column gaps may contain HSN and FREE values, neither
+        # is the printed quantity cell even if both are numeric OCR tokens.
+        words=[
+            token("PRODUCT",322,187,65),
+            token("HSN.",594,185,44),token("QTY",682,186,41),
+            token("FREE",748,186,51),token("AMOUNT",1257,188,64),
+            token("SAMPLE",300,218,95),
+            token("19021900",582,217,69),token("20",687,217,13),
+            token("0.000",757,217,34),token("1085.71",1269,217,50)]
+        src={"status":"SOURCE_MULTISCALE_ALTERNATIVES_REVIEW_ONLY",
+             "posting_eligible":False,"variants":[
+                 {"variant":name,"posting_eligible":False,
+                  "source_boxes_are_original_pixels":True,"source_words":words}
+                 for name in ("gray_2x","clahe_2x")]}
+        result=mod.propose(src,1600,900)
+        self.assertEqual(result["row_proposals_count"],2)
+        for row in result["table_header_anchored_row_proposals"]:
+            self.assertEqual(row["quantity_original_ocr"],"20")
+            self.assertEqual(row["amount_original_ocr"],"1085.71")
+            self.assertFalse(row["row_complete_certified"])
+        self.assertFalse(result["accounting_write_permitted"])
+
+    def test_r257_numeric_neighbours_without_headers_remain_ambiguous(self):
+        words=[token("PRODUCT",322,187,65),token("QTY",682,186,41),
+               token("AMOUNT",1257,188,64),token("SAMPLE",300,218,95),
+               token("19021900",582,217,69),token("20",687,217,13),
+               token("0.000",757,217,34),token("1085.71",1269,217,50)]
+        src={"status":"SOURCE_MULTISCALE_ALTERNATIVES_REVIEW_ONLY",
+             "posting_eligible":False,"variants":[
+                 {"variant":name,"posting_eligible":False,
+                  "source_boxes_are_original_pixels":True,"source_words":words}
+                 for name in ("gray_2x","clahe_2x")]}
+        result=mod.propose(src,1600,900)
+        self.assertEqual(result["row_proposals_count"],0)
+        self.assertEqual(result["verified_table_rows"],0)
+
 if __name__=="__main__":
     unittest.main(verbosity=2)
