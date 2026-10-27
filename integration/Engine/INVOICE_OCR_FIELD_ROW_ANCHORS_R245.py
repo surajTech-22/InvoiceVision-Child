@@ -104,6 +104,10 @@ def _add_field(view,line,category,match,output):
         "field_value_certified":False,"posting_eligible":False
     })
 
+def _header_text(value):
+    """Match punctuation surrounding printed column labels, not OCR digits."""
+    return value.strip(" \t:;.,|()[]{}")
+
 def _table(lines,view,width,height,max_rows):
     """Anchor printed item rows to multi-line, spatially ordered table columns.
 
@@ -121,16 +125,16 @@ def _table(lines,view,width,height,max_rows):
               line["cy"]-22 <= (x["box"][1]+x["box"][3])/2 <= line["cy"]+32]
         if len(band)>80:continue
         description=[x for x in band if re.fullmatch(
-            r"(?i:DESCRIPTION|PRODUCT|PARTICULARS|ITEM|GOODS)",x["text"].strip(":|"))]
+            r"(?i:DESCRIPTION|PRODUCT|PARTICULARS|ITEM|GOODS)",_header_text(x["text"]))]
         quantities=[x for x in band if re.fullmatch(
-            r"(?i:QTY|QUANTITY|PCS|PES|PIECES)",x["text"].strip(":|"))]
+            r"(?i:QTY|QUANTITY|PCS|PES|PIECES)",_header_text(x["text"]))]
         amount_tokens=[x for x in band if re.fullmatch(
-            r"(?i:AMOUNT|AMT|ANT|NETAMT|NETAMOUNT)",x["text"].strip(":|"))]
+            r"(?i:AMOUNT|AMT|ANT|NETAMT|NETAMOUNT)",_header_text(x["text"]))]
         if not description or not quantities:continue
         net_tokens=[x for x in band if re.fullmatch(
-            r"(?i:NET)",x["text"].strip(":|"))]
+            r"(?i:NET)",_header_text(x["text"]))]
         total_tokens=[x for x in band if re.fullmatch(
-            r"(?i:TOTAL)",x["text"].strip(":|"))]
+            r"(?i:TOTAL)",_header_text(x["text"]))]
         # Printed headers such as "Total Value (incl. of tax)" often arrive
         # as "Total" + "ValuetInclof" from a photographed invoice. "Value"
         # alone does not prove an item AMOUNT column: require the adjacent
@@ -140,7 +144,7 @@ def _table(lines,view,width,height,max_rows):
                      re.sub(r"\s+","",x["text"]).strip(":|"))]
         eligible_amounts=[]
         for token in amount_tokens:
-            name=token["text"].strip(":|").upper()
+            name=_header_text(token["text"]).upper()
             if name in ("AMOUNT","NETAMOUNT","NETAMT"):
                 eligible_amounts.append(token)
             elif any(0<token["box"][0]-n["box"][0]<80 and
@@ -175,7 +179,7 @@ def _table(lines,view,width,height,max_rows):
                        x["box"][0]<qty["box"][0]-12 and
                        header_bottom+18<(x["box"][1]+x["box"][3])/2<table_end and
                        re.fullmatch(r"(?i:SUBTOTAL|TOTAL|GRAND|NET)",
-                                    x["text"].strip(":|"))]
+                                    _header_text(x["text"]))]
         footer_stop=min(((x["box"][1]+x["box"][3])/2 for x in footer_labels),
                         default=table_end+1)
         # Description text determines ROW geometry, not numbers elsewhere.
@@ -205,7 +209,7 @@ def _table(lines,view,width,height,max_rows):
             # actual printed header centers, not from guessed invoice data.
             colmarks=[x for x in band if re.fullmatch(
                 r"(?i:CS|CASE|TOTAL|UNIT|UNITS|MRP|UPC|PKM|RATE|PRICE|PCS|PES|QTY)",
-                x["text"].strip(":|)"))]
+                _header_text(x["text"]))]
             lefts=[(x["box"][0]+x["box"][2])/2 for x in colmarks
                    if (x["box"][0]+x["box"][2])/2<qty_x-8]
             rights=[(x["box"][0]+x["box"][2])/2 for x in colmarks
@@ -245,7 +249,11 @@ def _table(lines,view,width,height,max_rows):
                 "posting_eligible":False
             })
             if len(output)>=max_rows:return output
-        break
+        # An upper-page header may be a duplicate, advertisement or OCR
+        # misread. Only stop after this header actually anchored an item;
+        # otherwise inspect lower physical headers without guessing rows.
+        if output:
+            break
     return output
 
 def propose(alternate,width,height,*,max_fields=30,max_rows=15):
