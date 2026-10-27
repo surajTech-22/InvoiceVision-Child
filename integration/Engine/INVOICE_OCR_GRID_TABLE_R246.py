@@ -80,6 +80,21 @@ def distinct_source_rows(proposals,max_rows=24):
     """
     if not isinstance(proposals,list) or len(proposals)>80:
         raise ValueError("Excessive source-row proposals")
+    def close_source_cell(a,b):
+        # Match the SAME printed numeric cell, not the union of a complete
+        # description row; multi-line descriptions can overlap adjacent rows.
+        for rect in (a,b):
+            if (not isinstance(rect,list) or len(rect)!=4 or
+                any(type(v)!=int for v in rect) or not
+                (0<=rect[0]<rect[2] and 0<=rect[1]<rect[3])):
+                raise ValueError("Untrusted physical numeric column box")
+        aw=a[2]-a[0];ah=a[3]-a[1]
+        bw=b[2]-b[0];bh=b[3]-b[1]
+        ax=(a[0]+a[2])/2;ay=(a[1]+a[3])/2
+        bx=(b[0]+b[2])/2;by=(b[1]+b[3])/2
+        return (abs(ax-bx)<=max(9,.65*min(aw,bw)) and
+                abs(ay-by)<=max(6,.62*min(ah,bh)))
+
     groups=[]
     for item in proposals:
         if not isinstance(item,dict) or item.get("posting_eligible") is not False:
@@ -88,16 +103,22 @@ def distinct_source_rows(proposals,max_rows=24):
         if (not isinstance(b,list) or len(b)!=4 or
             any(type(x)!=int for x in b) or not (b[0]<b[2] and b[1]<b[3])):
             raise ValueError("Source row lacks physical source coordinates")
-        center_y=(b[1]+b[3])/2
-        height=b[3]-b[1]
+        qty_cell=item.get("quantity_source_box")
+        amount_cell=item.get("amount_source_box")
+        # Every item hypothesis must carry independent original-coordinate
+        # quantity AND amount evidence; a broad row rectangle is insufficient.
+        close_source_cell(qty_cell,qty_cell)
+        close_source_cell(amount_cell,amount_cell)
+        if not all(b[0]<=c[0]<c[2]<=b[2] and b[1]<=c[1]<c[3]<=b[3]
+                   for c in (qty_cell,amount_cell)):
+            raise ValueError("Numeric OCR cell is outside proposed row")
         group=None
         for existing in groups:
-            e=existing["source_row_box"]
-            y=(e[1]+e[3])/2
-            height2=e[3]-e[1]
-            x_intersection=max(0,min(e[2],b[2])-max(e[0],b[0]))
-            x_support=x_intersection/max(1,min(e[2]-e[0],b[2]-b[0]))
-            if abs(center_y-y)<=max(7,min(height,height2)*.65) and x_support>=.5:
+            # Compare against each actual OCR view, not a growing union box:
+            # this prevents chained merges of distinct printed item rows.
+            if any(close_source_cell(qty_cell,obs["quantity_source_box"]) and
+                   close_source_cell(amount_cell,obs["amount_source_box"])
+                   for obs in existing["source_variants"]):
                 group=existing
                 break
         value={
