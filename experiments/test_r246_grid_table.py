@@ -186,5 +186,36 @@ class RulingLines(unittest.TestCase):
         frame=np.zeros((500,500,3),np.uint8)
         with self.assertRaises(ValueError):
             m.remove_long_ruling_lines(frame)
+    def test_r258_real_grid_analysis_cross_view_provenance_and_no_posting(self):
+        # A single source OCR view supplies trusted table/number geometry,
+        # while the other sees only the actual printed description fragments.
+        primary=[
+            ("DESCRIPTION",40,284,165),("QTY",335,284,45),
+            ("AMOUNT",494,284,70),("5",338,350,30),
+            ("145.00",498,350,65)]
+        secondary=[("SAMPLE",42,350,75),("PART",125,350,65)]
+        def as_tsv(words):
+            lines=[HEAD,"1\t1\t0\t0\t0\t0\t0\t0\t1200\t1600\t-1\t"]
+            for i,(value,x,y,w) in enumerate(words,1):
+                lines.append(f"5\t1\t1\t1\t1\t{i}\t{2*x}\t{2*y}\t{2*w}\t44\t97\t{value}")
+            return "\n".join(lines)+"\n"
+        src=invoice();before=src.copy()
+        out=m.review(src,lambda _view,psm:as_tsv(primary if psm==11 else secondary))
+        self.assertEqual(out["source_field_row_anchors"]["row_proposals_count"],0)
+        self.assertEqual(out["source_cross_view_row_count"],1)
+        self.assertEqual(out["source_unique_item_row_count"],1)
+        self.assertEqual(out["provisional_table_rows"],1)
+        row=out["source_unique_item_rows"][0]
+        self.assertEqual(len(row["source_variants"]),1)
+        self.assertTrue(row["source_variants"][0]["description_fragment_only"])
+        self.assertEqual(row["source_variants"][0]["description_source_view"],
+                         "grid_removed_psm6_2x")
+        self.assertEqual(row["source_variants"][0]["amount_source_view"],
+                         "grid_removed_psm11_2x")
+        self.assertEqual(out["accepted_item_rows"],0)
+        self.assertFalse(out["accounting_write_permitted"])
+        self.assertFalse(out["release_approved"])
+        self.assertTrue(np.array_equal(src,before))
+
 if __name__=="__main__":
     unittest.main(verbosity=2)
