@@ -184,18 +184,37 @@ def review(image, variants, reader=None, max_rows=12):
             temporary=cv2.warpPerspective(image,matrix,(width,height),
                                          flags=cv2.INTER_CUBIC,borderValue=(255,255,255))
             scaled=cv2.resize(temporary,None,fx=4,fy=4,interpolation=cv2.INTER_CUBIC)
-            tsv=reader(scaled,7)
-            # Bounded TSV words are evidence, not approved original text.
-            if not isinstance(tsv,str) or len(tsv)>100_000:
-                raise ValueError('Unsafe row-crop OCR output')
             import csv,io
-            raw=list(csv.DictReader(io.StringIO(tsv),delimiter='\t'))
-            literal=[r.get('text','').strip() for r in raw
-                     if r.get('level')=='5' and r.get('text','').strip()]
-            band['text_view_alternatives']=[{'source':'TEMP_RECTIFIED_DESCRIPTION_PSM7',
+            def observed_words(tsv):
+                if not isinstance(tsv,str) or len(tsv)>100_000:
+                    raise ValueError('Unsafe row-crop OCR output')
+                parsed=csv.DictReader(io.StringIO(tsv),delimiter='\t')
+                if not parsed.fieldnames or not {'level','text'}<=set(parsed.fieldnames):
+                    raise ValueError('Malformed row-crop TSV')
+                return [entry['text'].strip() for entry in parsed
+                        if entry['level']=='5' and entry['text'].strip()][:100]
+            literal=observed_words(reader(scaled,7))
+            alternatives=[{'source':'TEMP_RECTIFIED_DESCRIPTION_PSM7',
                  'original_description_ocr':' '.join(literal)[:240],
                  'source_word_count':len(literal),'source_pixel_quad':quad,
                  'field_value_verified':False,'posting_eligible':False}]
+            if not literal:
+                # An OCR crop may lose ink at its boundary; inspect bounded
+                # nearby original pixels as a separate, uncertain witness.
+                pad=max(3,min(8,round(pitch*.30)))
+                y0=max(0,min(pt[1] for pt in quad)-pad)
+                y1=min(h,max(pt[1] for pt in quad)+pad)
+                if y1-y0<6:raise ValueError('Invalid source crop interval')
+                padded=cv2.resize(image[y0:y1,dx0:dx1],None,
+                                  fx=3,fy=3,interpolation=cv2.INTER_CUBIC)
+                companion=observed_words(reader(padded,6))
+                alternatives.append({'source':'TEMP_PADDED_ORIGINAL_SOURCE_PSM6',
+                   'original_description_ocr':' '.join(companion)[:240],
+                   'source_word_count':len(companion),
+                   'source_pixel_rect':[dx0,y0,dx1,y1],
+                   'may_contain_adjacent_source_ink':True,
+                   'field_value_verified':False,'posting_eligible':False})
+            band['text_view_alternatives']=alternatives
         bands.append(band)
     result.update(status='SOURCE_REPEATED_RULING_ROW_BANDS_REVIEW_ONLY',
                   row_bands=bands,detected_physical_row_bands=len(bands),
