@@ -461,5 +461,65 @@ class SourceAnchoredFieldRows(unittest.TestCase):
         self.assertEqual(result["row_proposals_count"],0)
         self.assertEqual(result["verified_table_rows"],0)
 
+    def test_r258_split_source_views_retain_literal_text_and_numbers(self):
+        primary=[token("PRODUCT",100,190,85),
+                 token("HSN",290,190,60),token("QTY",430,190,55),
+                 token("FREE",520,190,65),token("AMOUNT",820,190,110),
+                 token("19021900",294,260,77),token("20",435,260,35),
+                 token("0.000",527,260,52),token("1085.71",828,260,98)]
+        companion=[token("FRAGMENT",105,266,130),
+                   token("DESCRIPTION",239,266,130)]
+        src={"status":"SOURCE_MULTISCALE_ALTERNATIVES_REVIEW_ONLY",
+             "posting_eligible":False,"variants":[
+             {"variant":"grid_removed_psm11_2x","posting_eligible":False,
+              "source_boxes_are_original_pixels":True,"source_words":primary},
+             {"variant":"grid_removed_psm6_2x","posting_eligible":False,
+              "source_boxes_are_original_pixels":True,"source_words":companion}]}
+        self.assertEqual(mod.propose(src,1100,820)["row_proposals_count"],0)
+        result=mod.propose_cross_view_description_rows(src,1100,820)
+        self.assertEqual(len(result),1)
+        row=result[0]
+        self.assertEqual(row["quantity_original_ocr"],"20")
+        self.assertEqual(row["amount_original_ocr"],"1085.71")
+        self.assertEqual(row["description_original_ocr"],"FRAGMENT DESCRIPTION")
+        self.assertTrue(row["description_fragment_only"])
+        self.assertEqual(row["description_source_view"],"grid_removed_psm6_2x")
+        self.assertEqual(row["quantity_source_view"],"grid_removed_psm11_2x")
+        self.assertEqual(
+            row["source_token_indices_by_view"]["grid_removed_psm6_2x"],[0,1])
+        self.assertFalse(row["posting_eligible"])
+        self.assertFalse(row["row_complete_certified"])
+        self.assertEqual(primary[5]["original_source_text"],"19021900")
+
+    def test_r258_missing_physical_amount_heading_cannot_be_fused(self):
+        primary=[token("PRODUCT",100,190,85),token("QTY",430,190,55),
+                 token("20",435,260,35),token("1085.71",828,260,98)]
+        companion=[token("SAMPLE",105,266,110)]
+        src={"status":"SOURCE_MULTISCALE_ALTERNATIVES_REVIEW_ONLY",
+             "posting_eligible":False,"variants":[
+             {"variant":"grid_removed_psm11_2x","posting_eligible":False,
+              "source_boxes_are_original_pixels":True,"source_words":primary},
+             {"variant":"grid_removed_psm6_2x","posting_eligible":False,
+              "source_boxes_are_original_pixels":True,"source_words":companion}]}
+        self.assertEqual(mod.propose_cross_view_description_rows(src,1100,820),[])
+
+    def test_r258_source_geometry_and_posting_guard_fail_closed(self):
+        primary=[token("PRODUCT",100,190,85),token("QTY",430,190,55),
+                 token("AMOUNT",820,190,110),token("20",435,260,35),
+                 token("1085.71",828,260,98)]
+        companion=[token("SAMPLE",105,266,110)]
+        src={"status":"SOURCE_MULTISCALE_ALTERNATIVES_REVIEW_ONLY",
+             "posting_eligible":False,"variants":[
+             {"variant":"grid_removed_psm11_2x","posting_eligible":False,
+              "source_boxes_are_original_pixels":True,"source_words":primary},
+             {"variant":"grid_removed_psm6_2x","posting_eligible":False,
+              "source_boxes_are_original_pixels":True,"source_words":companion}]}
+        result=mod.propose_cross_view_description_rows(src,1100,820)
+        self.assertEqual(len(result),1)
+        self.assertFalse(result[0]["posting_eligible"])
+        src["variants"][1]["source_words"][0]["original_source_box"][0]=-1
+        with self.assertRaises(ValueError):
+            mod.propose_cross_view_description_rows(src,1100,820)
+
 if __name__=="__main__":
     unittest.main(verbosity=2)
