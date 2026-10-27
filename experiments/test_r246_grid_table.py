@@ -71,6 +71,53 @@ class RulingLines(unittest.TestCase):
                          ["20","30"])
         self.assertFalse(groups[0]["distinct_row_certified"])
 
+    def test_two_adjacent_items_with_overlapping_multiline_description_do_not_merge(self):
+        first={"posting_eligible":False,"source_view":"grid_removed_psm11_2x",
+               "row_box":[35,300,590,354],
+               "quantity_source_box":[331,308,364,329],
+               "amount_source_box":[502,310,566,332],
+               "description_original_ocr":"MULTILINE ITEM ALPHA",
+               "quantity_original_ocr":"20","amount_original_ocr":"1140.00"}
+        # Physical description boxes overlap vertically, while actual number
+        # cells show two distinct printed rows. Previous union-box matching
+        # risked merging these into one accounting item.
+        second={**first,"row_box":[35,326,590,385],
+                "quantity_source_box":[332,347,365,371],
+                "amount_source_box":[503,348,567,371],
+                "description_original_ocr":"MULTILINE ITEM BETA",
+                "quantity_original_ocr":"3","amount_original_ocr":"81.75"}
+        grouped=m.distinct_source_rows([first,second])
+        self.assertEqual(len(grouped),2)
+        self.assertEqual([x["source_variants"][0]["original_quantity"] for x in grouped],
+                         ["20","3"])
+        self.assertTrue(all(not x["posting_eligible"] and
+                            not x["distinct_row_certified"] for x in grouped))
+
+    def test_same_row_separate_views_with_small_cell_offset_merge_once(self):
+        base={"posting_eligible":False,"source_view":"grid_removed_psm11_2x",
+              "row_box":[35,300,590,344],
+              "quantity_source_box":[331,306,365,330],
+              "amount_source_box":[502,309,568,336],
+              "description_original_ocr":"SAMPLE ITEM",
+              "quantity_original_ocr":"20","amount_original_ocr":"1140.00"}
+        other={**base,"source_view":"grid_removed_psm6_2x",
+               "row_box":[34,298,589,346],
+               "quantity_source_box":[333,309,364,332],
+               "amount_source_box":[504,311,567,335]}
+        grouped=m.distinct_source_rows([base,other])
+        self.assertEqual(len(grouped),1)
+        self.assertEqual(len(grouped[0]["source_variants"]),2)
+        self.assertFalse(grouped[0]["conflicting_ocr_alternatives"])
+
+    def test_row_missing_numeric_source_cell_refused(self):
+        item={"posting_eligible":False,"source_view":"grid_removed_psm11_2x",
+              "row_box":[20,80,250,130],
+              "quantity_source_box":[99,91,120,110],
+              "description_original_ocr":"PART",
+              "quantity_original_ocr":"2","amount_original_ocr":"90.00"}
+        with self.assertRaises(ValueError):
+            m.distinct_source_rows([item])
+
     def test_grey_phone_photo_background_does_not_delete_image(self):
         # A photographed receipt can have broad grey vignetting. A global
         # Otsu mask incorrectly treated 14-19% of real source as long ruling.
