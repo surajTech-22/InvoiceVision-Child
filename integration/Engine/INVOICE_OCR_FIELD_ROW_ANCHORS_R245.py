@@ -137,7 +137,7 @@ def _table(lines,view,width,height,max_rows):
         # source-literal TOTAL label, to the left and on the same table band.
         inclusive_value_tokens=[x for x in band if
             re.match(r"(?i:^VALUE(?:[(:]?INCL.*)?$)",
-                     re.sub(r"\\s+","",x["text"]).strip(":|"))]
+                     re.sub(r"\s+","",x["text"]).strip(":|"))]
         eligible_amounts=[]
         for token in amount_tokens:
             name=token["text"].strip(":|").upper()
