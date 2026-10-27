@@ -122,6 +122,41 @@ class SourceAnchoredFieldRows(unittest.TestCase):
                                token("1140.00",500,180)]
         self.assertEqual(mod.propose(src,700,500)["row_proposals_count"],0)
 
+    def test_split_total_value_including_tax_header_anchor(self):
+        # Source layout of a general retail tax invoice: the amount heading
+        # is printed as two words, with the second OCR-joined to (incl tax).
+        tokens=[token("Item",173,690,25),token("Qty",690,690,24),
+                token("Total",753,690,25),token("ValuetInclof",783,690,64),
+                token("PACKAGED",174,736,86),token("SAMPLE",264,736,72),
+                token("75",692,736,24),token("3813.75",795,736,60)]
+        fixture={
+          "status":"SOURCE_MULTISCALE_ALTERNATIVES_REVIEW_ONLY",
+          "posting_eligible":False,"variants":[
+            {"variant":"gray_2x","posting_eligible":False,
+             "source_boxes_are_original_pixels":True,"source_words":tokens},
+            {"variant":"clahe_2x","posting_eligible":False,
+             "source_boxes_are_original_pixels":True,"source_words":tokens}
+          ]}
+        result=mod.propose(fixture,950,1600)
+        self.assertEqual(result["row_proposals_count"],2)
+        self.assertTrue(all(row["quantity_original_ocr"]=="75" and
+                            row["amount_original_ocr"]=="3813.75" and
+                            row["posting_eligible"] is False for row in
+                            result["table_header_anchored_row_proposals"]))
+        self.assertEqual(result["verified_table_rows"],0)
+
+    def test_inclusive_value_without_total_heading_is_not_assumed_amount(self):
+        tokens=[token("Item",173,690,25),token("Qty",690,690,24),
+                token("ValuetInclof",783,690,64),
+                token("PACKAGED",174,736,86),token("SAMPLE",264,736,72),
+                token("75",692,736,24),token("3813.75",795,736,60)]
+        variants=[{"variant":name,"posting_eligible":False,
+                   "source_boxes_are_original_pixels":True,"source_words":tokens}
+                  for name in ("gray_2x","clahe_2x")]
+        result=mod.propose({"status":"SOURCE_MULTISCALE_ALTERNATIVES_REVIEW_ONLY",
+                            "posting_eligible":False,"variants":variants},950,1600)
+        self.assertEqual(result["row_proposals_count"],0)
+
     def test_missing_amount_header_blocks_row_proposals(self):
         result=mod.propose(fixture(missing_headers=True),600,700)
         self.assertEqual(result["row_proposals_count"],0)
