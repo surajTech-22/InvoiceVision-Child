@@ -105,13 +105,17 @@ def _add_field(view,line,category,match,output):
     })
 
 def _header_text(value):
-    """Normalize loose punctuation, not parenthesized unit labels.
+    """Match heading punctuation without modifying source OCR literals."""
+    return value.strip(" \t:;.,|()[]{}")
 
-    (PCS) or [QTY] can be a unit note beside another true column heading.
-    Treating that note as a heading shifts original-pixel quantity anchors.
-    Preserve enclosure marks so the explicit printed column wins.
+def _enclosed_unit_note(value):
+    """Fully enclosed (PCS)/[QTY] is not proof of a table column heading.
+
+    Keep partly OCR-fragmented CS) / Pes) as source colmarks: those can
+    distinguish nearby physical printed numeric columns.
     """
-    return value.strip(" \t:;.,|")
+    v=value.strip()
+    return len(v)>=3 and v[0] in "([{" and v[-1] in ")]}"
 
 def _table(lines,view,width,height,max_rows):
     """Anchor printed item rows to multi-line, spatially ordered table columns.
@@ -135,7 +139,7 @@ def _table(lines,view,width,height,max_rows):
         if len(band)>80:continue
         description=[x for x in band if re.fullmatch(
             r"(?i:DESCRIPTION|PRODUCT|PARTICULARS|ITEM|GOODS)",_header_text(x["text"]))]
-        quantities=[x for x in band if re.fullmatch(
+        quantities=[x for x in band if not _enclosed_unit_note(x["text"]) and re.fullmatch(
             r"(?i:QTY|QUANTITY|PCS|PES|PIECES)",_header_text(x["text"]))]
         amount_tokens=[x for x in band if re.fullmatch(
             r"(?i:AMOUNT|AMT|ANT|NETAMT|NETAMOUNT)",_header_text(x["text"]))]
@@ -237,7 +241,7 @@ def _table(lines,view,width,height,max_rows):
             # physical table column. Ambiguity is omitted, never guessed.
             # Distinguish close CS / PCS / Total Units columns from their
             # actual printed header centers, not from guessed invoice data.
-            colmarks=[x for x in band if re.fullmatch(
+            colmarks=[x for x in band if not _enclosed_unit_note(x["text"]) and re.fullmatch(
                 r"(?i:CS|CASE|TOTAL|UNIT|UNITS|MRP|UPC|PKM|RATE|PRICE|PCS|PES|QTY)",
                 _header_text(x["text"]))]
             lefts=[(x["box"][0]+x["box"][2])/2 for x in colmarks
