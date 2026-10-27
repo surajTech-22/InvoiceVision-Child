@@ -126,7 +126,7 @@ def _table(lines,view,width,height,max_rows):
             r"(?i:QTY|QUANTITY|PCS|PES|PIECES)",x["text"].strip(":|"))]
         amount_tokens=[x for x in band if re.fullmatch(
             r"(?i:AMOUNT|AMT|ANT|NETAMT|NETAMOUNT)",x["text"].strip(":|"))]
-        if not description or not quantities or not amount_tokens:continue
+        if not description or not quantities:continue
         net_tokens=[x for x in band if re.fullmatch(
             r"(?i:NET)",x["text"].strip(":|"))]
         total_tokens=[x for x in band if re.fullmatch(
