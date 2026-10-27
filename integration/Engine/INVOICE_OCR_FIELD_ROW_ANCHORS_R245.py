@@ -105,8 +105,13 @@ def _add_field(view,line,category,match,output):
     })
 
 def _header_text(value):
-    """Match punctuation surrounding printed column labels, not OCR digits."""
-    return value.strip(" \t:;.,|()[]{}")
+    """Normalize loose punctuation, not parenthesized unit labels.
+
+    (PCS) or [QTY] can be a unit note beside another true column heading.
+    Treating that note as a heading shifts original-pixel quantity anchors.
+    Preserve enclosure marks so the explicit printed column wins.
+    """
+    return value.strip(" \t:;.,|")
 
 def _table(lines,view,width,height,max_rows):
     """Anchor printed item rows to multi-line, spatially ordered table columns.
