@@ -386,5 +386,43 @@ class SourceAnchoredFieldRows(unittest.TestCase):
         self.assertEqual(result["verified_table_rows"],0)
         self.assertFalse(result["release_approved"])
 
+    def test_r256_parenthesized_unit_note_does_not_hijack_qty_heading(self):
+        # Parenthesized PCS is a unit note, not the true quantity column.
+        # The correct original source QTY header is physically farther right.
+        tokens=[
+            token("ITEM",100,195,65),
+            token("(PCS)",510,195,72),token("QTY",700,195,55),
+            token("AMOUNT",1010,195,115),
+            token("SAMPLE",102,275,112),token("PRODUCT",217,275,122),
+            token("4",706,275,28),token("350.00",1030,275,85)]
+        src={"status":"SOURCE_MULTISCALE_ALTERNATIVES_REVIEW_ONLY",
+             "posting_eligible":False,"variants":[
+               {"variant":name,"posting_eligible":False,
+                "source_boxes_are_original_pixels":True,"source_words":tokens}
+               for name in ("gray_2x","clahe_2x")]}
+        result=mod.propose(src,1300,850)
+        self.assertEqual(result["row_proposals_count"],2)
+        for row in result["table_header_anchored_row_proposals"]:
+            self.assertEqual(row["quantity_original_ocr"],"4")
+            self.assertEqual(row["header_source_boxes"]["quantity"],[700,195,755,215])
+            self.assertEqual(row["amount_original_ocr"],"350.00")
+            self.assertFalse(row["posting_eligible"])
+        self.assertEqual(tokens[1]["original_source_text"],"(PCS)")
+
+    def test_r256_only_parenthesized_unit_without_qty_is_not_a_header(self):
+        tokens=[token("ITEM",100,195,65),token("(PCS)",510,195,72),
+                token("AMOUNT",1010,195,115),
+                token("SAMPLE",102,275,112),token("PRODUCT",217,275,122),
+                token("4",516,275,28),token("350.00",1030,275,85)]
+        src={"status":"SOURCE_MULTISCALE_ALTERNATIVES_REVIEW_ONLY",
+             "posting_eligible":False,"variants":[
+               {"variant":name,"posting_eligible":False,
+                "source_boxes_are_original_pixels":True,"source_words":tokens}
+               for name in ("gray_2x","clahe_2x")]}
+        result=mod.propose(src,1300,850)
+        self.assertEqual(result["row_proposals_count"],0)
+        self.assertEqual(result["verified_table_rows"],0)
+        self.assertFalse(result["accounting_write_permitted"])
+
 if __name__=="__main__":
     unittest.main(verbosity=2)
