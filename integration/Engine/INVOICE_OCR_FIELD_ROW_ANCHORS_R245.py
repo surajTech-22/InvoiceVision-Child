@@ -242,7 +242,7 @@ def _table(lines,view,width,height,max_rows):
             # Distinguish close CS / PCS / Total Units columns from their
             # actual printed header centers, not from guessed invoice data.
             colmarks=[x for x in band if not _enclosed_unit_note(x["text"]) and re.fullmatch(
-                r"(?i:CS|CASE|TOTAL|UNIT|UNITS|MRP|UPC|PKM|RATE|PRICE|PCS|PES|QTY)",
+                r"(?i:CS|CASE|TOTAL|UNIT|UNITS|HSN|MRP|UPC|PKM|RATE|PRICE|FREE|BONUS|PCS|PES|QTY)",
                 _header_text(x["text"]))]
             lefts=[(x["box"][0]+x["box"][2])/2 for x in colmarks
                    if (x["box"][0]+x["box"][2])/2<qty_x-8]
