@@ -118,6 +118,38 @@ class RulingLines(unittest.TestCase):
         with self.assertRaises(ValueError):
             m.distinct_source_rows([item])
 
+    def test_duplicate_candidates_from_same_view_never_count_as_one_item(self):
+        source={"posting_eligible":False,"source_view":"grid_removed_psm11_2x",
+                "row_box":[35,300,590,345],
+                "quantity_source_box":[332,306,365,329],
+                "amount_source_box":[505,307,566,334],
+                "description_original_ocr":"ITEM",
+                "quantity_original_ocr":"2","amount_original_ocr":"30.00"}
+        doubled=[source,{**source,"amount_original_ocr":"80.00"}]
+        groups=m.distinct_source_rows(doubled)
+        self.assertEqual(len(groups),2)
+        self.assertTrue(all(len(g["source_variants"])==1 for g in groups))
+        self.assertTrue(all(not g["distinct_row_certified"] for g in groups))
+
+    def test_transitive_cell_shift_does_not_collapse_distinct_rows(self):
+        first={"posting_eligible":False,"source_view":"first",
+               "row_box":[10,280,550,365],
+               "quantity_source_box":[350,304,375,325],
+               "amount_source_box":[482,304,540,325],
+               "description_original_ocr":"PART",
+               "quantity_original_ocr":"2","amount_original_ocr":"50.00"}
+        # Every adjacent pair overlaps geometrically, but first and third
+        # do not. Requiring all anchors prevents chaining the three together.
+        second={**first,"source_view":"second",
+                "quantity_source_box":[355,313,380,334],
+                "amount_source_box":[487,313,545,334]}
+        third={**first,"source_view":"third",
+               "quantity_source_box":[360,322,385,343],
+               "amount_source_box":[492,322,550,343]}
+        result=m.distinct_source_rows([first,second,third])
+        self.assertEqual(len(result),2)
+        self.assertEqual(sum(len(g["source_variants"]) for g in result),3)
+
     def test_grey_phone_photo_background_does_not_delete_image(self):
         # A photographed receipt can have broad grey vignetting. A global
         # Otsu mask incorrectly treated 14-19% of real source as long ruling.
