@@ -345,5 +345,46 @@ class SourceAnchoredFieldRows(unittest.TestCase):
                             for row in result["table_header_anchored_row_proposals"]))
         self.assertFalse(result["posting_eligible"])
 
+    def test_r255_high_resolution_right_aligned_amount_and_qty(self):
+        # On larger phone photos, actual cells can be displaced >90 original
+        # pixels from heading centres even though printed columns match.
+        tokens=[
+            token("DESCRIPTION",155,190,195),
+            token("QTY",1350,190,55),
+            token("AMOUNT",1950,190,105),
+            token("PACKAGED",155,278,130),token("TEST",290,278,95),
+            token("12",1440,278,38),
+            token("1250.00",2175,278,105)]
+        src={"status":"SOURCE_MULTISCALE_ALTERNATIVES_REVIEW_ONLY",
+             "posting_eligible":False,"variants":[
+               {"variant":name,"posting_eligible":False,
+                "source_boxes_are_original_pixels":True,"source_words":tokens}
+               for name in ("gray_2x","clahe_2x")]}
+        result=mod.propose(src,2600,1600)
+        self.assertEqual(result["row_proposals_count"],2)
+        self.assertTrue(all(row["quantity_original_ocr"]=="12" and
+                            row["amount_original_ocr"]=="1250.00"
+                            for row in result["table_header_anchored_row_proposals"]))
+        self.assertFalse(result["accounting_write_permitted"])
+
+    def test_r255_two_competing_right_aligned_amounts_still_refused(self):
+        tokens=[
+            token("DESCRIPTION",155,190,195),
+            token("QTY",1350,190,55),
+            token("AMOUNT",1950,190,105),
+            token("PACKAGED",155,278,130),token("TEST",290,278,95),
+            token("12",1440,278,38),
+            token("999.00",2080,278,88),
+            token("1250.00",2175,278,105)]
+        src={"status":"SOURCE_MULTISCALE_ALTERNATIVES_REVIEW_ONLY",
+             "posting_eligible":False,"variants":[
+               {"variant":name,"posting_eligible":False,
+                "source_boxes_are_original_pixels":True,"source_words":tokens}
+               for name in ("gray_2x","clahe_2x")]}
+        result=mod.propose(src,2600,1600)
+        self.assertEqual(result["row_proposals_count"],0)
+        self.assertEqual(result["verified_table_rows"],0)
+        self.assertFalse(result["release_approved"])
+
 if __name__=="__main__":
     unittest.main(verbosity=2)
