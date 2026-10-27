@@ -207,5 +207,59 @@ class SourceAnchoredFieldRows(unittest.TestCase):
         f=fixture()
         f["variants"][1]["source_words"]=[token("ITEM",10,10)]*601
         with self.assertRaises(ValueError):mod.propose(f,600,700)
+    def test_r252_second_printed_header_after_empty_first(self):
+        # The first source-printed header has no physical item rows. A later
+        # table with its own headings and numeric anchors must be considered.
+        words=[
+            token("DESCRIPTION",35,75,135),token("QTY",250,75,38),
+            token("AMOUNT",420,75,88),
+            token("DESCRIPTION",35,255,135),token("QTY",250,255,38),
+            token("AMOUNT",420,255,88),
+            token("RECOVERABLE",35,310,132),token("SAMPLE",175,310,58),
+            token("8",251,310,28),token("48.00",422,310,58)]
+        src={"status":"SOURCE_MULTISCALE_ALTERNATIVES_REVIEW_ONLY",
+             "posting_eligible":False,"variants":[
+                 {"variant":name,"posting_eligible":False,
+                  "source_boxes_are_original_pixels":True,"source_words":words}
+                 for name in ("gray_2x","clahe_2x")]}
+        result=mod.propose(src,650,700)
+        self.assertEqual(result["row_proposals_count"],2)
+        self.assertTrue(all(row["quantity_original_ocr"]=="8"
+                            and row["amount_original_ocr"]=="48.00"
+                            and row["posting_eligible"] is False
+                            for row in result["table_header_anchored_row_proposals"]))
+        self.assertFalse(result["accounting_write_permitted"])
+
+    def test_r252_punctuated_header_labels_remain_source_literal(self):
+        words=[token("DESCRIPTION:",35,255,145),
+               token("QTY.",250,255,40),token("AMOUNT:",420,255,95),
+               token("PRODUCT",35,310,85),token("SAMPLE",125,310,75),
+               token("4",251,310,28),token("80.50",423,310,55)]
+        src={"status":"SOURCE_MULTISCALE_ALTERNATIVES_REVIEW_ONLY",
+             "posting_eligible":False,"variants":[
+                 {"variant":name,"posting_eligible":False,
+                  "source_boxes_are_original_pixels":True,"source_words":words}
+                 for name in ("gray_2x","clahe_2x")]}
+        result=mod.propose(src,650,700)
+        self.assertEqual(result["row_proposals_count"],2)
+        for row in result["table_header_anchored_row_proposals"]:
+            self.assertEqual(row["amount_original_ocr"],"80.50")
+            self.assertEqual(row["header_source_boxes"]["amount"],[420,255,515,275])
+            self.assertFalse(row["row_complete_certified"])
+        self.assertEqual(words[0]["original_source_text"],"DESCRIPTION:")
+        self.assertEqual(words[1]["original_source_text"],"QTY.")
+
+    def test_r252_punctuation_does_not_replace_required_header(self):
+        words=[token("QTY.",250,255,40),token("AMOUNT:",420,255,95),
+               token("4",251,310,28),token("80.50",423,310,55)]
+        src={"status":"SOURCE_MULTISCALE_ALTERNATIVES_REVIEW_ONLY",
+             "posting_eligible":False,"variants":[
+                 {"variant":name,"posting_eligible":False,
+                  "source_boxes_are_original_pixels":True,"source_words":words}
+                 for name in ("gray_2x","clahe_2x")]}
+        result=mod.propose(src,650,700)
+        self.assertEqual(result["row_proposals_count"],0)
+        self.assertEqual(result["verified_table_rows"],0)
+        self.assertFalse(result["release_approved"])
 if __name__=="__main__":
     unittest.main(verbosity=2)
