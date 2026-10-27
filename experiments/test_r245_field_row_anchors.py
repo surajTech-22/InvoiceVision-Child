@@ -157,6 +157,22 @@ class SourceAnchoredFieldRows(unittest.TestCase):
                             "posting_eligible":False,"variants":variants},950,1600)
         self.assertEqual(result["row_proposals_count"],0)
 
+    def test_printed_total_stops_tax_summary_becoming_phantom_item(self):
+        f=fixture()
+        for variant in f["variants"]:
+            variant["source_words"]+= [
+                token("TOTAL",55,370,w=65),
+                token("ADJUSTMENT",42,425,w=112),
+                token("3",251,425,w=28),
+                token("10.00",412,425,w=67)]
+        result=mod.propose(f,600,700)
+        # Two OCR views of exactly one genuine printed item = two hypotheses.
+        self.assertEqual(result["row_proposals_count"],2)
+        self.assertTrue(all(row["quantity_original_ocr"]=="20" for row
+                            in result["table_header_anchored_row_proposals"]))
+        self.assertEqual(result["verified_table_rows"],0)
+        self.assertFalse(result["accounting_write_permitted"])
+
     def test_missing_amount_header_blocks_row_proposals(self):
         result=mod.propose(fixture(missing_headers=True),600,700)
         self.assertEqual(result["row_proposals_count"],0)
