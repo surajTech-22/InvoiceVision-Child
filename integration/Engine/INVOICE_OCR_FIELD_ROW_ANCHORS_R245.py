@@ -171,7 +171,25 @@ def _table(lines,view,width,height,max_rows):
         desc_x=(desc["box"][0]+desc["box"][2])/2
         if not(desc_x+35<qty_x<amount_x-55):continue
         header_bottom=max(desc["box"][3],qty["box"][3],amount["box"][3])
-        table_end=min(height,header_bottom+min(max(140,int(height*.28)),650))
+        # The old 28%-of-page search cut off tall printed product tables:
+        # seven source rows may span more than the OCR header's first quarter.
+        # Extend the proposal-only search, still bounded by the image and by
+        # printed section headings/totals below. This never certifies rows.
+        table_end=min(height,header_bottom+min(max(240,int(height*.50)),900))
+        for later in lines:
+            if later["cy"]<=header_bottom+30:
+                continue
+            # A second, separate printed table heading should not be parsed
+            # as an item of the previous table. Require all three headings
+            # in the same OCR baseline, not the word TOTAL by itself.
+            later_words=later["words"]
+            if (any(re.fullmatch(r"(?i:DESCRIPTION|PRODUCT|PARTICULARS|ITEM|GOODS)",
+                                 _header_text(x["text"])) for x in later_words)
+                and any(re.fullmatch(r"(?i:QTY|QUANTITY|PCS|PES|PIECES)",
+                                     _header_text(x["text"])) for x in later_words)
+                and any(re.fullmatch(r"(?i:AMOUNT|NETAMT|NETAMOUNT)",
+                                     _header_text(x["text"])) for x in later_words)):
+                table_end=min(table_end,min(x["box"][1] for x in later_words))
         # A printed subtotal/total in the DESCRIPTION region marks the end
         # of the item table. Without this anchor, amounts from later tax/
         # payment summaries can become phantom item rows.
