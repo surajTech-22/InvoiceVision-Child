@@ -30,7 +30,21 @@ try {
     $acceptance.passed_cases=51;$gates.physical_boxes.passed=$false;Save;Reject 'gate failed: physical_boxes'
     $gates.physical_boxes.passed=$true;$gates.physical_boxes.evidence_sha256='wrong';Save;Reject 'checksum mismatch'
     $gates.physical_boxes.evidence_path='../outside';Save;Reject 'Unsafe acceptance evidence path'
-    Write-Host 'PASS_R146_NO_INSTALLERS_BEFORE_ACCEPTANCE_6_REJECTIONS'
+    # R242: even a fabricated "all 51 passed" acceptance JSON cannot
+    # authorize a build that itself reports field accuracy as unverified.
+    $gates.physical_boxes.evidence_path='evidence.txt'
+    $gates.physical_boxes.evidence_sha256=(Get-FileHash "$root/release/evidence.txt").Hash.ToLowerInvariant()
+    Save
+    Reject 'Build has not certified character- and field-level invoice accuracy'
+    # R242: once field accuracy is marked true in a throwaway TEST fixture,
+    # missing offline runtime remains independently non-bypassable.
+    @{source_sha256_pass=$true;child_startup_smoke_pass=$true;self_contained_dotnet=$true;
+      field_accuracy_certified=$true;offline_runtime_bundled=$false;
+      private_invoice_corpus_included=$false} | ConvertTo-Json | Set-Content "$root/release/BUILD_VERIFICATION.json"
+    $acceptance.build_report_sha256=(Get-FileHash "$root/release/BUILD_VERIFICATION.json").Hash.ToLowerInvariant()
+    Save
+    Reject 'does not contain verified offline OCR runtime'
+    Write-Host 'PASS_R242_NO_INSTALLERS_BEFORE_ACCEPTANCE_8_REJECTIONS'
 } finally {
     # Only the GUID-named test fixture tree is removed; no installed data is used.
     if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }

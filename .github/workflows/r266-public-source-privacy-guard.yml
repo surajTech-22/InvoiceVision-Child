@@ -1,0 +1,34 @@
+name: R266 reject newly added private customer image assets
+on:
+  push:
+    branches: [research/invoicevision-r220-source-witness]
+    paths:
+      - '.github/workflows/r266-public-source-privacy-guard.yml'
+      - 'scripts/r266_reject_new_private_source_assets.py'
+      - 'experiments/test_r266_public_media_guard.py'
+      - 'integration/**'
+      - 'research/**'
+      - 'experiments/**'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  reject-new-raw-sources:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify private-original media addition rules
+        run: python -m unittest discover -s experiments -p 'test_r266_public_media_guard.py' -v
+      - name: Block any newly committed original photo, PDF, ZIP or model assets
+        run: |
+          git fetch --no-tags origin research/invoicevision-r153-source-associations
+          python scripts/r266_reject_new_private_source_assets.py --base research/invoicevision-r153-source-associations
+      - name: Historical exposure warning
+        run: |
+          echo "R266 blocks NEW additions only. Historical published customer files require administrator-led Git history remediation."

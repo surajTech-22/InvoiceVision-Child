@@ -1,0 +1,221 @@
+"""R246: invoice grid-line removal and source-bound table-column regressions."""
+import importlib.util
+from pathlib import Path
+import unittest
+import cv2,numpy as np
+
+p=Path(__file__).resolve().parents[1]/"integration/Engine/INVOICE_OCR_GRID_TABLE_R246.py"
+spec=importlib.util.spec_from_file_location("_r246_test_module",p)
+m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+HEAD="level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext"
+
+def invoice():
+    frame=np.full((800,600,3),255,np.uint8)
+    for y in (250,320,395):
+        cv2.line(frame,(28,y),(565,y),(0,0,0),3)
+    for x in (28,330,410,485,565):
+        cv2.line(frame,(x,250),(x,395),(0,0,0),2)
+    return frame
+
+def synthetic_tsv():
+    words=[("INVOICE",42,45,78),("NO",132,45,25),("SYN-2026-14",176,45,115),
+           ("DESCRIPTION",40,284,165),("QTY",335,284,45),
+           ("RATE",417,284,50),("AMOUNT",494,284,70),
+           ("SAMPLE",42,350,75),("PART",125,350,65),
+           ("20",338,350,30),("57.00",418,350,60),
+           ("1140.00",498,350,65)]
+    rows=[HEAD,"1\t1\t0\t0\t0\t0\t0\t0\t1200\t1600\t-1\t"]
+    for i,(name,x,y,w) in enumerate(words,1):
+        rows.append(f"5\t1\t1\t1\t1\t{i}\t{2*x}\t{2*y}\t{2*w}\t{44}\t97\t{name}")
+    return "\n".join(rows)+"\n"
+
+class RulingLines(unittest.TestCase):
+    def test_ruling_lines_removed_but_source_identical(self):
+        img=invoice();before=img.copy()
+        view,meta=m.remove_long_ruling_lines(img)
+        self.assertTrue(meta["detected_long_ruling_lines"])
+        self.assertGreater(meta["ruling_line_pixel_fraction"],0)
+        self.assertTrue(np.array_equal(img,before))
+        self.assertEqual(view.shape[:2],(1600,1200))
+    def test_two_grid_views_keep_source_boxes_and_no_accounting(self):
+        img=invoice();before=img.copy()
+        out=m.review(img,lambda _view,_psm:synthetic_tsv())
+        self.assertEqual(out["status"],"GRID_RULING_SOURCE_REVIEW_ONLY")
+        self.assertEqual(len(out["source_views"]),2)
+        self.assertGreaterEqual(out["provisional_table_rows"],1)
+        self.assertEqual(out["source_unique_item_row_count"],1)
+        self.assertEqual(out["physical_row_duplicate_evidence_count"],1)
+        self.assertEqual(len(out["source_unique_item_rows"][0]["source_variants"]),2)
+        self.assertFalse(out["source_unique_item_rows"][0]["conflicting_ocr_alternatives"])
+        rows=out["source_field_row_anchors"]["table_header_anchored_row_proposals"]
+        self.assertEqual(rows[0]["quantity_original_ocr"],"20")
+        self.assertEqual(rows[0]["amount_original_ocr"],"1140.00")
+        self.assertFalse(out["posting_eligible"])
+        self.assertEqual(out["accepted_item_rows"],0)
+        self.assertTrue(np.array_equal(img,before))
+    def test_source_row_conflicting_readings_are_not_silently_resolved(self):
+        base={"posting_eligible":False,
+              "source_view":"grid_removed_psm11_2x",
+              "row_box":[35,300,590,344],
+              "quantity_source_box":[330,305,365,333],
+              "amount_source_box":[500,309,568,338],
+              "description_original_ocr":"TEST PART",
+              "quantity_original_ocr":"20",
+              "amount_original_ocr":"1140.00"}
+        alt={**base,"source_view":"grid_removed_psm6_2x",
+             "quantity_original_ocr":"30"}
+        groups=m.distinct_source_rows([base,alt])
+        self.assertEqual(len(groups),1)
+        self.assertTrue(groups[0]["conflicting_ocr_alternatives"])
+        self.assertEqual([x["original_quantity"] for x in groups[0]["source_variants"]],
+                         ["20","30"])
+        self.assertFalse(groups[0]["distinct_row_certified"])
+
+    def test_two_adjacent_items_with_overlapping_multiline_description_do_not_merge(self):
+        first={"posting_eligible":False,"source_view":"grid_removed_psm11_2x",
+               "row_box":[35,300,590,354],
+               "quantity_source_box":[331,308,364,329],
+               "amount_source_box":[502,310,566,332],
+               "description_original_ocr":"MULTILINE ITEM ALPHA",
+               "quantity_original_ocr":"20","amount_original_ocr":"1140.00"}
+        # Physical description boxes overlap vertically, while actual number
+        # cells show two distinct printed rows. Previous union-box matching
+        # risked merging these into one accounting item.
+        second={**first,"row_box":[35,326,590,385],
+                "quantity_source_box":[332,347,365,371],
+                "amount_source_box":[503,348,567,371],
+                "description_original_ocr":"MULTILINE ITEM BETA",
+                "quantity_original_ocr":"3","amount_original_ocr":"81.75"}
+        grouped=m.distinct_source_rows([first,second])
+        self.assertEqual(len(grouped),2)
+        self.assertEqual([x["source_variants"][0]["original_quantity"] for x in grouped],
+                         ["20","3"])
+        self.assertTrue(all(not x["posting_eligible"] and
+                            not x["distinct_row_certified"] for x in grouped))
+
+    def test_same_row_separate_views_with_small_cell_offset_merge_once(self):
+        base={"posting_eligible":False,"source_view":"grid_removed_psm11_2x",
+              "row_box":[35,300,590,344],
+              "quantity_source_box":[331,306,365,330],
+              "amount_source_box":[502,309,568,336],
+              "description_original_ocr":"SAMPLE ITEM",
+              "quantity_original_ocr":"20","amount_original_ocr":"1140.00"}
+        other={**base,"source_view":"grid_removed_psm6_2x",
+               "row_box":[34,298,589,346],
+               "quantity_source_box":[333,309,364,332],
+               "amount_source_box":[504,311,567,335]}
+        grouped=m.distinct_source_rows([base,other])
+        self.assertEqual(len(grouped),1)
+        self.assertEqual(len(grouped[0]["source_variants"]),2)
+        self.assertFalse(grouped[0]["conflicting_ocr_alternatives"])
+
+    def test_row_missing_numeric_source_cell_refused(self):
+        item={"posting_eligible":False,"source_view":"grid_removed_psm11_2x",
+              "row_box":[20,80,250,130],
+              "quantity_source_box":[99,91,120,110],
+              "description_original_ocr":"PART",
+              "quantity_original_ocr":"2","amount_original_ocr":"90.00"}
+        with self.assertRaises(ValueError):
+            m.distinct_source_rows([item])
+
+    def test_duplicate_candidates_from_same_view_never_count_as_one_item(self):
+        source={"posting_eligible":False,"source_view":"grid_removed_psm11_2x",
+                "row_box":[35,300,590,345],
+                "quantity_source_box":[332,306,365,329],
+                "amount_source_box":[505,307,566,334],
+                "description_original_ocr":"ITEM",
+                "quantity_original_ocr":"2","amount_original_ocr":"30.00"}
+        doubled=[source,{**source,"amount_original_ocr":"80.00"}]
+        groups=m.distinct_source_rows(doubled)
+        self.assertEqual(len(groups),2)
+        self.assertTrue(all(len(g["source_variants"])==1 for g in groups))
+        self.assertTrue(all(not g["distinct_row_certified"] for g in groups))
+
+    def test_transitive_cell_shift_does_not_collapse_distinct_rows(self):
+        first={"posting_eligible":False,"source_view":"first",
+               "row_box":[10,280,550,365],
+               "quantity_source_box":[350,304,375,325],
+               "amount_source_box":[482,304,540,325],
+               "description_original_ocr":"PART",
+               "quantity_original_ocr":"2","amount_original_ocr":"50.00"}
+        # Every adjacent pair overlaps geometrically, but first and third
+        # do not. Requiring all anchors prevents chaining the three together.
+        second={**first,"source_view":"second",
+                "quantity_source_box":[355,313,380,334],
+                "amount_source_box":[487,313,545,334]}
+        third={**first,"source_view":"third",
+               "quantity_source_box":[360,322,385,343],
+               "amount_source_box":[492,322,550,343]}
+        result=m.distinct_source_rows([first,second,third])
+        self.assertEqual(len(result),2)
+        self.assertEqual(sum(len(g["source_variants"]) for g in result),3)
+
+    def test_grey_phone_photo_background_does_not_delete_image(self):
+        # A photographed receipt can have broad grey vignetting. A global
+        # Otsu mask incorrectly treated 14-19% of real source as long ruling.
+        frame=invoice()
+        gray=cv2.cvtColor(frame,cv2.COLOR_BGR2GRAY)
+        yy,xx=np.indices(gray.shape)
+        background=(20*(xx/gray.shape[1])).astype(np.uint8)
+        shaded=np.clip(gray.astype(np.int16)-background,0,255).astype(np.uint8)
+        shaded=cv2.cvtColor(shaded,cv2.COLOR_GRAY2BGR)
+        original=shaded.copy()
+        cleaned,meta=m.remove_long_ruling_lines(shaded)
+        self.assertTrue(meta["detected_long_ruling_lines"])
+        self.assertLess(meta["ruling_line_pixel_fraction"],.12)
+        self.assertTrue(np.array_equal(shaded,original))
+        self.assertEqual(cleaned.shape[:2],(1600,1200))
+
+    def test_blank_page_cannot_invent_item_rows(self):
+        img=np.full((500,500,3),255,np.uint8)
+        result=m.review(img,lambda _view,_psm:synthetic_tsv())
+        self.assertEqual(result["status"],"NO_LONG_RULING_LINES_FOUND")
+        self.assertEqual(result["accepted_item_rows"],0)
+    def test_malformed_image_does_not_launch_ocr(self):
+        with self.assertRaises(ValueError):
+            m.review(np.zeros((20,20,3),np.uint8),lambda _v,_p:synthetic_tsv())
+    def test_invalid_tsv_cannot_approve_row(self):
+        with self.assertRaises(ValueError):
+            m.review(invoice(),lambda _v,_p:"not valid TSV")
+    def test_no_source_pixels_changed_if_reader_fails(self):
+        frame=invoice();before=frame.copy()
+        with self.assertRaises(RuntimeError):
+            m.review(frame,lambda _v,_p: (_ for _ in ()).throw(RuntimeError("OCR unavailable")))
+        self.assertTrue(np.array_equal(frame,before))
+    def test_source_line_fraction_bounded(self):
+        frame=np.zeros((500,500,3),np.uint8)
+        with self.assertRaises(ValueError):
+            m.remove_long_ruling_lines(frame)
+    def test_r258_real_grid_analysis_cross_view_provenance_and_no_posting(self):
+        # A single source OCR view supplies trusted table/number geometry,
+        # while the other sees only the actual printed description fragments.
+        primary=[
+            ("DESCRIPTION",40,284,165),("QTY",335,284,45),
+            ("AMOUNT",494,284,70),("5",338,350,30),
+            ("145.00",498,350,65)]
+        secondary=[("SAMPLE",42,350,75),("PART",125,350,65)]
+        def as_tsv(words):
+            lines=[HEAD,"1\t1\t0\t0\t0\t0\t0\t0\t1200\t1600\t-1\t"]
+            for i,(value,x,y,w) in enumerate(words,1):
+                lines.append(f"5\t1\t1\t1\t1\t{i}\t{2*x}\t{2*y}\t{2*w}\t44\t97\t{value}")
+            return "\n".join(lines)+"\n"
+        src=invoice();before=src.copy()
+        out=m.review(src,lambda _view,psm:as_tsv(primary if psm==11 else secondary))
+        self.assertEqual(out["source_field_row_anchors"]["row_proposals_count"],0)
+        self.assertEqual(out["source_cross_view_row_count"],1)
+        self.assertEqual(out["source_unique_item_row_count"],1)
+        self.assertEqual(out["provisional_table_rows"],1)
+        row=out["source_unique_item_rows"][0]
+        self.assertEqual(len(row["source_variants"]),1)
+        self.assertTrue(row["source_variants"][0]["description_fragment_only"])
+        self.assertEqual(row["source_variants"][0]["description_source_view"],
+                         "grid_removed_psm6_2x")
+        self.assertEqual(row["source_variants"][0]["amount_source_view"],
+                         "grid_removed_psm11_2x")
+        self.assertEqual(out["accepted_item_rows"],0)
+        self.assertFalse(out["accounting_write_permitted"])
+        self.assertFalse(out["release_approved"])
+        self.assertTrue(np.array_equal(src,before))
+
+if __name__=="__main__":
+    unittest.main(verbosity=2)

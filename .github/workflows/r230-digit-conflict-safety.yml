@@ -1,0 +1,28 @@
+name: R230 original OCR digit conflict safety (research only)
+on:
+  push:
+    branches: [research/invoicevision-r220-source-witness]
+    paths:
+      - 'experiments/r230_source_digit_disagreement.py'
+      - 'experiments/test_r230_source_digit_disagreement.py'
+      - '.github/workflows/r230-digit-conflict-safety.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  refuse-uncertified-digits:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 7
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Check research-only source syntax
+        run: python -m py_compile experiments/r230_source_digit_disagreement.py
+      - name: Refuse automatic OCR value corrections
+        run: python -m unittest experiments.test_r230_source_digit_disagreement -v

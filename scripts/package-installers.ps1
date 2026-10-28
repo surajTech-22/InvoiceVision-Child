@@ -39,6 +39,37 @@ foreach ($name in $required) {
     $actual = (Get-FileHash -LiteralPath $evidence -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($gate.evidence_sha256 -cne $actual) { throw "Acceptance evidence checksum mismatch: $name" }
 }
+# R242: an acceptance JSON alone cannot override the actual executable
+# contents. Refuse installers when the real build still reports unverified
+# field accuracy or lacks an explicitly checked offline OCR runtime.
+$buildObj = Get-Content -LiteralPath $report -Raw -Encoding UTF8 | ConvertFrom-Json
+if ($buildObj.field_accuracy_certified -ne $true) {
+    throw 'Build has not certified character- and field-level invoice accuracy'
+}
+if ($buildObj.offline_runtime_bundled -ne $true) {
+    throw 'Installable Child does not contain verified offline OCR runtime'
+}
+if ($buildObj.private_invoice_corpus_included -ne $false) {
+    throw 'Private original-invoice benchmark inclusion has not been disproven'
+}
+foreach ($relative in @(
+    'Runtime/Python/python.exe',
+    'Runtime/Tesseract/tesseract.exe',
+    'Runtime/Tesseract/tessdata/eng.traineddata',
+    'Runtime/R241_RUNTIME_VERIFICATION.json')) {
+    if (-not (Test-Path -LiteralPath (Join-Path $publish $relative) -PathType Leaf)) {
+        throw "Required offline OCR installation component is absent: $relative"
+    }
+}
+if (Test-Path -LiteralPath (Join-Path $publish 'Engine/VISUAL_BENCHMARK_15_PHOTOS.zip')) {
+    throw 'Private customer invoice photographs must never be packaged'
+}
+$runtimeInfo = Get-Content -LiteralPath (Join-Path $publish 'Runtime/R241_RUNTIME_VERIFICATION.json') -Raw | ConvertFrom-Json
+if ($runtimeInfo.status -ne 'ISOLATED_WINDOWS_CPU_RUNTIME_VERIFIED_NO_PADDLE_MODELS' -or
+    $runtimeInfo.customer_files_embedded -ne $false) {
+    throw 'Offline CPU OCR runtime manifest not certified or contains user documents'
+}
+
 $iscc = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
 if (-not (Test-Path -LiteralPath $iscc)) { throw 'ISCC.exe missing' }
 $project = Join-Path $root 'InvoiceVisionChild\InvoiceVisionChild.csproj'

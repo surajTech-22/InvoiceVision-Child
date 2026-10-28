@@ -1,0 +1,28 @@
+name: InvoiceVision R223 source-bound item rows (research only)
+on:
+  push:
+    branches: [research/invoicevision-r220-source-witness]
+    paths:
+      - 'experiments/r223_source_table_rows.py'
+      - 'experiments/test_r223_source_table_rows.py'
+      - '.github/workflows/r223-source-table-rows.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  geometry-review:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify syntax of review-only row hypotheses
+        run: python -m py_compile experiments/r223_source_table_rows.py
+      - name: Run synthetic immutable-source regressions
+        run: python -m unittest discover -s experiments -p 'test_r223_source_table_rows.py' -v

@@ -1,0 +1,315 @@
+name: R225 Windows Child compilation and startup (no installer)
+on:
+  push:
+    branches: [research/invoicevision-r220-source-witness]
+    paths:
+      - '.github/workflows/r225-windows-child-build-validation.yml'
+      - 'scripts/stage-r144-integration.py'
+      - 'scripts/r227_replay_original_child_review.py'
+      - 'experiments/r223_source_table_rows.py'
+      - 'integration/Engine/INVOICE_OCR_SOURCE_REVIEW_R226.py'
+      - 'integration/Engine/INVOICE_OCR_LAYOUT_RECOVERY_R229.py'
+      - 'experiments/test_r229_layout_recovery.py'
+      - 'integration/Engine/INVOICE_OCR_REVIEW_QUEUE_R231.py'
+      - 'experiments/test_r231_review_queue.py'
+      - 'scripts/build-windows.ps1'
+      - 'scripts/package-installers.ps1'
+      - 'scripts/test-r146-release-gate.ps1'
+      - 'integration/Engine/**'
+      - 'integration/Window/**'
+      - 'integration/Engine/INVOICE_OCR_FIELD_CONSISTENCY_R235.py'
+      - 'experiments/test_r235_source_field_consistency.py'
+      - 'experiments/test_r236_targeted_recheck.py'
+      - 'experiments/test_r237_source_field_associations.py'
+      - 'experiments/test_r238_qr_review.py'
+      - 'experiments/test_r239_gstin_review.py'
+      - 'experiments/test_r245_field_row_anchors.py'
+      - 'experiments/test_r246_grid_table.py'
+      - 'experiments/test_r259_rule_bands.py'
+      - 'experiments/test_r261_column_bands.py'
+      - 'experiments/test_r268_numeric_witness.py'
+      - 'experiments/r270_private_original_acceptance.py'
+      - 'experiments/test_r270_private_original_acceptance.py'
+      - 'experiments/test_r272_numeric_only.py'
+      - 'experiments/test_r274_hsn_source.py'
+      - 'experiments/test_r273_pcs_right_source.py'
+      - 'experiments/test_r248_amount_reread.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows-child-compile:
+    name: R225 real Child .NET and startup smoke
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Verify exact 73-file baseline archive and safe extraction
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $archivePath='source/INVOICE_OCR_CHILD_R113_R4_R2_VERIFIED_UPDATE.zip'
+          if (-not (Test-Path -LiteralPath $archivePath -PathType Leaf)) { throw 'Original Child archive absent' }
+          $actual = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -cne 'ad4720d1037558e637fd42abf8e40bce34b505f6cfa73f29dcc3a67816a9ac59') {
+            throw "Original Child source hash mismatch: $actual"
+          }
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [IO.Compression.ZipFile]::OpenRead((Resolve-Path $archivePath).Path)
+          try {
+            foreach ($entry in $zip.Entries) {
+              $name=$entry.FullName.Replace('\','/')
+              if ($name.StartsWith('/') -or $name -match '(^|/)\.\.(/|$)' -or $name -match '^[A-Za-z]:') {
+                throw "Unsafe source archive entry: $name"
+              }
+            }
+          } finally { $zip.Dispose() }
+          Expand-Archive -LiteralPath $archivePath -DestinationPath integration-build -Force
+          if (-not (Test-Path integration-build/CHILD_SOURCE_SHA256.json)) { throw 'Original source manifest missing' }
+          if (-not (Test-Path integration-build/InvoiceVisionChild/InvoiceVisionChild.csproj)) { throw 'Original WPF project missing' }
+          Write-Host 'R225_PINNED_SOURCE_ARCHIVE_VERIFIED'
+      - name: Stage reviewed engine overlays in isolated tree only
+        shell: pwsh
+        run: |
+          python scripts/stage-r144-integration.py integration-build
+          if ($LASTEXITCODE -ne 0) { throw 'Isolated overlay verification failed' }
+          New-Item -ItemType Directory integration-build/scripts -Force | Out-Null
+          Copy-Item scripts/build-windows.ps1 integration-build/scripts/build-windows.ps1
+          Write-Host 'R225_RESEARCH_OVERLAY_STAGED_NOT_INSTALLED'
+      - name: Check R233 native review source exists and is staged safely
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $panel='integration-build/InvoiceVisionChild/InvoiceSourceReviewR233.cs'
+          $source='integration/Window/InvoiceSourceReviewR233.cs'
+          if (-not (Test-Path $panel -PathType Leaf)) { throw 'R233 native review source missing' }
+          if ((Get-FileHash $panel -Algorithm SHA256).Hash -ne (Get-FileHash $source -Algorithm SHA256).Hash) {
+            throw 'R233 native review source differs from isolated verified overlay'
+          }
+          $workspace=Get-Content 'integration-build/InvoiceVisionChild/InvoiceZoneWorkspace.cs' -Raw
+          if (-not $workspace.Contains('AttachSourceReviewUiR233(inspector)') -or
+              -not $workspace.Contains('LoadSourceReviewQueueR233(root, actualHash)') -or
+              -not $workspace.Contains('AssertR233NativeReviewReadyForInstaller()')) {
+            throw 'Verified WPF review hooks were not inserted'
+          }
+          Write-Host 'R233_NATIVE_SOURCE_REVIEW_STAGING_PASS'
+      - name: Compile real .NET 10 WPF Child and run original startup self-test
+        shell: pwsh
+        run: |
+          & ./integration-build/scripts/build-windows.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Real Windows Child build or smoke verification failed' }
+      - name: Verify real Child publish does not contain private customer invoices
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $publish='integration-build/build/publish'
+          if (Test-Path -LiteralPath "$publish/Engine/VISUAL_BENCHMARK_15_PHOTOS.zip") {
+            throw 'Private invoice photographs were included in executable publish output'
+          }
+          $native = Get-Content 'integration-build/InvoiceVisionChild/Program.cs' -Raw
+          if ($native.Contains('LoadBenchmarkPreview();') -or
+              $native.Contains('Run 15 Real Example Photos') -or
+              $native.Contains('if (autoBenchmark && !previouslyCompleted)')) {
+            throw 'Native Child can still auto-display/process the private original photo benchmark'
+          }
+          $analyze=Get-Content 'integration-build/InvoiceVisionChild/InvoiceCategoryFirst.cs' -Raw
+          if (-not $analyze.Contains('psi.Environment["INVOICEVISION_SOURCE_REVIEW_R226"] = "1"')) {
+            throw 'Native analyze action has no source-linked review connection'
+          }
+          Write-Host 'R234_PRIVATE_PHOTOS_EXCLUDED_AND_NATIVE_REVIEW_CONNECTED'
+      - name: Verify R226 review modules were copied into real Windows publish output
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($name in @(
+              'INVOICE_OCR_PADDLE_ADAPTER_R112.py',
+              'INVOICE_OCR_RECURSIVE_ZONES_R109.py',
+              'INVOICE_OCR_SOURCE_ROWS_R223.py',
+              'INVOICE_OCR_SOURCE_REVIEW_R226.py',
+              'INVOICE_OCR_LAYOUT_RECOVERY_R229.py',
+              'INVOICE_OCR_REVIEW_QUEUE_R231.py',
+              'INVOICE_OCR_FIELD_CONSISTENCY_R235.py',
+              'INVOICE_OCR_TARGETED_RECHECK_R236.py',
+              'INVOICE_OCR_SOURCE_FIELD_ASSOCIATIONS_R237.py',
+              'INVOICE_OCR_QR_REVIEW_R238.py',
+              'INVOICE_OCR_GSTIN_REVIEW_R239.py',
+              'INVOICE_OCR_MULTISCALE_REVIEW_R243.py',
+              'INVOICE_OCR_FIELD_CROP_REVIEW_R244.py',
+              'INVOICE_OCR_FIELD_ROW_ANCHORS_R245.py',
+              'INVOICE_OCR_GRID_TABLE_R246.py',
+              'INVOICE_OCR_RULED_ROW_BANDS_R259.py',
+              'INVOICE_OCR_COLUMN_BANDS_R261.py',
+              'INVOICE_OCR_NUMERIC_WITNESS_R268.py',
+              'INVOICE_OCR_NUMERIC_ONLY_R272.py',
+              'INVOICE_OCR_ITEM_AMOUNT_REREAD_R248.py')) {
+            $source = Join-Path 'integration-build/InvoiceVisionChild/Engine' $name
+            $published = Join-Path 'integration-build/build/publish/Engine' $name
+            if (-not (Test-Path -LiteralPath $source -PathType Leaf) -or
+                -not (Test-Path -LiteralPath $published -PathType Leaf)) {
+              throw "Real published Child is missing Engine source: $name"
+            }
+            $a = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash
+            $b = (Get-FileHash -LiteralPath $published -Algorithm SHA256).Hash
+            if ($a -cne $b) { throw "Published Child Engine hash mismatch: $name" }
+          }
+          Write-Host 'R226_WINDOWS_PUBLISHED_REVIEW_MODULE_HASH_PASS'
+      - name: Verify user-owned original-corpus replay harness syntax
+        shell: pwsh
+        run: |
+          python -m py_compile scripts/r227_replay_original_child_review.py
+          if ($LASTEXITCODE -ne 0) { throw 'R227 original source replay harness syntax failed' }
+          Write-Host 'R227_PRIVATE_ORIGINAL_CORPUS_NOT_UPLOADED_TO_PUBLIC_GITHUB'
+      - name: Check latest R220-R223 review-only regression tests
+        shell: pwsh
+        run: |
+          python -m unittest discover -s experiments -p 'test_r22*.py' -v
+          if ($LASTEXITCODE -ne 0) { throw 'R220-R223 research regression failure' }
+      - name: Run R222 source-date safety with the real image processing dependencies
+        shell: pwsh
+        run: |
+          python -m pip install 'numpy>=1.26,<3' 'opencv-python-headless==4.11.0.86'
+          if ($LASTEXITCODE -ne 0) { throw 'R222 image dependencies failed' }
+          python experiments/check_r222_original_source_dates_synthetic.py
+          if ($LASTEXITCODE -ne 0) { throw 'R222 date validation failed' }
+      - name: Verify R229 synthetic orientation and HSN safety tests
+        shell: pwsh
+        run: |
+          python -m unittest discover -s experiments -p 'test_r229_layout_recovery.py' -v
+          if ($LASTEXITCODE -ne 0) { throw 'R229 source geometry regression failed' }
+      - name: Verify R231 immutable source queue safety
+        shell: pwsh
+        run: |
+          python -m unittest discover -s experiments -p 'test_r231_review_queue.py' -v
+          if ($LASTEXITCODE -ne 0) { throw 'R231 exact-source review queue regression failed' }
+      - name: Verify R235 source-only printed-field consistency warnings
+        shell: pwsh
+        run: |
+          python -m unittest discover -s experiments -p 'test_r235_source_field_consistency.py' -v
+          if ($LASTEXITCODE -ne 0) { throw 'R235 date, HSN and amount safety regression failed' }
+      - name: Verify R236 targeted source-pixel OCR rereads, without any auto-corrections
+        shell: pwsh
+        run: |
+          python -m unittest discover -s experiments -p 'test_r236_targeted_recheck.py' -v
+          if ($LASTEXITCODE -ne 0) { throw 'R236 numeric source-crop verification failed' }
+      - name: Verify R237 source-bound HSN tax and supplier associations
+        shell: pwsh
+        run: |
+          python -m unittest discover -s experiments -p 'test_r237_source_field_associations.py' -v
+          if ($LASTEXITCODE -ne 0) { throw 'R237 source-associated field review failed' }
+      - name: Verify R238 synthetic source QR and privacy-safe invoice-number crosschecks
+        shell: pwsh
+        run: |
+          python -m unittest discover -s experiments -p 'test_r238_qr_review.py' -v
+          if ($LASTEXITCODE -ne 0) { throw 'R238 QR source decoding and fail-closed review tests failed' }
+      - name: Verify R239 GSTIN check digit OCR disagreement regressions
+        shell: pwsh
+        run: |
+          python -m unittest discover -s experiments -p 'test_r239_gstin_review.py' -v
+          if ($LASTEXITCODE -ne 0) { throw 'R239 GSTIN source checksum regressions failed' }
+      - name: Verify R243 original-coordinate 2x OCR review and no-posting guards
+        shell: pwsh
+        run: |
+          python -m unittest discover -s experiments -p 'test_r243_multiscale_review.py' -v
+          if ($LASTEXITCODE -ne 0) { throw 'R243 source-box and multiscale safety tests failed' }
+      - name: Verify R244 low-confidence physical-cell OCR safety regressions
+        shell: pwsh
+        run: |
+          python -m unittest discover -s experiments -p 'test_r244_field_crop_review.py' -v
+          if ($LASTEXITCODE -ne 0) { throw 'R244 original-source crop rereads failed' }
+      - name: Verify R245 original-coordinate label and item table mapping
+        shell: pwsh
+        run: |
+          python -m unittest discover -s experiments -p 'test_r245_field_row_anchors.py' -v
+          if ($LASTEXITCODE -ne 0) { throw 'R245 source-label and item-column association tests failed' }
+      - name: Verify R246 temporary table ruling-line removal and row geometry
+        shell: pwsh
+        run: |
+          python -m unittest discover -s experiments -p 'test_r246_grid_table.py' -v
+          if ($LASTEXITCODE -ne 0) { throw 'R246 synthetic invoice grid table regression failed' }
+      - name: Verify R259 skew-aware source-printed row bands are always review-only
+        shell: pwsh
+        run: |
+          python -m unittest discover -s experiments -p 'test_r259_rule_bands.py' -v
+          if ($LASTEXITCODE -ne 0) { throw 'R259 printed table source geometry safety regression failed' }
+      - name: Verify R261 printed numeric column rules never certify financial values
+        shell: pwsh
+        run: |
+          python -m unittest discover -s experiments -p 'test_r261_column_bands.py' -v
+          if ($LASTEXITCODE -ne 0) { throw 'R261 printed source-column regression failed' }
+      - name: Verify R268 literal OCR numeric witness conflict report remains nonposting
+        shell: pwsh
+        run: |
+          python -m unittest discover -s experiments -p 'test_r268_numeric_witness.py' -v
+          if ($LASTEXITCODE -ne 0) { throw 'R268 OCR source conflict review safety regressions failed' }
+      - name: Verify R270 independent private original-source exact field and row gate
+        shell: pwsh
+        run: |
+          python -m unittest discover -s experiments -p 'test_r270_private_original_acceptance.py' -v
+          if ($LASTEXITCODE -ne 0) { throw 'R270 original-source acceptance blocking regressions failed' }
+      - name: Verify R272 in-memory source numeric-only OCR has no disk writes or field promotion
+        shell: pwsh
+        run: |
+          python -m unittest discover -s experiments -p 'test_r272_numeric_only.py' -v
+          if ($LASTEXITCODE -ne 0) { throw 'R272 offline original source numeric OCR safety test failed' }
+      - name: Verify R274 source-column HSN serial-exclusion remains strictly unapproved
+        shell: pwsh
+        run: |
+          python -m unittest discover -s experiments -p 'test_r274_hsn_source.py' -v
+          if ($LASTEXITCODE -ne 0) { throw 'R274 original HSN source-crop regression failed' }
+      - name: Verify R248 source-amount missing-digit rechecks cannot accept untrusted OCR
+        shell: pwsh
+        run: |
+          python -m unittest discover -s experiments -p 'test_r248_amount_reread.py' -v
+          if ($LASTEXITCODE -ne 0) { throw 'R248 source amount recheck safety tests failed' }
+      - name: Verify R226 review hook inside staged WPF Child Engine
+        shell: pwsh
+        run: |
+          python experiments/check_r226_staged_child_review.py
+          if ($LASTEXITCODE -ne 0) { throw 'R226 real Child zone integration regression failed' }
+          Write-Host 'R226_STAGED_CHILD_REVIEW_ONLY_PASS'
+      - name: Ensure unverified Setup and Update executables remain blocked
+        shell: pwsh
+        run: |
+          # The safety script uses native PowerShell exceptions (not a native process
+          # exit code). Its own failures terminate this step; do not inspect
+          # $LASTEXITCODE, which is unset in a fresh pwsh session.
+          & ./scripts/test-r146-release-gate.ps1
+      - name: Show build evidence but withhold production installers
+        shell: pwsh
+        run: |
+          if (Test-Path integration-build/release/InvoiceVisionChild_Setup.exe) { throw 'Unexpected unapproved setup executable' }
+          if (Test-Path integration-build/release/InvoiceVisionChild_Update.exe) { throw 'Unexpected unapproved update executable' }
+          Get-Content integration-build/release/BUILD_VERIFICATION.json
+          Write-Host 'R225_NO_INSTALLER_OR_RELEASE_APPROVED'
+      - name: Archive source verified build evidence (not installer)
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: InvoiceVision-R225-Windows-Child-Build-Evidence-Unreleased
+          path: |
+            integration-build/R144_INTEGRATION_PROVENANCE.json
+            integration-build/release/BUILD_VERIFICATION.json
+            integration-build/build/startup-smoke.txt
+            integration-build/InvoiceVisionChild/Engine/INVOICE_OCR_RECURSIVE_ZONES_R109.py
+            integration-build/InvoiceVisionChild/Engine/INVOICE_OCR_SOURCE_REVIEW_R226.py
+            integration-build/InvoiceVisionChild/Engine/INVOICE_OCR_SOURCE_ROWS_R223.py
+            integration-build/InvoiceVisionChild/Engine/INVOICE_OCR_LAYOUT_RECOVERY_R229.py
+            integration-build/InvoiceVisionChild/Engine/INVOICE_OCR_REVIEW_QUEUE_R231.py
+            integration-build/InvoiceVisionChild/Engine/INVOICE_OCR_FIELD_CONSISTENCY_R235.py
+            integration-build/InvoiceVisionChild/Engine/INVOICE_OCR_TARGETED_RECHECK_R236.py
+            integration-build/InvoiceVisionChild/Engine/INVOICE_OCR_SOURCE_FIELD_ASSOCIATIONS_R237.py
+            integration-build/InvoiceVisionChild/Engine/INVOICE_OCR_QR_REVIEW_R238.py
+            integration-build/InvoiceVisionChild/Engine/INVOICE_OCR_GSTIN_REVIEW_R239.py
+            integration-build/InvoiceVisionChild/Engine/INVOICE_OCR_MULTISCALE_REVIEW_R243.py
+            integration-build/InvoiceVisionChild/Engine/INVOICE_OCR_FIELD_CROP_REVIEW_R244.py
+            integration-build/InvoiceVisionChild/Engine/INVOICE_OCR_FIELD_ROW_ANCHORS_R245.py
+            integration-build/InvoiceVisionChild/Engine/INVOICE_OCR_GRID_TABLE_R246.py
+            integration-build/InvoiceVisionChild/Engine/INVOICE_OCR_ITEM_AMOUNT_REREAD_R248.py
+          if-no-files-found: warn
+          retention-days: 14

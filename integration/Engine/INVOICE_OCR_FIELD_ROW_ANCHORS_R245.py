@@ -1,0 +1,551 @@
+"""R245: source-anchored field and table-column association across 2x OCR views.
+
+Input consists solely of the original-pixel rectangles and exact OCR text
+from R243. An anchor (label or physical table heading) is required before
+proposing a value. No customer/vendor identifiers or values are hardcoded.
+These are *unverified associations*, not corrected data or accounting fields.
+"""
+from __future__ import annotations
+import re
+from statistics import median
+
+_FIELD_LABELS=(
+    ("invoice_number",re.compile(r"\b(?:INVOICE|INV)\s*(?:NO|NUMBER|#|NUM)\b[.:\s#-]*",re.I)),
+    ("invoice_date",re.compile(r"\b(?:INVOICE\s*DATE|BILL\s*DATE|DATE)\b[.:\s-]*",re.I)),
+    ("net_total",re.compile(r"\b(?:GRAND\s*TOTAL|NET\s*(?:PAYABLE|AMOUNT)|TOTAL\s*PAYABLE)\b[.:\s-]*",re.I)),
+)
+_NUM_RE=re.compile(r"^(?:[₹Rs.\s]*)(\d+(?:,\d{2,3})*(?:\.\d{1,2})?)$")
+_DATE_RE=re.compile(r"(?:0?[1-9]|[12][0-9]|3[01])[/.-](?:0?[1-9]|1[0-2])[/.-](?:19|20)\d{2}")
+_INV_RE=re.compile(r"^[A-Za-z0-9][A-Za-z0-9/_-]{1,49}$")
+_HEADS={
+    "description": re.compile(r"^(?:DESCRIPTION|PARTICULARS|ITEM|PRODUCT|GOODS)$",re.I),
+    "quantity": re.compile(r"^(?:QTY|QUANTITY|UNITS?|PCS)$",re.I),
+    "rate": re.compile(r"^(?:RATE|PRICE|UNIT\s*RATE)$",re.I),
+    "amount": re.compile(r"^(?:AMOUNT|VALUE|TOTAL)$",re.I)
+}
+
+def _tokenbox(item,w,h):
+    if not isinstance(item,dict):
+        raise ValueError("Nonobject source OCR observation")
+    box=item.get("original_source_box")
+    text=item.get("original_source_text")
+    if (not isinstance(text,str) or len(text)>1500 or not text.strip() or
+        not isinstance(box,list) or len(box)!=4 or
+        any(type(q)!=int for q in box) or
+        not (0<=box[0]<box[2]<=w and 0<=box[1]<box[3]<=h)):
+        raise ValueError("Invalid source-bound OCR observation")
+    return box,text.strip()
+
+def _lines(words):
+    """Group words on original printed horizontal baselines, not OCR order."""
+    if not words:return []
+    heights=[v["box"][3]-v["box"][1] for v in words]
+    tol=max(7,min(35,median(heights)*.70))
+    lines=[]
+    for word in sorted(words,key=lambda q:((q["box"][1]+q["box"][3])/2,q["box"][0])):
+        cy=(word["box"][1]+word["box"][3])/2
+        line=min(lines,key=lambda q:abs(q["cy"]-cy)) if lines else None
+        if line is None or abs(line["cy"]-cy)>tol:
+            lines.append({"cy":cy,"words":[word]})
+        else:
+            n=len(line["words"])
+            line["words"].append(word)
+            line["cy"]=(line["cy"]*n+cy)/(n+1)
+    for line in lines:
+        line["words"].sort(key=lambda q:q["box"][0])
+    return sorted(lines,key=lambda q:q["cy"])
+
+def _union(words):
+    b=[q["box"] for q in words]
+    return [min(q[0] for q in b),min(q[1] for q in b),
+            max(q[2] for q in b),max(q[3] for q in b)]
+
+def _add_field(view,line,category,match,output):
+    words=line["words"]
+    text=" ".join(w["text"] for w in words)
+    # Associate right-hand print only when the candidate follows its LABEL.
+    # Match spans are mapped to actual OCR words through the same join layout.
+    spans=[];cursor=0
+    for word in words:
+        spans.append((cursor,cursor+len(word["text"])))
+        cursor+=len(word["text"])+1
+    anchor=[words[i] for i,(a,b) in enumerate(spans) if a<match.end() and b>match.start()]
+    remaining=[words[i] for i,(a,b) in enumerate(spans) if a>=match.end()]
+    if not anchor or not remaining:return
+    if len(remaining)>8:return
+    tail=text[match.end():].strip().lstrip(": #-")
+    if not tail:return
+    if category=="invoice_number":
+        values=[word for word in remaining if _INV_RE.fullmatch(word["text"])]
+        if len(values)!=1 or not any(c.isdigit() for c in values[0]["text"]):return
+        chosen=values[0]["text"]
+        evidence=[values[0]]
+    elif category=="invoice_date":
+        m=_DATE_RE.search(tail)
+        if not m:return
+        chosen=m.group()
+        evidence=remaining
+    else:
+        nums=[]
+        for word in remaining:
+            v=word["text"].replace(",","")
+            m=_NUM_RE.fullmatch(v)
+            if m:nums.append((word,m.group(1)))
+        if len(nums)!=1:return
+        evidence=[nums[0][0]];chosen=nums[0][1]
+    # R269: different source-printed dates need distinct semantics.
+    # A generic DATE or the dated QR/e-invoice issuance must not silently
+    # become the accounting BILL date. Preserve the actual OCR characters.
+    date_kind=None
+    if category=="invoice_date":
+        printed=match.group().upper()
+        prefix=text[max(0,match.start()-32):match.start()].upper()
+        if ("INVOICE" in printed and
+            re.search(r"(?:^|[^A-Z])E[\s-]*$",prefix)):
+            date_kind="e_invoice_issue_date"
+        elif "BILL" in printed:
+            date_kind="printed_bill_date"
+        elif "INVOICE" in printed:
+            date_kind="printed_invoice_date"
+        else:
+            date_kind="generic_date_unresolved"
+    proposal={
+        "type":"LABEL_VALUE_NEAR_SOURCE",
+        "category":category,"candidate_text":chosen,
+        "source_view":view,
+        "label_literal_source_text":[w["text"] for w in anchor],
+        "value_literal_source_text":[w["text"] for w in evidence],
+        "label_source_box":_union(anchor),
+        "value_source_box":_union(evidence),
+        "field_value_certified":False,"posting_eligible":False
+    }
+    if category=="invoice_date":
+        proposal["source_date_label_kind"]=date_kind
+        proposal["source_label_context_before_match"]=prefix
+    output.append(proposal)
+
+def _header_text(value):
+    """Match heading punctuation without modifying source OCR literals."""
+    return value.strip(" \t:;.,|()[]{}")
+
+def _enclosed_unit_note(value):
+    """Fully enclosed (PCS)/[QTY] is not proof of a table column heading.
+
+    Keep partly OCR-fragmented CS) / Pes) as source colmarks: those can
+    distinguish nearby physical printed numeric columns.
+    """
+    v=value.strip()
+    return len(v)>=3 and v[0] in "([{" and v[-1] in ")]}"
+
+def _table(lines,view,width,height,max_rows):
+    """Anchor printed item rows to multi-line, spatially ordered table columns.
+
+    Labels must come from the actual OCR tokens, never a supplier name or
+    image-specific coordinate. A common Indian tax-invoice table uses 'Pcs'
+    and 'Net Amt' where scanned OCR sometimes renders them 'Pes'/'Ant'.
+    These are HEADER aliases only; no quantity or amount is auto-corrected.
+    """
+    output=[]
+    # Source indices identify one physical heading/row *within this OCR view*.
+    # Overlapping line bands may see the same printed header twice.
+    seen_headers=set()
+    seen_numeric_rows=set()
+    all_words=[word for line in lines for word in line["words"]]
+    for line in lines:
+        # Source table headings can span two printed lines; group only within
+        # 32 original pixels vertically, then require DESCRIPTION<QTY<AMOUNT.
+        band=[x for x in all_words if
+              line["cy"]-22 <= (x["box"][1]+x["box"][3])/2 <= line["cy"]+32]
+        if len(band)>80:continue
+        description=[x for x in band if re.fullmatch(
+            r"(?i:DESCRIPTION|PRODUCT|PARTICULARS|ITEM|GOODS)",_header_text(x["text"]))]
+        quantities=[x for x in band if not _enclosed_unit_note(x["text"]) and re.fullmatch(
+            r"(?i:QTY|QUANTITY|PCS|PES|PIECES)",_header_text(x["text"]))]
+        amount_tokens=[x for x in band if re.fullmatch(
+            r"(?i:AMOUNT|AMT|ANT|NETAMT|NETAMOUNT)",_header_text(x["text"]))]
+        if not description or not quantities:continue
+        net_tokens=[x for x in band if re.fullmatch(
+            r"(?i:NET)",_header_text(x["text"]))]
+        total_tokens=[x for x in band if re.fullmatch(
+            r"(?i:TOTAL)",_header_text(x["text"]))]
+        # Printed headers such as "Total Value (incl. of tax)" often arrive
+        # as "Total" + "ValuetInclof" from a photographed invoice. "Value"
+        # alone does not prove an item AMOUNT column: require the adjacent
+        # source-literal TOTAL label, to the left and on the same table band.
+        inclusive_value_tokens=[x for x in band if
+            re.match(r"(?i:^VALUE(?:.{0,3}INCL.*)?$)",
+                     re.sub(r"\s+","",x["text"]).strip(":|"))]
+        eligible_amounts=[]
+        for token in amount_tokens:
+            name=_header_text(token["text"]).upper()
+            if name in ("AMOUNT","NETAMOUNT","NETAMT"):
+                eligible_amounts.append(token)
+            elif any(0<token["box"][0]-n["box"][0]<80 and
+                     abs((token["box"][1]+token["box"][3])/2 -
+                         (n["box"][1]+n["box"][3])/2)<24 for n in net_tokens):
+                eligible_amounts.append(token)
+        for value_header in inclusive_value_tokens:
+            if any(0<value_header["box"][0]-tot["box"][0]<105 and
+                   abs((value_header["box"][1]+value_header["box"][3])/2 -
+                       (tot["box"][1]+tot["box"][3])/2)<25
+                   for tot in total_tokens):
+                eligible_amounts.append(value_header)
+        if not eligible_amounts:continue
+        desc=min(description,key=lambda x:x["box"][0])
+        qty=min((x for x in quantities if x["box"][0]>desc["box"][0]+35),
+                key=lambda x:x["box"][0],default=None)
+        if qty is None:continue
+        amount=max((x for x in eligible_amounts if
+                    x["box"][0]>qty["box"][2]+60),
+                   key=lambda x:x["box"][0],default=None)
+        if amount is None:continue
+        qty_x=(qty["box"][0]+qty["box"][2])/2
+        amount_x=(amount["box"][0]+amount["box"][2])/2
+        desc_x=(desc["box"][0]+desc["box"][2])/2
+        if not(desc_x+35<qty_x<amount_x-55):continue
+        header_key=(desc["index"],qty["index"],amount["index"])
+        if header_key in seen_headers:continue
+        seen_headers.add(header_key)
+        header_bottom=max(desc["box"][3],qty["box"][3],amount["box"][3])
+        # The old 28%-of-page search cut off tall printed product tables:
+        # seven source rows may span more than the OCR header's first quarter.
+        # Extend the proposal-only search, still bounded by the image and by
+        # printed section headings/totals below. This never certifies rows.
+        table_end=min(height,header_bottom+min(max(240,int(height*.50)),900))
+        for later in lines:
+            if later["cy"]<=header_bottom+30:
+                continue
+            # A second, separate printed table heading should not be parsed
+            # as an item of the previous table. Require all three headings
+            # in the same OCR baseline, not the word TOTAL by itself.
+            later_words=later["words"]
+            if (any(re.fullmatch(r"(?i:DESCRIPTION|PRODUCT|PARTICULARS|ITEM|GOODS)",
+                                 _header_text(x["text"])) for x in later_words)
+                and any(re.fullmatch(r"(?i:QTY|QUANTITY|PCS|PES|PIECES)",
+                                     _header_text(x["text"])) for x in later_words)
+                and any(re.fullmatch(r"(?i:AMOUNT|NETAMT|NETAMOUNT)",
+                                     _header_text(x["text"])) for x in later_words)):
+                table_end=min(table_end,min(x["box"][1] for x in later_words))
+        # A printed subtotal/total in the DESCRIPTION region marks the end
+        # of the item table. Without this anchor, amounts from later tax/
+        # payment summaries can become phantom item rows.
+        footer_labels=[x for x in all_words if
+                       x["box"][0]<qty["box"][0]-12 and
+                       header_bottom+18<(x["box"][1]+x["box"][3])/2<table_end and
+                       re.fullmatch(r"(?i:SUBTOTAL|TOTAL|GRAND|NET)",
+                                    _header_text(x["text"]))]
+        footer_stop=min(((x["box"][1]+x["box"][3])/2 for x in footer_labels),
+                        default=table_end+1)
+        # Description text determines ROW geometry, not numbers elsewhere.
+        anchors=[x for x in all_words if
+                 x["box"][0]>=desc["box"][0]-100 and
+                 x["box"][2]<qty["box"][0]-12 and
+                 header_bottom+3 < (x["box"][1]+x["box"][3])/2 < table_end and
+                 re.search(r"[A-Za-z]{2,}",x["text"])]
+        anchors.sort(key=lambda x:(x["box"][1]+x["box"][3])/2)
+        centers=[]
+        for word in anchors:
+            cy=(word["box"][1]+word["box"][3])/2
+            if centers and abs(centers[-1]["center"]-cy)<=12:
+                group=centers[-1]
+                old=len(group["words"])
+                group["words"].append(word)
+                group["center"]=(group["center"]*old+cy)/(old+1)
+            else:
+                centers.append({"center":cy,"words":[word]})
+        for group in centers:
+            cy=group["center"]
+            if cy>=footer_stop-6:
+                break
+            # Require a UNIQUE numeric source observation near each detected
+            # physical table column. Ambiguity is omitted, never guessed.
+            # Distinguish close CS / PCS / Total Units columns from their
+            # actual printed header centers, not from guessed invoice data.
+            colmarks=[x for x in band if not _enclosed_unit_note(x["text"]) and re.fullmatch(
+                r"(?i:CS|CASE|TOTAL|UNIT|UNITS|HSN|MRP|UPC|PKM|RATE|PRICE|FREE|BONUS|PCS|PES|QTY)",
+                _header_text(x["text"]))]
+            lefts=[(x["box"][0]+x["box"][2])/2 for x in colmarks
+                   if (x["box"][0]+x["box"][2])/2<qty_x-8]
+            rights=[(x["box"][0]+x["box"][2])/2 for x in colmarks
+                    if (x["box"][0]+x["box"][2])/2>qty_x+8]
+            # A fixed 42-pixel window rejects the printed quantity of a
+            # high-resolution photographed invoice when OCR/header text has
+            # different alignment. Grow only within the physical QTY-to-
+            # AMOUNT separation; printed adjacent headings still narrow it.
+            qty_margin=max(42,min(150,round((amount_x-qty_x)*.28),
+                                  round(width*.06)))
+            qty_left=(max(lefts)+qty_x)/2 if lefts else qty_x-qty_margin
+            qty_right=(min(rights)+qty_x)/2 if rights else qty_x+qty_margin
+            qty_words=[x for x in all_words if
+                qty_left <= (x["box"][0]+x["box"][2])/2 <= qty_right and
+                abs((x["box"][1]+x["box"][3])/2-cy)<=21 and
+                _NUM_RE.fullmatch(x["text"].strip("()|").replace(",",""))]
+            amount_margin=max(90,min(320,round((amount_x-qty_x)*.45),
+                                      round(width*.13)))
+            amount_words=[x for x in all_words if
+                # The nearby RATE value is not an AMOUNT value even if
+                # OCR bounding boxes drift. Respect the printed AMOUNT
+                # header's left edge to avoid matching two money columns.
+                x["box"][0]>=max((qty_x+amount_x)/2,amount["box"][0]-22) and
+                abs((x["box"][0]+x["box"][2])/2-amount_x)<=amount_margin and
+                abs((x["box"][1]+x["box"][3])/2-cy)<=21 and
+                _NUM_RE.fullmatch(x["text"].strip("()|").replace(",",""))]
+            if len(qty_words)!=1 or len(amount_words)!=1:continue
+            if qty_words[0]["index"]==amount_words[0]["index"]:continue
+            physical_key=(qty_words[0]["index"],amount_words[0]["index"])
+            if physical_key in seen_numeric_rows:continue
+            desc_words=sorted(group["words"],key=lambda x:x["box"][0])
+            seen_numeric_rows.add(physical_key)
+            output.append({
+                "type":"HEADER_COLUMN_ITEM_ROW_UNVERIFIED",
+                "source_view":view,
+                "row_box":_union(desc_words+qty_words+amount_words),
+                "description_original_ocr":" ".join(q["text"] for q in desc_words)[:220],
+                "quantity_original_ocr":qty_words[0]["text"],
+                "amount_original_ocr":amount_words[0]["text"],
+                "description_source_boxes":[q["box"] for q in desc_words],
+                "quantity_source_box":qty_words[0]["box"],
+                "amount_source_box":amount_words[0]["box"],
+                "source_token_indices":[q["index"] for q in desc_words+qty_words+amount_words],
+                "header_source_boxes":{"description":desc["box"],
+                                       "quantity":qty["box"],
+                                       "amount":amount["box"]},
+                "row_complete_certified":False,
+                "posting_eligible":False
+            })
+            if len(output)>=max_rows:return output
+        # Separate printed product sections are also permitted. A later
+        # complete heading sets the prior table boundary; repeated source
+        # numeric cells are never emitted again from overlapping bands.
+    return output
+
+def propose(alternate,width,height,*,max_fields=30,max_rows=15):
+    if not (type(width)==int and type(height)==int and
+            0<width<=30000 and 0<height<=30000 and
+            1<=max_fields<=40 and 1<=max_rows<=20):
+        raise ValueError("Invalid original source image dimensions or caps")
+    if not isinstance(alternate,dict) or alternate.get("status")!="SOURCE_MULTISCALE_ALTERNATIVES_REVIEW_ONLY" or alternate.get("posting_eligible") is not False:
+        raise ValueError("Only read-only R243 source evidence accepted")
+    views=alternate.get("variants")
+    if not isinstance(views,list) or len(views)!=2:
+        raise ValueError("Two original-source OCR views required")
+    fields=[];rows=[];seen=set()
+    for view in views:
+        if not isinstance(view,dict) or view.get("posting_eligible") is not False or view.get("source_boxes_are_original_pixels") is not True:
+            raise ValueError("Variant lacks trusted source geometry")
+        name=view.get("variant")
+        if name not in ("gray_2x","clahe_2x","grid_removed_psm11_2x",
+                        "grid_removed_psm6_2x") or name in seen:
+            raise ValueError("Unexpected or duplicate source OCR view")
+        seen.add(name)
+        source=view.get("source_words")
+        if not isinstance(source,list) or len(source)>600:
+            raise ValueError("Unbounded source observations")
+        words=[]
+        for i,item in enumerate(source):
+            box,raw=_tokenbox(item,width,height)
+            words.append({"index":i,"box":box,"text":raw})
+        lines=_lines(words)
+        for line in lines:
+            text=" ".join(q["text"] for q in line["words"])
+            for category,pattern in _FIELD_LABELS:
+                match=pattern.search(text)
+                if match and len(fields)<max_fields:
+                    _add_field(name,line,category,match,fields)
+        if len(rows)<max_rows:
+            rows+=_table(lines,name,width,height,max_rows-len(rows))
+    date_fields=[f for f in fields if f["category"]=="invoice_date"]
+    # An OCR view reporting multiple different printed dates is not a
+    # license to pick the latest year, the earliest year or the closest one.
+    unique_dates=sorted({f["candidate_text"] for f in date_fields})
+    # Two OCR passes can disagree about one glyph in the SAME printed
+    # physical date. This is not proof that the invoice prints two dates.
+    # Group only matching original-pixel date rectangles; never guess the
+    # value from the more plausible year or a nearby summary date.
+    physical=[]
+    def same_printed_date_box(a,b):
+        aw=a[2]-a[0];ah=a[3]-a[1]
+        bw=b[2]-b[0];bh=b[3]-b[1]
+        return (abs((a[0]+a[2])-(b[0]+b[2]))/2<=max(9,.24*min(aw,bw))
+                and abs((a[1]+a[3])-(b[1]+b[3]))/2<=max(6,.65*min(ah,bh)))
+    for candidate in date_fields:
+        region=next((p for p in physical if same_printed_date_box(
+            candidate["value_source_box"],p["source_anchor_box"])),None)
+        if region is None:
+            region={"source_anchor_box":candidate["value_source_box"],
+                    "source_alternatives":[]}
+            physical.append(region)
+        region["source_alternatives"].append({
+            "source_view":candidate["source_view"],
+            "original_ocr_date":candidate["candidate_text"],
+            "date_label_kind":candidate["source_date_label_kind"],
+            "value_source_box":candidate["value_source_box"],
+            "value_certified":False,"posting_eligible":False})
+    physical_regions=[{
+        "source_anchor_box":p["source_anchor_box"],
+        "source_alternatives":p["source_alternatives"],
+        "distinct_ocr_text_readings":sorted({x["original_ocr_date"]
+                                                for x in p["source_alternatives"]}),
+        "ocr_disagreement_same_printed_region":len({
+            x["original_ocr_date"] for x in p["source_alternatives"]})>1,
+        "field_value_certified":False,"posting_eligible":False}
+        for p in physical]
+    date_review={
+        "physical_date_source_regions":physical_regions,
+        "ocr_disagreement_same_date_region":any(
+            p["ocr_disagreement_same_printed_region"] for p in physical_regions),
+        "multiple_date_strings_observed":len(unique_dates)>1,
+        "source_date_candidates":[{
+            "original_source_date_text":f["candidate_text"],
+            "source_date_label_kind":f["source_date_label_kind"],
+            "source_view":f["source_view"],
+            "source_label_box":f["label_source_box"],
+            "source_value_box":f["value_source_box"],
+            "field_value_certified":False,"posting_eligible":False}
+            for f in date_fields],
+        "distinct_date_values":unique_dates,
+        "multiple_printed_dates_exist":len(physical_regions)>1,
+        "accounting_invoice_date_selected":False,
+        "posting_eligible":False,"release_approved":False}
+    return {
+        "status":"SOURCE_FIELD_AND_ITEM_ROW_ASSOCIATIONS_REVIEW_ONLY",
+        "source_views":sorted(seen),
+        "field_label_anchored_proposals":fields,
+        "date_label_context_review_r269":date_review,
+        "field_proposals_count":len(fields),
+        "table_header_anchored_row_proposals":rows,
+        "row_proposals_count":len(rows),
+        "source_box_orientation":"Child_decoded_oriented_source_frame",
+        "source_values_overwritten":False,
+        "verified_invoice_fields":0,
+        "verified_table_rows":0,
+        "accounting_write_permitted":False,
+        "posting_eligible":False,
+        "release_approved":False
+    }
+
+def propose_cross_view_description_rows(alternate,width,height,*,max_rows=8):
+    """Propose only source-supported, split-view OCR rows; never fill a field.
+
+    An intact physical table header and numeric cells must be present in one
+    OCR view. A second view may supply literal description fragments at the
+    exact numeric source baseline if the first view has NO description there.
+    Source indices are kept separately for each view, never concatenated.
+    """
+    if (type(width)!=int or type(height)!=int or
+        not (0<width<=30000 and 0<height<=30000 and 1<=max_rows<=8)):
+        raise ValueError("Unsafe cross-view source bounds")
+    if (not isinstance(alternate,dict) or
+        alternate.get("status")!="SOURCE_MULTISCALE_ALTERNATIVES_REVIEW_ONLY" or
+        alternate.get("posting_eligible") is not False):
+        raise ValueError("Only immutable original-source review allowed")
+    views=alternate.get("variants")
+    if not isinstance(views,list) or len(views)!=2:
+        raise ValueError("Exactly two source OCR witnesses required")
+    records=[];names=set()
+    for view in views:
+        if (not isinstance(view,dict) or view.get("posting_eligible") is not False
+            or view.get("source_boxes_are_original_pixels") is not True
+            or view.get("variant") not in ("gray_2x","clahe_2x",
+                 "grid_removed_psm11_2x","grid_removed_psm6_2x")
+            or view["variant"] in names):
+            raise ValueError("Untrusted source-view provenance")
+        names.add(view["variant"])
+        source=view.get("source_words")
+        if not isinstance(source,list) or len(source)>480:
+            raise ValueError("Excessive source OCR observations")
+        words=[]
+        for i,item in enumerate(source):
+            box,literal=_tokenbox(item,width,height)
+            words.append({"index":i,"text":literal,"box":box})
+        records.append((view["variant"],words))
+    def middle(box):
+        return ((box[0]+box[2])/2,(box[1]+box[3])/2)
+    result=[]
+    for first,second in ((records[0],records[1]),(records[1],records[0])):
+        primary_name,primary=first
+        witness_name,secondary=second
+        descriptions=[x for x in primary if re.fullmatch(
+            r"(?i:DESCRIPTION|PRODUCT|PARTICULARS|ITEM|GOODS)",
+            _header_text(x["text"]))]
+        quantities=[x for x in primary if not _enclosed_unit_note(x["text"])
+            and re.fullmatch(r"(?i:QTY|QUANTITY|PCS|PES|PIECES)",
+                             _header_text(x["text"]))]
+        amounts=[x for x in primary if re.fullmatch(
+            r"(?i:AMOUNT|NETAMT|NETAMOUNT)",_header_text(x["text"]))]
+        bands=[]
+        for d in descriptions:
+            for q in quantities:
+                for a in amounts:
+                    if (middle(d["box"])[0]+35 < middle(q["box"])[0] <
+                        middle(a["box"])[0]-55 and
+                        max(middle(t["box"])[1] for t in (d,q,a))-
+                        min(middle(t["box"])[1] for t in (d,q,a))<=32):
+                        bands.append((d,q,a))
+        if len(bands)>8:
+            raise ValueError("Ambiguous source table heading sets")
+        source_witness={}
+        for d,q,a in bands:
+            bottom=max(d["box"][3],q["box"][3],a["box"][3])
+            end=min(height,bottom+min(max(240,height*.5),900))
+            qx=middle(q["box"])[0];ax=middle(a["box"])[0]
+            desc_min=d["box"][0]-120;desc_max=q["box"][0]-12
+            qnums=[x for x in primary if
+                bottom+3<middle(x["box"])[1]<end and
+                _NUM_RE.fullmatch(x["text"].strip("()|").replace(",","")) and
+                abs(middle(x["box"])[0]-qx)<max(65,min(150,width*.06))]
+            anums=[x for x in primary if
+                bottom+3<middle(x["box"])[1]<end and
+                _NUM_RE.fullmatch(x["text"].strip("()|").replace(",","")) and
+                abs(middle(x["box"])[0]-ax)<max(90,min(320,width*.13))]
+            if len(qnums)>40 or len(anums)>40:
+                raise ValueError("Excessive candidate numeric source cells")
+            for qw in qnums:
+                for aw in anums:
+                    if abs(middle(qw["box"])[1]-middle(aw["box"])[1])>13:
+                        continue
+                    cy=(middle(qw["box"])[1]+middle(aw["box"])[1])/2
+                    # If the primary OCR already has a description on this
+                    # source baseline, leave that reading intact and separate.
+                    if any(desc_min<=x["box"][0] and x["box"][2]<desc_max and
+                           abs(middle(x["box"])[1]-cy)<21 and
+                           re.search(r"[A-Za-z]{2,}",x["text"])
+                           for x in primary):
+                        continue
+                    for item in secondary:
+                        if (desc_min<=item["box"][0] and
+                            item["box"][2]<desc_max and
+                            abs(middle(item["box"])[1]-cy)<20 and
+                            re.search(r"[A-Za-z]{2,}",item["text"])):
+                            source_witness[item["index"]]=item
+        if not source_witness:
+            continue
+        offset=len(primary)
+        # Make transient indices disjoint for _table; discard them before
+        # output in favour of true per-view source OCR token identifiers.
+        attached=[{"index":offset+i,"box":word["box"],
+                   "text":word["text"]}
+                  for i,word in sorted(source_witness.items())]
+        rows=_table(_lines(primary+attached),primary_name,width,height,max_rows)
+        for row in rows:
+            indices=row.pop("source_token_indices")
+            source_desc=indices[:-2]
+            if not source_desc or any(i<offset for i in source_desc):
+                continue
+            if indices[-2]>=offset or indices[-1]>=offset:
+                continue
+            row["type"]="CROSS_VIEW_SOURCE_DESCRIPTION_REVIEW_ONLY"
+            row["source_view"]=primary_name+"__description_from__"+witness_name
+            row["description_source_view"]=witness_name
+            row["quantity_source_view"]=primary_name
+            row["amount_source_view"]=primary_name
+            row["source_token_indices_by_view"]={
+                primary_name:indices[-2:],
+                witness_name:[i-offset for i in source_desc]}
+            row["description_fragment_only"]=True
+            row["row_complete_certified"]=False
+            row["posting_eligible"]=False
+            result.append(row)
+            if len(result)>max_rows:
+                raise ValueError("Too many cross-view row hypotheses")
+    return result

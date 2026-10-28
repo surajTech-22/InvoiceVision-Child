@@ -1,0 +1,40 @@
+name: R273 Windows source quantity review gate
+on:
+  push:
+    branches:
+      - research/invoicevision-r220-source-witness
+    paths:
+      - integration/Engine/INVOICE_OCR_COLUMN_BANDS_R261.py
+      - experiments/test_r273_source_quantity_cells.py
+      - .github/workflows/r273-source-quantity-review.yml
+  pull_request:
+    paths:
+      - integration/Engine/INVOICE_OCR_COLUMN_BANDS_R261.py
+      - experiments/test_r273_source_quantity_cells.py
+      - .github/workflows/r273-source-quantity-review.yml
+  workflow_dispatch:
+jobs:
+  local-source-evidence:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install only test runtime
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check numpy opencv-python-headless
+          if ($LASTEXITCODE -ne 0) { throw "Runtime dependency installation failed" }
+      - name: Verify source right-aligned quantity review cannot post
+        shell: pwsh
+        run: |
+          python -m unittest discover -s experiments -p 'test_r273_source_quantity_cells.py' -v
+          if ($LASTEXITCODE -ne 0) { throw "R273 source quantity guard failed" }
+      - name: Verify prior original-column tests still pass
+        shell: pwsh
+        run: |
+          python -m unittest discover -s experiments -p 'test_r261_column_bands.py' -v
+          if ($LASTEXITCODE -ne 0) { throw "R261 existing original-column tests failed" }

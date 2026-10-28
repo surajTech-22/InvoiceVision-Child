@@ -1,0 +1,100 @@
+name: R241 relocatable offline Windows OCR runtime and native Child
+on:
+  push:
+    branches: [research/invoicevision-r220-source-witness]
+    paths:
+      - 'scripts/r241_prepare_offline_runtime.ps1'
+      - 'scripts/r240_live_windows_ocr_smoke.py'
+      - 'scripts/r242_isolated_update_rollback_rehearsal.ps1'
+      - 'scripts/stage-r144-integration.py'
+      - 'scripts/build-windows.ps1'
+      - 'integration/Window/**'
+      - 'integration/Engine/**'
+      - 'experiments/test_r244_field_crop_review.py'
+      - '.github/workflows/r241-relocatable-ocr-runtime.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  relocated-windows-child-and-ocr:
+    runs-on: windows-latest
+    timeout-minutes: 47
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Source hash and contained source extraction
+        shell: pwsh
+        run: |
+          $src='source/INVOICE_OCR_CHILD_R113_R4_R2_VERIFIED_UPDATE.zip'
+          $sha=(Get-FileHash $src -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($sha -cne 'ad4720d1037558e637fd42abf8e40bce34b505f6cfa73f29dcc3a67816a9ac59') {
+            throw 'Baseline Child source archive SHA mismatch'
+          }
+          Expand-Archive -LiteralPath $src -DestinationPath integration-build -Force
+      - name: Provision runner toolchain used ONLY to build isolated copy
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check 'numpy==2.1.3' 'opencv-python-headless==4.11.0.86'
+          if ($LASTEXITCODE -ne 0) { throw 'Trusted Python wheel installation failed' }
+          choco install tesseract --yes --no-progress --limit-output
+          if ($LASTEXITCODE -ne 0) { throw 'Trusted Tesseract source unavailable' }
+      - name: Verify isolated OCR bundle survives moving source interpreter
+        shell: pwsh
+        run: |
+          & ./scripts/r241_prepare_offline_runtime.ps1 -Destination integration-build/Runtime -TesseractSource 'C:/Program Files/Tesseract-OCR'
+          if ($LASTEXITCODE -ne 0) { throw 'OCR runtime relocation verification failed' }
+      - name: Stage native Child CSharp handoff and Engine from pinned source
+        shell: pwsh
+        run: |
+          python scripts/stage-r144-integration.py integration-build
+          if ($LASTEXITCODE -ne 0) { throw 'Child source staging failed' }
+          New-Item -ItemType Directory integration-build/scripts -Force | Out-Null
+          Copy-Item scripts/build-windows.ps1 integration-build/scripts/build-windows.ps1
+      - name: Compile real self-contained WPF Child with relocated OCR runtime
+        shell: pwsh
+        run: |
+          Push-Location (Get-Location)
+          try {
+            & ./integration-build/scripts/build-windows.ps1
+            if ($LASTEXITCODE -ne 0) { throw 'Self-contained Child and OCR runtime publish failed' }
+          } finally {
+            Pop-Location
+          }
+          $report=Get-Content integration-build/release/BUILD_VERIFICATION.json -Raw | ConvertFrom-Json
+          if (-not $report.offline_runtime_bundled -or -not $report.child_startup_smoke_pass) {
+            throw 'Child bundle did not include complete validated OCR runtime'
+          }
+      - name: Verify relocated published Python and local OCR on synthetic document
+        shell: pwsh
+        run: |
+          $publish=(Resolve-Path integration-build/build/publish).Path
+          $env:TESSERACT_EXE=Join-Path $publish 'Runtime/Tesseract/tesseract.exe'
+          $env:TESSDATA_PREFIX=Join-Path $publish 'Runtime/Tesseract/tessdata'
+          $env:PYTHONHOME=$null
+          python scripts/r240_live_windows_ocr_smoke.py --engine "$publish/Engine" --out r241-offline-proof --python-executable "$publish/Runtime/Python/python.exe"
+          if ($LASTEXITCODE -ne 0) { throw 'Published relocated bundled offline OCR did not work' }
+          Write-Host 'R241_BUNDLED_OFFLINE_CPU_CHILD_ANALYZE_AND_OCR_PASS'
+      - name: Rehearse isolated update fault and byte-exact user state rollback
+        shell: pwsh
+        run: |
+          # PowerShell exceptions propagate directly; $LASTEXITCODE is stale
+          # because the script does not invoke a native process.
+          & ./scripts/r242_isolated_update_rollback_rehearsal.ps1 -PublishedPath integration-build/build/publish -EvidencePath r241-offline-proof/R242_PROTECTED_DATA_ROLLBACK.json
+      - name: Preserve only hashes and synthetic reports, no runtime binaries or photos
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: R241-Relocated-Offline-Windows-CPU-Runtime-Verification
+          path: |
+            integration-build/Runtime/R241_RUNTIME_VERIFICATION.json
+            integration-build/release/BUILD_VERIFICATION.json
+            r241-offline-proof/R240_LIVE_OCR_VERIFICATION.json
+            r241-offline-proof/R242_PROTECTED_DATA_ROLLBACK.json
+            integration-build/build/startup-smoke.txt
+          if-no-files-found: warn
+          retention-days: 7
