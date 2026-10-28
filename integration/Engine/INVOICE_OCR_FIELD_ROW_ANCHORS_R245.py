@@ -101,7 +101,7 @@ def _add_field(view,line,category,match,output):
         printed=match.group().upper()
         prefix=text[max(0,match.start()-32):match.start()].upper()
         if ("INVOICE" in printed and
-            re.search(r"(?:^|[^A-Z])E[\\s-]*$",prefix)):
+            re.search(r"(?:^|[^A-Z])E[\s-]*$",prefix)):
             date_kind="e_invoice_issue_date"
         elif "BILL" in printed:
             date_kind="printed_bill_date"
