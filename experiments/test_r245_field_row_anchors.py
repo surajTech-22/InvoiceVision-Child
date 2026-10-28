@@ -521,5 +521,42 @@ class SourceAnchoredFieldRows(unittest.TestCase):
         with self.assertRaises(ValueError):
             mod.propose_cross_view_description_rows(src,1100,820)
 
+    def test_r269_bill_and_einvoice_dates_retained_separately(self):
+        # Independent source labels may identify different legitimate dates.
+        words=[
+            token("BILL",35,60,52),token("DATE",91,60,52),
+            token("10/11/2025",175,60,115),
+            token("E-",35,130,25),token("INVOICE",65,130,98),
+            token("DATE",167,130,52),token("10/11/2026",242,130,115),
+            token("DATE",35,205,53),token("11/11/2026",124,205,115)]
+        src={"status":"SOURCE_MULTISCALE_ALTERNATIVES_REVIEW_ONLY",
+             "posting_eligible":False,"variants":[
+              {"variant":n,"posting_eligible":False,
+               "source_boxes_are_original_pixels":True,
+               "source_words":list(words)}
+              for n in ("gray_2x","clahe_2x")]}
+        result=mod.propose(src,610,780)
+        dates=result["date_label_context_review_r269"]
+        self.assertEqual(dates["distinct_date_values"],
+                         ["10/11/2025","10/11/2026","11/11/2026"])
+        kinds={v["source_date_label_kind"] for v in dates["source_date_candidates"]}
+        self.assertEqual(kinds,{"printed_bill_date","e_invoice_issue_date",
+                                "generic_date_unresolved"})
+        self.assertTrue(dates["multiple_printed_dates_exist"])
+        self.assertFalse(dates["accounting_invoice_date_selected"])
+        self.assertEqual(result["verified_invoice_fields"],0)
+        self.assertFalse(result["posting_eligible"])
+
+    def test_r269_single_label_still_not_an_accepted_invoice_date(self):
+        src=fixture()
+        result=mod.propose(src,600,700)
+        d=result["date_label_context_review_r269"]
+        self.assertEqual(d["distinct_date_values"],["17/09/2026"])
+        self.assertEqual(set(v["source_date_label_kind"]
+                             for v in d["source_date_candidates"]),
+                         {"printed_invoice_date"})
+        self.assertFalse(d["accounting_invoice_date_selected"])
+        self.assertFalse(d["release_approved"])
+
 if __name__=="__main__":
     unittest.main(verbosity=2)
