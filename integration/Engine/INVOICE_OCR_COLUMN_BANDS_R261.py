@@ -77,6 +77,22 @@ def review(image,bands,variants,width,height,*,max_rows=12,reader=None):
             else:groups.append({"x":x,"evidence":[token]})
         if not groups:
             missing.append(field);continue
+        if field=="printed_pcs" and len(groups)>1:
+            # On retail invoices "Sch/Pcs" or an isolated "/Pes" is a
+            # different discount-per-piece heading from the quantity Pcs.
+            # Resolve only if EXACTLY ONE physical candidate is bracketed
+            # by independently printed CS/CASE and TOTAL/UNITS headings.
+            # No guessed x coordinate, supplier name or OCR number is used.
+            left_marks=[_center(m["box"])[0] for m in marks
+                        if _name(m["text"]) in ("CS","CASE")]
+            right_marks=[_center(m["box"])[0] for m in marks
+                         if _name(m["text"]) in ("TOTAL","UNITS")]
+            max_gap=max(80,min(180,width*.115))
+            bracketed=[g for g in groups
+                       if any(0<g["x"]-lx<max_gap for lx in left_marks)
+                       and any(0<rx-g["x"]<max_gap for rx in right_marks)]
+            if len(bracketed)==1:
+                groups=bracketed
         if len(groups)!=1:
             ambiguous.append(field);continue
         group=groups[0];anchor=group["x"]
