@@ -158,7 +158,7 @@ def distinct_source_rows(proposals,max_rows=24):
             raise ValueError("Too many physical table rows; fail closed")
     return groups
 
-def review(image,reader,plain_reader=None):
+def review(image,reader,plain_reader=None,numeric_reader=None):
     """reader(temp_image, psm) returns unmodified local Tesseract TSV."""
     if not callable(reader):raise ValueError("Offline OCR callback unavailable")
     processed,evidence=remove_long_ruling_lines(image)
@@ -217,7 +217,8 @@ def review(image,reader,plain_reader=None):
             columns=_load("INVOICE_OCR_COLUMN_BANDS_R261.py",
                           "_r261_staged_source_columns")
             out["source_printed_numeric_columns_r261"]=columns.review(
-                image,out["source_printed_row_bands_r259"],views,w,h,reader=reader)
+                image,out["source_printed_row_bands_r259"],views,w,h,
+                reader=reader,numeric_reader=numeric_reader)
         except Exception as exc:
             out["source_printed_numeric_columns_r261"]={
                 "status":"R261_COLUMN_ASSOCIATION_UNAVAILABLE",
