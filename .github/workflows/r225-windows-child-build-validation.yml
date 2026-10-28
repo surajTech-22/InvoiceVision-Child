@@ -31,6 +31,7 @@ on:
       - 'experiments/r270_private_original_acceptance.py'
       - 'experiments/test_r270_private_original_acceptance.py'
       - 'experiments/test_r272_numeric_only.py'
+      - 'experiments/test_r274_hsn_source.py'
       - 'experiments/test_r273_pcs_right_source.py'
       - 'experiments/test_r248_amount_reread.py'
   workflow_dispatch:
@@ -256,6 +257,11 @@ jobs:
         run: |
           python -m unittest discover -s experiments -p 'test_r272_numeric_only.py' -v
           if ($LASTEXITCODE -ne 0) { throw 'R272 offline original source numeric OCR safety test failed' }
+      - name: Verify R274 source-column HSN serial-exclusion remains strictly unapproved
+        shell: pwsh
+        run: |
+          python -m unittest discover -s experiments -p 'test_r274_hsn_source.py' -v
+          if ($LASTEXITCODE -ne 0) { throw 'R274 original HSN source-crop regression failed' }
       - name: Verify R248 source-amount missing-digit rechecks cannot accept untrusted OCR
         shell: pwsh
         run: |
