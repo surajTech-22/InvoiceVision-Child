@@ -27,6 +27,7 @@ on:
       - 'experiments/test_r246_grid_table.py'
       - 'experiments/test_r259_rule_bands.py'
       - 'experiments/test_r261_column_bands.py'
+      - 'experiments/test_r268_numeric_witness.py'
       - 'experiments/test_r248_amount_reread.py'
   workflow_dispatch:
 permissions:
@@ -139,6 +140,7 @@ jobs:
               'INVOICE_OCR_GRID_TABLE_R246.py',
               'INVOICE_OCR_RULED_ROW_BANDS_R259.py',
               'INVOICE_OCR_COLUMN_BANDS_R261.py',
+              'INVOICE_OCR_NUMERIC_WITNESS_R268.py',
               'INVOICE_OCR_ITEM_AMOUNT_REREAD_R248.py')) {
             $source = Join-Path 'integration-build/InvoiceVisionChild/Engine' $name
             $published = Join-Path 'integration-build/build/publish/Engine' $name
@@ -234,6 +236,11 @@ jobs:
         run: |
           python -m unittest discover -s experiments -p 'test_r261_column_bands.py' -v
           if ($LASTEXITCODE -ne 0) { throw 'R261 printed source-column regression failed' }
+      - name: Verify R268 literal OCR numeric witness conflict report remains nonposting
+        shell: pwsh
+        run: |
+          python -m unittest discover -s experiments -p 'test_r268_numeric_witness.py' -v
+          if ($LASTEXITCODE -ne 0) { throw 'R268 OCR source conflict review safety regressions failed' }
       - name: Verify R248 source-amount missing-digit rechecks cannot accept untrusted OCR
         shell: pwsh
         run: |
