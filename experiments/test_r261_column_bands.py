@@ -222,5 +222,49 @@ class R261(unittest.TestCase):
         self.assertTrue(np.array_equal(im,unchanged))
         self.assertFalse(r["accounting_write_permitted"])
 
+    def test_r267_source_vertical_borders_offer_unverified_crop(self):
+        base=m.review(scene(),bands(),source(),1600,850)
+        col=base["column_geometry"]["printed_pcs"]
+        left=int(col["left"])+1
+        right=int(col["right"])-1
+        self.assertGreater(right-left,14)
+        img=scene()
+        cv2.line(img,(left,337),(left,505),(0,0,0),2)
+        cv2.line(img,(right,337),(right,505),(0,0,0),2)
+        original=img.copy()
+        def reader(_crop,psm):
+            h="level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n"
+            return h+"5\t1\t1\t1\t1\t1\t2\t2\t12\t9\t35\t12.5|\n"
+        result=m.review(img,bands(),source(),1600,850,reader=reader)
+        field=result["source_numeric_row_proposals"][0]["original_source_numeric_fields"]["printed_pcs"]
+        variants=field["source_crop_ocr_alternatives"]
+        interior=[e for e in variants if e["source"]=="TEMP_VERTICAL_RULING_INTERIOR_PSM7"]
+        self.assertEqual(len(interior),1)
+        box=interior[0]["original_source_pixel_rect"]
+        self.assertGreater(box[0],variants[0]["original_source_pixel_rect"][0])
+        self.assertLess(box[2],variants[0]["original_source_pixel_rect"][2])
+        self.assertEqual(len(interior[0]["source_vertical_rule_x"]),2)
+        self.assertNotEqual(interior[0]["original_crop_sha256"],variants[0]["original_crop_sha256"])
+        self.assertFalse(interior[0]["posting_eligible"])
+        self.assertFalse(interior[0]["source_text_verified"])
+        self.assertEqual(result["certified_financial_fields"],0)
+        self.assertTrue(np.array_equal(img,original))
+
+    def test_r267_single_vertical_border_does_not_justify_trimming(self):
+        base=m.review(scene(),bands(),source(),1600,850)
+        col=base["column_geometry"]["printed_pcs"]
+        img=scene()
+        x=int(col["left"])+1
+        cv2.line(img,(x,337),(x,505),(0,0,0),2)
+        def reader(_crop,_psm):
+            return ("level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n"
+                    "5\t1\t1\t1\t1\t1\t1\t1\t15\t9\t35\t12.5|\n")
+        result=m.review(img,bands(),source(),1600,850,reader=reader)
+        for row in result["source_numeric_row_proposals"]:
+            for cell in row["original_source_numeric_fields"].values():
+                self.assertFalse(any(e["source"]=="TEMP_VERTICAL_RULING_INTERIOR_PSM7"
+                                     for e in cell["source_crop_ocr_alternatives"]))
+        self.assertFalse(result["accounting_write_permitted"])
+
 if __name__=="__main__":
     unittest.main(verbosity=2)
