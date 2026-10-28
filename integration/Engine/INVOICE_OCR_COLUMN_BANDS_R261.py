@@ -315,6 +315,38 @@ def review(image,bands,variants,width,height,*,max_rows=12,reader=None,numeric_r
                         "numeric_only_ocr_char_whitelist":True,
                         "cannot_resolve_decimal_or_digit_conflicts":True,
                         "source_text_verified":False,"posting_eligible":False})
+                    if field=="printed_hsn":
+                        # R274: HSN source cells may include an adjacent printed
+                        # row serial at the LEFT, which Tesseract often joins
+                        # into the HSN number. Independently reread a bounded
+                        # SOURCE region with 12% left removed, retaining both
+                        # raw readings. This can ALSO remove genuine HSN digits:
+                        # it is explicitly unverified and cannot select a code.
+                        hsn_left=x0+int((x1-x0)*.12)
+                        if x1-hsn_left>=20 and y1-y0>=8:
+                            hsn_crop=image[y0:y1,hsn_left:x1]
+                            hsn_sha=hashlib.sha256(
+                                hsn_crop.tobytes()).hexdigest()
+                            hsn_up=cv2.resize(
+                                hsn_crop,None,fx=5,fy=5,
+                                interpolation=cv2.INTER_CUBIC)
+                            hsn_gray=cv2.GaussianBlur(
+                                cv2.cvtColor(hsn_up,cv2.COLOR_BGR2GRAY),
+                                (3,3),0)
+                            hsn_words=read_words(
+                                7,hsn_gray,read_callback=numeric_reader)
+                            crop_views.append({
+                                "source":"TEMP_SOURCE_HSN_LEFT_SERIAL_EXCLUSION_R274",
+                                "ocr_literal_text":" ".join(hsn_words)[:240],
+                                "original_source_pixel_rect":[
+                                    hsn_left,y0,x1,y1],
+                                "original_crop_sha256":hsn_sha,
+                                "left_exclusion_fraction":0.12,
+                                "may_exclude_true_leading_hsn_digit":True,
+                                "may_contain_adjacent_source_ink":True,
+                                "numeric_only_ocr_char_whitelist":True,
+                                "source_text_verified":False,
+                                "posting_eligible":False})
                     if field=="printed_pcs":
                         # R273: a distinct RIGHT-side witness for a uniquely
                         # source-headed Pcs column. Printed quantities often
