@@ -123,6 +123,14 @@ def review(image,bands,variants,width,height,*,max_rows=12,reader=None):
     kw=max(28,min(75,round(width*.035)))
     horizontal=cv2.morphologyEx(fg,cv2.MORPH_OPEN,
                   cv2.getStructuringElement(cv2.MORPH_RECT,(kw,1)))
+    # Independent original-pixel vertical source boundaries. Do not treat
+    # mathematical heading midpoints as an observed cell edge.
+    vertical=None
+    if reader is not None:
+        vertical=cv2.morphologyEx(
+            fg,cv2.MORPH_OPEN,
+            cv2.getStructuringElement(
+                cv2.MORPH_RECT,(1,max(40,min(200,round(height*.075))))))
     first_top=min(p[1] for p in rows[0]["source_description_quad"])
     last_bottom=max(p[1] for p in rows[-1]["source_description_quad"])
     pitch=median([rulers[i+1]-rulers[i] for i in range(len(rows))])
@@ -247,6 +255,45 @@ def review(image,bands,variants,width,height,*,max_rows=12,reader=None):
                         "original_source_pixel_rect":[x0,y0,x1,y1],
                         "original_crop_sha256":original_crop_sha,
                         "source_text_verified":False,"posting_eligible":False})
+                    # R267: reread an INSIDE-the-printed-borders view only
+                    # when both independent original-source vertical ruling
+                    # witnesses are observed. A weakened/broken rule is not
+                    # assumed. The trimmed view can lose strokes and may not
+                    # replace the literal OCR value or certify anything.
+                    margin=max(5,min(18,round(width*.008)))
+                    trace=vertical[max(0,y0-2):min(height,y1+2),:]
+                    threshold=max(5,round(trace.shape[0]*.63))
+                    def ruling_near(edge):
+                        lo=max(0,edge-margin);hi=min(width,edge+margin+1)
+                        if hi<=lo:return None
+                        counts=np.count_nonzero(trace[:,lo:hi],axis=0)
+                        matches=np.flatnonzero(counts>=threshold)
+                        if len(matches)==0:return None
+                        positions=[int(lo+i) for i in matches]
+                        return min(positions,key=lambda pos:abs(pos-edge))
+                    left_rule=ruling_near(x0)
+                    right_rule=ruling_near(x1)
+                    if (left_rule is not None and right_rule is not None and
+                        right_rule-left_rule>=14):
+                        ix0=max(x0,left_rule+3)
+                        ix1=min(x1,right_rule-3)
+                        if ix1-ix0>=8:
+                            interior=image[y0:y1,ix0:ix1]
+                            interior_hash=hashlib.sha256(
+                                interior.tobytes()).hexdigest()
+                            interior_view=cv2.resize(
+                                interior,None,fx=4,fy=4,
+                                interpolation=cv2.INTER_CUBIC)
+                            interior_words=read_words(7,interior_view)
+                            crop_views.append({
+                                "source":"TEMP_VERTICAL_RULING_INTERIOR_PSM7",
+                                "ocr_literal_text":" ".join(interior_words)[:240],
+                                "original_source_pixel_rect":[ix0,y0,ix1,y1],
+                                "original_crop_sha256":interior_hash,
+                                "source_vertical_rule_x":[left_rule,right_rule],
+                                "may_exclude_edge_strokes":True,
+                                "source_text_verified":False,
+                                "posting_eligible":False})
             fields[field]={"header_original_source":col["header_source_provenance"],
                 "source_column_x":[col["left"],col["right"]],
                 "source_observations":observations,
