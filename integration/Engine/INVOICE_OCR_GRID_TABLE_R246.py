@@ -230,6 +230,26 @@ def review(image,reader,plain_reader=None):
             "certified_financial_fields":0,"certified_item_rows":0,
             "accounting_write_permitted":False,"posting_eligible":False,
             "release_approved":False}
+    # R268: independent literal-character spans for disagreement review.
+    # This never changes OCR source words or certifies financial fields.
+    column_data=out["source_printed_numeric_columns_r261"]
+    if column_data.get("status")=="PRINTED_RULING_COLUMNS_REVIEW_ONLY":
+        try:
+            witness=_load("INVOICE_OCR_NUMERIC_WITNESS_R268.py",
+                          "_r268_staged_numeric_witness")
+            out["source_numeric_fragment_review_r268"]=witness.review(column_data)
+        except Exception as exc:
+            out["source_numeric_fragment_review_r268"]={
+                "status":"R268_NUMERIC_WITNESS_UNAVAILABLE",
+                "error_type":type(exc).__name__,"verified_financial_fields":0,
+                "verified_item_rows":0,"posting_eligible":False,
+                "accounting_write_permitted":False,"release_approved":False}
+    else:
+        out["source_numeric_fragment_review_r268"]={
+            "status":"NO_SOURCE_COLUMN_FRAGMENT_REVIEW",
+            "verified_financial_fields":0,"verified_item_rows":0,
+            "posting_eligible":False,"accounting_write_permitted":False,
+            "release_approved":False}
     proposals=anchors.propose(alt,w,h,max_fields=24,max_rows=12)
     out["source_field_row_anchors"]=proposals
     # A header/numeric view may have missed the physical description; a
