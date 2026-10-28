@@ -12,7 +12,7 @@ def _center(b):
 def _name(s):
     return re.sub(r"[^A-Z0-9]","",s.upper())
 
-def review(image,bands,variants,width,height,*,max_rows=12,reader=None):
+def review(image,bands,variants,width,height,*,max_rows=12,reader=None,numeric_reader=None):
     import cv2
     import numpy as np
     if not hasattr(image,"shape") or image.ndim!=3 or tuple(image.shape[:2])!=(height,width):
@@ -20,6 +20,8 @@ def review(image,bands,variants,width,height,*,max_rows=12,reader=None):
     sha=hashlib.sha256(image.tobytes()).hexdigest()
     if reader is not None and not callable(reader):
         raise ValueError('Optional offline original-source OCR reader must be callable')
+    if numeric_reader is not None and (reader is None or not callable(numeric_reader)):
+        raise ValueError("Numeric source OCR requires a separate verified offline reader")
     if (type(width)!=int or type(height)!=int or not
         (180<=width<=6000 and 180<=height<=6000 and 1<=max_rows<=12)):
         raise ValueError("Unsafe original image dimensions")
@@ -206,8 +208,9 @@ def review(image,bands,variants,width,height,*,max_rows=12,reader=None):
                 # The interpolation exists only in memory as an OCR witness.
                 scaled=cv2.resize(original_crop,None,fx=4,fy=4,
                                   interpolation=cv2.INTER_CUBIC)
-                def read_words(psm,temporary_view=scaled):
-                    tsv=reader(temporary_view,psm)
+                def read_words(psm,temporary_view=scaled,read_callback=None):
+                    callback=read_callback if read_callback is not None else reader
+                    tsv=callback(temporary_view,psm)
                     if not isinstance(tsv,str) or len(tsv)>100_000:
                         raise ValueError("Unbounded source numeric OCR TSV")
                     parsed=csv.DictReader(io.StringIO(tsv),delimiter="\t")
@@ -294,6 +297,24 @@ def review(image,bands,variants,width,height,*,max_rows=12,reader=None):
                                 "may_exclude_edge_strokes":True,
                                 "source_text_verified":False,
                                 "posting_eligible":False})
+                if numeric_reader is not None:
+                    # R272: a wholly independent local Tesseract PSM7 pass
+                    # with a digits-only whitelist. It MAY drop punctuation,
+                    # decimals, or leading glyphs. Preserve its literal text
+                    # solely as another original-pixel crop witness.
+                    numeric_view=cv2.resize(
+                        original_crop,None,fx=5,fy=5,
+                        interpolation=cv2.INTER_CUBIC)
+                    numeric_words=read_words(
+                        7,numeric_view,read_callback=numeric_reader)
+                    crop_views.append({
+                        "source":"TEMP_NUMERIC_WHITELIST_PSM7_R272",
+                        "ocr_literal_text":" ".join(numeric_words)[:240],
+                        "original_source_pixel_rect":[x0,y0,x1,y1],
+                        "original_crop_sha256":original_crop_sha,
+                        "numeric_only_ocr_char_whitelist":True,
+                        "cannot_resolve_decimal_or_digit_conflicts":True,
+                        "source_text_verified":False,"posting_eligible":False})
             fields[field]={"header_original_source":col["header_source_provenance"],
                 "source_column_x":[col["left"],col["right"]],
                 "source_observations":observations,
