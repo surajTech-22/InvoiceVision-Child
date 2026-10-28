@@ -139,11 +139,14 @@ class R261(unittest.TestCase):
                 evidence=cell["source_crop_ocr_alternatives"]
                 self.assertEqual([o["source"] for o in evidence],
                   ["TEMP_ORIGINAL_NUMERIC_CELL_PSM7",
+                   "TEMP_PADDED_ORIGINAL_NUMERIC_CELL_PSM7",
                    "TEMP_ORIGINAL_NUMERIC_CELL_PSM6_FALLBACK"])
-                self.assertEqual(evidence[1]["ocr_literal_text"],"RECOVERED")
+                self.assertEqual(evidence[2]["ocr_literal_text"],"RECOVERED")
                 self.assertEqual(evidence[0]["original_crop_sha256"],
-                                 evidence[1]["original_crop_sha256"])
-                self.assertFalse(evidence[1]["posting_eligible"])
+                                 evidence[2]["original_crop_sha256"])
+                self.assertTrue(evidence[1]["may_contain_adjacent_source_ink"])
+                self.assertFalse(evidence[1]["source_text_verified"])
+                self.assertFalse(evidence[2]["posting_eligible"])
 
     def test_r262_malformed_or_unbounded_crop_tsv_fails_closed(self):
         for reader in (lambda _crop,_psm:"bad-header\nvalue",
@@ -190,12 +193,34 @@ class R261(unittest.TestCase):
         result=m.review(scene(),bands(),source(),1600,850,reader=reader)
         first=result["source_numeric_row_proposals"][0]
         pcs=first["original_source_numeric_fields"]["printed_pcs"]
-        self.assertEqual(len(pcs["source_crop_ocr_alternatives"]),2)
+        self.assertEqual(len(pcs["source_crop_ocr_alternatives"]),3)
         self.assertEqual([q["ocr_literal_text"] for q in pcs["source_crop_ocr_alternatives"]],
-                         ["12.50|","12.50"])
+                         ["12.50|","12.50|","12.50"])
+        self.assertTrue(pcs["source_crop_ocr_alternatives"][1]
+                        ["may_contain_adjacent_source_ink"])
+        self.assertFalse(pcs["source_crop_ocr_alternatives"][1]["source_text_verified"])
         self.assertIn(6,called)
         self.assertEqual(result["certified_financial_fields"],0)
         self.assertFalse(result["release_approved"])
+
+    def test_r265_wider_source_crop_has_bounded_separate_hash(self):
+        dimensions=[]
+        def reader(crop,psm):
+            dimensions.append((crop.shape[1],psm))
+            hdr=("level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n")
+            word="2|" if psm==7 else "2"
+            return hdr+f"5\t1\t1\t1\t1\t1\t1\t1\t9\t9\t70\t{word}\n"
+        im=scene();unchanged=im.copy()
+        r=m.review(im,bands(),source(),1600,850,reader=reader)
+        first=r["source_numeric_row_proposals"][0]["original_source_numeric_fields"]["printed_pcs"]
+        a,b,c=first["source_crop_ocr_alternatives"]
+        self.assertEqual(b["source"],"TEMP_PADDED_ORIGINAL_NUMERIC_CELL_PSM7")
+        self.assertLess(b["original_source_pixel_rect"][0],a["original_source_pixel_rect"][0])
+        self.assertGreater(b["original_source_pixel_rect"][2],a["original_source_pixel_rect"][2])
+        self.assertNotEqual(a["original_crop_sha256"],b["original_crop_sha256"])
+        self.assertEqual(c["original_crop_sha256"],a["original_crop_sha256"])
+        self.assertTrue(np.array_equal(im,unchanged))
+        self.assertFalse(r["accounting_write_permitted"])
 
 if __name__=="__main__":
     unittest.main(verbosity=2)
