@@ -558,5 +558,31 @@ class SourceAnchoredFieldRows(unittest.TestCase):
         self.assertFalse(d["accounting_invoice_date_selected"])
         self.assertFalse(d["release_approved"])
 
+    def test_r269_different_years_same_pixel_date_are_ocr_conflict(self):
+        # Two independent OCR views can disagree about one digit at
+        # EXACTLY the same original source box: there is only one physical
+        # printed date region, and neither reading may be selected.
+        def one(date):
+            return [token("BILL",35,70,52),token("DATE",91,70,50),
+                    token(date,178,70,118)]
+        src={"status":"SOURCE_MULTISCALE_ALTERNATIVES_REVIEW_ONLY",
+             "posting_eligible":False,"variants":[
+             {"variant":"gray_2x","posting_eligible":False,
+              "source_boxes_are_original_pixels":True,
+              "source_words":one("10/11/2025")},
+             {"variant":"clahe_2x","posting_eligible":False,
+              "source_boxes_are_original_pixels":True,
+              "source_words":one("10/11/2026")}]}
+        out=mod.propose(src,610,780)
+        dates=out["date_label_context_review_r269"]
+        self.assertEqual(len(dates["physical_date_source_regions"]),1)
+        self.assertEqual(dates["distinct_date_values"],["10/11/2025","10/11/2026"])
+        self.assertTrue(dates["ocr_disagreement_same_date_region"])
+        self.assertTrue(dates["multiple_date_strings_observed"])
+        self.assertFalse(dates["multiple_printed_dates_exist"])
+        self.assertFalse(dates["accounting_invoice_date_selected"])
+        self.assertEqual(out["verified_invoice_fields"],0)
+        self.assertFalse(out["posting_eligible"])
+
 if __name__=="__main__":
     unittest.main(verbosity=2)
