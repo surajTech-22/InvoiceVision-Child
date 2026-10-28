@@ -266,5 +266,41 @@ class R261(unittest.TestCase):
                                      for e in cell["source_crop_ocr_alternatives"]))
         self.assertFalse(result["accounting_write_permitted"])
 
+    def test_r272_numeric_whitelist_is_separate_unapproved_source_witness(self):
+        im=scene();unchanged=im.copy();psm_calls=[]
+        def ordinary(_crop,psm):
+            return ("level\tpage_num\tblock_num\tpar_num\tline_num\tword_num"
+                    "\tleft\ttop\twidth\theight\tconf\ttext\n"
+                    "5\t1\t1\t1\t1\t1\t1\t1\t20\t10\t60\t12.5|\n")
+        def numeric(crop,psm):
+            psm_calls.append(psm)
+            self.assertEqual(psm,7)
+            self.assertEqual(crop.dtype,np.uint8)
+            return ("level\tpage_num\tblock_num\tpar_num\tline_num\tword_num"
+                    "\tleft\ttop\twidth\theight\tconf\ttext\n"
+                    "5\t1\t1\t1\t1\t1\t1\t1\t20\t10\t60\t125\n")
+        result=m.review(im,bands(),source(),1600,850,reader=ordinary,numeric_reader=numeric)
+        self.assertGreater(len(psm_calls),0)
+        cell=result["source_numeric_row_proposals"][0]["original_source_numeric_fields"]["printed_pcs"]
+        new=[x for x in cell["source_crop_ocr_alternatives"]
+             if x["source"]=="TEMP_NUMERIC_WHITELIST_PSM7_R272"]
+        self.assertEqual(len(new),1)
+        self.assertEqual(new[0]["ocr_literal_text"],"125")
+        self.assertTrue(new[0]["numeric_only_ocr_char_whitelist"])
+        self.assertTrue(new[0]["cannot_resolve_decimal_or_digit_conflicts"])
+        self.assertFalse(new[0]["source_text_verified"])
+        self.assertFalse(new[0]["posting_eligible"])
+        self.assertFalse(cell["field_value_certified"])
+        self.assertFalse(result["accounting_write_permitted"])
+        self.assertTrue(np.array_equal(im,unchanged))
+
+    def test_r272_numeric_reader_requires_standard_original_pixel_reader(self):
+        with self.assertRaises(ValueError):
+            m.review(scene(),bands(),source(),1600,850,
+                     reader=None,numeric_reader=lambda _im,_psm:"")
+        with self.assertRaises(ValueError):
+            m.review(scene(),bands(),source(),1600,850,
+                     reader=lambda _im,_psm:"",numeric_reader="not callable")
+
 if __name__=="__main__":
     unittest.main(verbosity=2)
