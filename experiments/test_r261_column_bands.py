@@ -103,5 +103,55 @@ class R261(unittest.TestCase):
         self.assertIn("printed_hsn",r["missing_printed_headers"])
         self.assertNotIn("printed_hsn",r["printed_numeric_headers_found"])
 
+    def test_r262_original_source_numeric_cell_crop_is_not_certified(self):
+        im=scene();before=im.copy();seen=[]
+        def reader(crop,psm):
+            self.assertEqual(psm,7)
+            seen.append(tuple(crop.shape))
+            return ("level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n"
+                    "5\t1\t1\t1\t1\t1\t2\t2\t11\t8\t52\t12.50\n")
+        data=m.review(im,bands(),source(),1600,850,reader=reader)
+        self.assertTrue(seen)
+        self.assertTrue(np.array_equal(im,before))
+        self.assertEqual(data["certified_item_rows"],0)
+        for row in data["source_numeric_row_proposals"]:
+            for field in row["original_source_numeric_fields"].values():
+                self.assertEqual(len(field["source_crop_ocr_alternatives"]),1)
+                evidence=field["source_crop_ocr_alternatives"][0]
+                self.assertEqual(evidence["ocr_literal_text"],"12.50")
+                self.assertEqual(evidence["source"],"TEMP_ORIGINAL_NUMERIC_CELL_PSM7")
+                self.assertEqual(len(evidence["original_crop_sha256"]),64)
+                self.assertFalse(evidence["source_text_verified"])
+                self.assertFalse(evidence["posting_eligible"])
+        self.assertFalse(data["accounting_write_permitted"])
+
+    def test_r262_blank_crop_uses_distinct_psm6_unverified_fallback(self):
+        psms=[]
+        def reader(crop,psm):
+            psms.append(psm)
+            header=("level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n")
+            if psm==7:return header
+            return header+"5\t1\t1\t1\t1\t1\t1\t1\t20\t12\t50\tRECOVERED\n"
+        data=m.review(scene(),bands(),source(),1600,850,reader=reader)
+        self.assertGreater(psms.count(6),0)
+        for row in data["source_numeric_row_proposals"]:
+            for cell in row["original_source_numeric_fields"].values():
+                evidence=cell["source_crop_ocr_alternatives"]
+                self.assertEqual([o["source"] for o in evidence],
+                  ["TEMP_ORIGINAL_NUMERIC_CELL_PSM7",
+                   "TEMP_ORIGINAL_NUMERIC_CELL_PSM6_FALLBACK"])
+                self.assertEqual(evidence[1]["ocr_literal_text"],"RECOVERED")
+                self.assertEqual(evidence[0]["original_crop_sha256"],
+                                 evidence[1]["original_crop_sha256"])
+                self.assertFalse(evidence[1]["posting_eligible"])
+
+    def test_r262_malformed_or_unbounded_crop_tsv_fails_closed(self):
+        for reader in (lambda _crop,_psm:"bad-header\nvalue",
+                       lambda _crop,_psm:"x"*100001):
+            with self.assertRaises(ValueError):
+                m.review(scene(),bands(),source(),1600,850,reader=reader)
+        with self.assertRaises(ValueError):
+            m.review(scene(),bands(),source(),1600,850,reader="not callable")
+
 if __name__=="__main__":
     unittest.main(verbosity=2)
