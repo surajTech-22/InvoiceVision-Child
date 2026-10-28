@@ -315,6 +315,39 @@ def review(image,bands,variants,width,height,*,max_rows=12,reader=None,numeric_r
                         "numeric_only_ocr_char_whitelist":True,
                         "cannot_resolve_decimal_or_digit_conflicts":True,
                         "source_text_verified":False,"posting_eligible":False})
+                    if field=="printed_pcs":
+                        # R273: a distinct RIGHT-side witness for a uniquely
+                        # source-headed Pcs column. Printed quantities often
+                        # align at the right of a cell while handwritten ticks
+                        # cover its left. Cropping the left can also truncate
+                        # a multi-digit quantity: this witness cannot ever
+                        # choose the posted value or overwrite full-cell OCR.
+                        right_x0=x0+int((x1-x0)*.55)
+                        right_x1=min(width,x1+2)
+                        right_y0=max(0,y0-2)
+                        right_y1=min(height,y1+2)
+                        if right_x1-right_x0>=10 and right_y1-right_y0>=8:
+                            right_crop=image[right_y0:right_y1,
+                                             right_x0:right_x1]
+                            right_sha=hashlib.sha256(
+                                right_crop.tobytes()).hexdigest()
+                            right_up=cv2.resize(
+                                right_crop,None,fx=5,fy=5,
+                                interpolation=cv2.INTER_CUBIC)
+                            right_words=read_words(
+                                7,right_up,read_callback=numeric_reader)
+                            crop_views.append({
+                                "source":"TEMP_SOURCE_PCS_RIGHT_ALIGNMENT_R273",
+                                "ocr_literal_text":" ".join(right_words)[:240],
+                                "original_source_pixel_rect":[
+                                    right_x0,right_y0,right_x1,right_y1],
+                                "original_crop_sha256":right_sha,
+                                "right_aligned_crop_assumption_only":True,
+                                "may_exclude_leading_quantity_digits":True,
+                                "may_contain_adjacent_source_ink":True,
+                                "numeric_only_ocr_char_whitelist":True,
+                                "source_text_verified":False,
+                                "posting_eligible":False})
             fields[field]={"header_original_source":col["header_source_provenance"],
                 "source_column_x":[col["left"],col["right"]],
                 "source_observations":observations,
