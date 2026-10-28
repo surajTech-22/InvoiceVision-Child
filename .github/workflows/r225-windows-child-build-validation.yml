@@ -28,6 +28,8 @@ on:
       - 'experiments/test_r259_rule_bands.py'
       - 'experiments/test_r261_column_bands.py'
       - 'experiments/test_r268_numeric_witness.py'
+      - 'experiments/r270_private_original_acceptance.py'
+      - 'experiments/test_r270_private_original_acceptance.py'
       - 'experiments/test_r248_amount_reread.py'
   workflow_dispatch:
 permissions:
@@ -241,6 +243,11 @@ jobs:
         run: |
           python -m unittest discover -s experiments -p 'test_r268_numeric_witness.py' -v
           if ($LASTEXITCODE -ne 0) { throw 'R268 OCR source conflict review safety regressions failed' }
+      - name: Verify R270 independent private original-source exact field and row gate
+        shell: pwsh
+        run: |
+          python -m unittest discover -s experiments -p 'test_r270_private_original_acceptance.py' -v
+          if ($LASTEXITCODE -ne 0) { throw 'R270 original-source acceptance blocking regressions failed' }
       - name: Verify R248 source-amount missing-digit rechecks cannot accept untrusted OCR
         shell: pwsh
         run: |
