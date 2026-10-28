@@ -217,7 +217,7 @@ def review(image,reader,plain_reader=None):
             columns=_load("INVOICE_OCR_COLUMN_BANDS_R261.py",
                           "_r261_staged_source_columns")
             out["source_printed_numeric_columns_r261"]=columns.review(
-                image,out["source_printed_row_bands_r259"],views,w,h)
+                image,out["source_printed_row_bands_r259"],views,w,h,reader=reader)
         except Exception as exc:
             out["source_printed_numeric_columns_r261"]={
                 "status":"R261_COLUMN_ASSOCIATION_UNAVAILABLE",
