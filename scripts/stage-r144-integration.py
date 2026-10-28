@@ -31,6 +31,7 @@ REVIEW_MODULES={
     'integration/Engine/INVOICE_OCR_RULED_ROW_BANDS_R259.py': 'INVOICE_OCR_RULED_ROW_BANDS_R259.py',
     'integration/Engine/INVOICE_OCR_COLUMN_BANDS_R261.py': 'INVOICE_OCR_COLUMN_BANDS_R261.py',
     'integration/Engine/INVOICE_OCR_NUMERIC_WITNESS_R268.py': 'INVOICE_OCR_NUMERIC_WITNESS_R268.py',
+    'integration/Engine/INVOICE_OCR_NUMERIC_ONLY_R272.py': 'INVOICE_OCR_NUMERIC_ONLY_R272.py',
     'integration/Engine/INVOICE_OCR_ITEM_AMOUNT_REREAD_R248.py': 'INVOICE_OCR_ITEM_AMOUNT_REREAD_R248.py',
 }
 
@@ -256,8 +257,21 @@ def stage(build):
     gmodule=importlib.util.module_from_spec(gspec);gspec.loader.exec_module(gmodule)
     def local_plain(view,psm):
      return ts_exec(binary,view,psm=str(psm),tsv=False,deadline=24)
+    # Optional original-pixel numeric-only OCR uses verified local Tesseract
+    # directly on in-memory PNG bytes (stdin->stdout; no private temp file).
+    # The Child continues to function without this optional OCR witness.
+    numeric_read=None
+    try:
+     npath=Path(__file__).with_name('INVOICE_OCR_NUMERIC_ONLY_R272.py')
+     nspec=importlib.util.spec_from_file_location('_child_r272_numeric',npath)
+     if nspec is None or nspec.loader is None:
+      raise RuntimeError('R272 local numeric OCR module unavailable')
+     nmodule=importlib.util.module_from_spec(nspec);nspec.loader.exec_module(nmodule)
+     numeric_read=nmodule.reader_for(binary)
+    except Exception:
+     numeric_read=None
     refinement['source_grid_table_review_r246']=gmodule.review(
-     oriented,local_read,local_plain)
+     oriented,local_read,local_plain,numeric_read)
    except Exception as grid_error:
     refinement['source_grid_table_review_r246']={
      'status':'GRID_TABLE_REVIEW_UNAVAILABLE',
