@@ -219,7 +219,7 @@ def review(image,bands,variants,width,height,*,max_rows=12,reader=None):
                 # witness. Run the bounded alternative only on unreliable
                 # literal single-cell OCR; never select or certify a value.
                 psm7_single_numeric=(len(words_psm7)==1 and
-                    re.fullmatch(r"[+-]?\\d+(?:,\\d{2,3})*(?:\\.\\d{1,2})?",
+                    re.fullmatch(r"[+-]?\d+(?:,\d{2,3})*(?:\.\d{1,2})?",
                                  words_psm7[0]) is not None)
                 if not psm7_single_numeric:
                     words_psm6=read_words(6)
