@@ -180,5 +180,22 @@ class R261(unittest.TestCase):
         self.assertNotIn("printed_pcs",out["printed_numeric_headers_found"])
         self.assertEqual(out["certified_item_rows"],0)
 
+    def test_r264_noisy_nonempty_original_crop_gets_independent_fallback(self):
+        called=[]
+        def reader(_crop,psm):
+            called.append(psm)
+            header=("level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n")
+            value="12.50|" if psm==7 else "12.50"
+            return header+f"5\t1\t1\t1\t1\t1\t1\t1\t20\t10\t80\t{value}\n"
+        result=m.review(scene(),bands(),source(),1600,850,reader=reader)
+        first=result["source_numeric_row_proposals"][0]
+        pcs=first["original_source_numeric_fields"]["printed_pcs"]
+        self.assertEqual(len(pcs["source_crop_ocr_alternatives"]),2)
+        self.assertEqual([q["ocr_literal_text"] for q in pcs["source_crop_ocr_alternatives"]],
+                         ["12.50|","12.50"])
+        self.assertIn(6,called)
+        self.assertEqual(result["certified_financial_fields"],0)
+        self.assertFalse(result["release_approved"])
+
 if __name__=="__main__":
     unittest.main(verbosity=2)
