@@ -93,7 +93,23 @@ def _add_field(view,line,category,match,output):
             if m:nums.append((word,m.group(1)))
         if len(nums)!=1:return
         evidence=[nums[0][0]];chosen=nums[0][1]
-    output.append({
+    # R269: different source-printed dates need distinct semantics.
+    # A generic DATE or the dated QR/e-invoice issuance must not silently
+    # become the accounting BILL date. Preserve the actual OCR characters.
+    date_kind=None
+    if category=="invoice_date":
+        printed=match.group().upper()
+        prefix=text[max(0,match.start()-32):match.start()].upper()
+        if ("INVOICE" in printed and
+            re.search(r"(?:^|[^A-Z])E[\\s-]*$",prefix)):
+            date_kind="e_invoice_issue_date"
+        elif "BILL" in printed:
+            date_kind="printed_bill_date"
+        elif "INVOICE" in printed:
+            date_kind="printed_invoice_date"
+        else:
+            date_kind="generic_date_unresolved"
+    proposal={
         "type":"LABEL_VALUE_NEAR_SOURCE",
         "category":category,"candidate_text":chosen,
         "source_view":view,
@@ -102,7 +118,11 @@ def _add_field(view,line,category,match,output):
         "label_source_box":_union(anchor),
         "value_source_box":_union(evidence),
         "field_value_certified":False,"posting_eligible":False
-    })
+    }
+    if category=="invoice_date":
+        proposal["source_date_label_kind"]=date_kind
+        proposal["source_label_context_before_match"]=prefix
+    output.append(proposal)
 
 def _header_text(value):
     """Match heading punctuation without modifying source OCR literals."""
@@ -334,10 +354,28 @@ def propose(alternate,width,height,*,max_fields=30,max_rows=15):
                     _add_field(name,line,category,match,fields)
         if len(rows)<max_rows:
             rows+=_table(lines,name,width,height,max_rows-len(rows))
+    date_fields=[f for f in fields if f["category"]=="invoice_date"]
+    # An OCR view reporting multiple different printed dates is not a
+    # license to pick the latest year, the earliest year or the closest one.
+    unique_dates=sorted({f["candidate_text"] for f in date_fields})
+    date_review={
+        "source_date_candidates":[{
+            "original_source_date_text":f["candidate_text"],
+            "source_date_label_kind":f["source_date_label_kind"],
+            "source_view":f["source_view"],
+            "source_label_box":f["label_source_box"],
+            "source_value_box":f["value_source_box"],
+            "field_value_certified":False,"posting_eligible":False}
+            for f in date_fields],
+        "distinct_date_values":unique_dates,
+        "multiple_printed_dates_exist":len(unique_dates)>1,
+        "accounting_invoice_date_selected":False,
+        "posting_eligible":False,"release_approved":False}
     return {
         "status":"SOURCE_FIELD_AND_ITEM_ROW_ASSOCIATIONS_REVIEW_ONLY",
         "source_views":sorted(seen),
         "field_label_anchored_proposals":fields,
+        "date_label_context_review_r269":date_review,
         "field_proposals_count":len(fields),
         "table_header_anchored_row_proposals":rows,
         "row_proposals_count":len(rows),
