@@ -198,8 +198,8 @@ def review(image,bands,variants,width,height,*,max_rows=12,reader=None):
                 # The interpolation exists only in memory as an OCR witness.
                 scaled=cv2.resize(original_crop,None,fx=4,fy=4,
                                   interpolation=cv2.INTER_CUBIC)
-                def read_words(psm):
-                    tsv=reader(scaled,psm)
+                def read_words(psm,temporary_view=scaled):
+                    tsv=reader(temporary_view,psm)
                     if not isinstance(tsv,str) or len(tsv)>100_000:
                         raise ValueError("Unbounded source numeric OCR TSV")
                     parsed=csv.DictReader(io.StringIO(tsv),delimiter="\t")
@@ -222,6 +222,24 @@ def review(image,bands,variants,width,height,*,max_rows=12,reader=None):
                     re.fullmatch(r"[+-]?\d+(?:,\d{2,3})*(?:\.\d{1,2})?",
                                  words_psm7[0]) is not None)
                 if not psm7_single_numeric:
+                    # A deliberately wider *source* rectangle can recover
+                    # edge digits cut by conservative column boundaries.
+                    # It may also include adjacent cell ink. Never silently
+                    # promote the wider OCR reading into a financial field.
+                    pad=max(4,min(12,round(width*.005)))
+                    wx0=max(0,x0-pad);wx1=min(width,x1+pad)
+                    expanded=image[y0:y1,wx0:wx1]
+                    expanded_sha=hashlib.sha256(expanded.tobytes()).hexdigest()
+                    expanded_view=cv2.resize(expanded,None,fx=4,fy=4,
+                                             interpolation=cv2.INTER_CUBIC)
+                    wider_words=read_words(7,expanded_view)
+                    crop_views.append({
+                        "source":"TEMP_PADDED_ORIGINAL_NUMERIC_CELL_PSM7",
+                        "ocr_literal_text":" ".join(wider_words)[:240],
+                        "original_source_pixel_rect":[wx0,y0,wx1,y1],
+                        "original_crop_sha256":expanded_sha,
+                        "may_contain_adjacent_source_ink":True,
+                        "source_text_verified":False,"posting_eligible":False})
                     words_psm6=read_words(6)
                     crop_views.append({
                         "source":"TEMP_ORIGINAL_NUMERIC_CELL_PSM6_FALLBACK",
