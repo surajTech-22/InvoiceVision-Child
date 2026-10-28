@@ -358,7 +358,43 @@ def propose(alternate,width,height,*,max_fields=30,max_rows=15):
     # An OCR view reporting multiple different printed dates is not a
     # license to pick the latest year, the earliest year or the closest one.
     unique_dates=sorted({f["candidate_text"] for f in date_fields})
+    # Two OCR passes can disagree about one glyph in the SAME printed
+    # physical date. This is not proof that the invoice prints two dates.
+    # Group only matching original-pixel date rectangles; never guess the
+    # value from the more plausible year or a nearby summary date.
+    physical=[]
+    def same_printed_date_box(a,b):
+        aw=a[2]-a[0];ah=a[3]-a[1]
+        bw=b[2]-b[0];bh=b[3]-b[1]
+        return (abs((a[0]+a[2])-(b[0]+b[2]))/2<=max(9,.24*min(aw,bw))
+                and abs((a[1]+a[3])-(b[1]+b[3]))/2<=max(6,.65*min(ah,bh)))
+    for candidate in date_fields:
+        region=next((p for p in physical if same_printed_date_box(
+            candidate["value_source_box"],p["source_anchor_box"])),None)
+        if region is None:
+            region={"source_anchor_box":candidate["value_source_box"],
+                    "source_alternatives":[]}
+            physical.append(region)
+        region["source_alternatives"].append({
+            "source_view":candidate["source_view"],
+            "original_ocr_date":candidate["candidate_text"],
+            "date_label_kind":candidate["source_date_label_kind"],
+            "value_source_box":candidate["value_source_box"],
+            "value_certified":False,"posting_eligible":False})
+    physical_regions=[{
+        "source_anchor_box":p["source_anchor_box"],
+        "source_alternatives":p["source_alternatives"],
+        "distinct_ocr_text_readings":sorted({x["original_ocr_date"]
+                                                for x in p["source_alternatives"]}),
+        "ocr_disagreement_same_printed_region":len({
+            x["original_ocr_date"] for x in p["source_alternatives"]})>1,
+        "field_value_certified":False,"posting_eligible":False}
+        for p in physical]
     date_review={
+        "physical_date_source_regions":physical_regions,
+        "ocr_disagreement_same_date_region":any(
+            p["ocr_disagreement_same_printed_region"] for p in physical_regions),
+        "multiple_date_strings_observed":len(unique_dates)>1,
         "source_date_candidates":[{
             "original_source_date_text":f["candidate_text"],
             "source_date_label_kind":f["source_date_label_kind"],
@@ -368,7 +404,7 @@ def propose(alternate,width,height,*,max_fields=30,max_rows=15):
             "field_value_certified":False,"posting_eligible":False}
             for f in date_fields],
         "distinct_date_values":unique_dates,
-        "multiple_printed_dates_exist":len(unique_dates)>1,
+        "multiple_printed_dates_exist":len(physical_regions)>1,
         "accounting_invoice_date_selected":False,
         "posting_eligible":False,"release_approved":False}
     return {
