@@ -214,7 +214,14 @@ def review(image,bands,variants,width,height,*,max_rows=12,reader=None):
                     "original_source_pixel_rect":[x0,y0,x1,y1],
                     "original_crop_sha256":original_crop_sha,
                     "source_text_verified":False,"posting_eligible":False})
-                if not words_psm7:
+                # Garbled nonempty PSM7 output (e.g., border symbols joined
+                # to digits) must not block an independent second source
+                # witness. Run the bounded alternative only on unreliable
+                # literal single-cell OCR; never select or certify a value.
+                psm7_single_numeric=(len(words_psm7)==1 and
+                    re.fullmatch(r"[+-]?\\d+(?:,\\d{2,3})*(?:\\.\\d{1,2})?",
+                                 words_psm7[0]) is not None)
+                if not psm7_single_numeric:
                     words_psm6=read_words(6)
                     crop_views.append({
                         "source":"TEMP_ORIGINAL_NUMERIC_CELL_PSM6_FALLBACK",
