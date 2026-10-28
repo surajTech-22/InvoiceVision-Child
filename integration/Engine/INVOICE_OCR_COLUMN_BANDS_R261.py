@@ -2,6 +2,8 @@
 from __future__ import annotations
 import hashlib
 import re
+import csv
+import io
 from statistics import median
 
 def _center(b):
@@ -10,12 +12,14 @@ def _center(b):
 def _name(s):
     return re.sub(r"[^A-Z0-9]","",s.upper())
 
-def review(image,bands,variants,width,height,*,max_rows=12):
+def review(image,bands,variants,width,height,*,max_rows=12,reader=None):
     import cv2
     import numpy as np
     if not hasattr(image,"shape") or image.ndim!=3 or tuple(image.shape[:2])!=(height,width):
         raise ValueError("Original source image required")
     sha=hashlib.sha256(image.tobytes()).hexdigest()
+    if reader is not None and not callable(reader):
+        raise ValueError('Optional offline original-source OCR reader must be callable')
     if (type(width)!=int or type(height)!=int or not
         (180<=width<=6000 and 180<=height<=6000 and 1<=max_rows<=12)):
         raise ValueError("Unsafe original image dimensions")
@@ -162,9 +166,50 @@ def review(image,bands,variants,width,height,*,max_rows=12):
                     "original_source_text":word["text"],
                     "original_source_box":word["box"],
                     "numeric_text_verified":False,"posting_eligible":False})
+            crop_views=[]
+            if reader is not None:
+                # Only a genuine local ruled cell may be reread. No guessed
+                # header, extrapolated y from a different source column, or
+                # arithmetic-generated source box is permitted here.
+                x0=max(0,int(col["left"])+1)
+                x1=min(width,int(col["right"])-1)
+                y0=max(0,int(lines[idx])+2)
+                y1=min(height,int(lines[idx+1])-1)
+                if x1-x0<8 or y1-y0<7:
+                    raise ValueError("Unsafe original numeric cell crop")
+                original_crop=image[y0:y1,x0:x1]
+                original_crop_sha=hashlib.sha256(original_crop.tobytes()).hexdigest()
+                # The interpolation exists only in memory as an OCR witness.
+                scaled=cv2.resize(original_crop,None,fx=4,fy=4,
+                                  interpolation=cv2.INTER_CUBIC)
+                def read_words(psm):
+                    tsv=reader(scaled,psm)
+                    if not isinstance(tsv,str) or len(tsv)>100_000:
+                        raise ValueError("Unbounded source numeric OCR TSV")
+                    parsed=csv.DictReader(io.StringIO(tsv),delimiter="\t")
+                    if not parsed.fieldnames or not {"level","text"}<=set(parsed.fieldnames):
+                        raise ValueError("Malformed source numeric OCR TSV")
+                    return [v["text"].strip() for v in parsed
+                            if v.get("level")=="5" and v.get("text","").strip()][:30]
+                words_psm7=read_words(7)
+                crop_views.append({
+                    "source":"TEMP_ORIGINAL_NUMERIC_CELL_PSM7",
+                    "ocr_literal_text":" ".join(words_psm7)[:240],
+                    "original_source_pixel_rect":[x0,y0,x1,y1],
+                    "original_crop_sha256":original_crop_sha,
+                    "source_text_verified":False,"posting_eligible":False})
+                if not words_psm7:
+                    words_psm6=read_words(6)
+                    crop_views.append({
+                        "source":"TEMP_ORIGINAL_NUMERIC_CELL_PSM6_FALLBACK",
+                        "ocr_literal_text":" ".join(words_psm6)[:240],
+                        "original_source_pixel_rect":[x0,y0,x1,y1],
+                        "original_crop_sha256":original_crop_sha,
+                        "source_text_verified":False,"posting_eligible":False})
             fields[field]={"header_original_source":col["header_source_provenance"],
                 "source_column_x":[col["left"],col["right"]],
                 "source_observations":observations,
+                "source_crop_ocr_alternatives":crop_views,
                 "field_value_certified":False,"posting_eligible":False}
         out.append({"row_number_is_proposal":idx+1,"source_description_quad":quad,
                     "original_source_numeric_fields":fields,
