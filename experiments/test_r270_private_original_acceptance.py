@@ -20,6 +20,9 @@ def pair():
         h=chr(ord("a")+i)*64
         field={"invoice_date":expected("10/11/2026",[20,50,115,72]),
                "net_total":expected("120.00",[350,700,445,730])}
+        if i!=2:
+            field["invoice_number"]=expected("SYN-000"+str(i),
+                                             [200,50,310,75])
         item={"description":expected("SAMPLE PACKAGE",[30,250,180,275]),
               "quantity":expected("2",[235,250,260,275]),
               "amount":expected("120.00",[350,250,445,275])}
@@ -32,6 +35,7 @@ def pair():
             "source_dimensions":[600,800],
             "independently_source_transcribed":True,
             "document_fields":field,
+            "required_document_fields":["invoice_number","invoice_date","net_total"],
             "required_item_fields":["description","quantity","amount"],
             "excluded_unreadable_fields":(
                 {"invoice_number":"Source identifier is genuinely unreadable"}
@@ -50,7 +54,7 @@ class PrivatePrintedAcceptance(unittest.TestCase):
     def test_all_three_source_verified_still_cannot_release_setup(self):
         t,r=pair();out=m.audit(t,r)
         self.assertTrue(out["all_originals_exactly_matched"])
-        self.assertEqual(out["checked_original_fields"],15)
+        self.assertEqual(out["checked_original_fields"],17)
         self.assertEqual(out["failed_checks"],0)
         self.assertFalse(out["production_release_authorized"])
         self.assertFalse(out["accounting_write_permitted"])
@@ -85,6 +89,12 @@ class PrivatePrintedAcceptance(unittest.TestCase):
         with self.assertRaises(ValueError):m.audit(t,r)
         t,r=pair()
         t["cases"][0]["required_item_fields"]=["description","amount"]
+        with self.assertRaises(ValueError):m.audit(t,r)
+        t,r=pair()
+        del t["cases"][0]["document_fields"]["invoice_number"]
+        with self.assertRaises(ValueError):m.audit(t,r)
+        t,r=pair()
+        t["cases"][0]["required_document_fields"]=["invoice_date","net_total"]
         with self.assertRaises(ValueError):m.audit(t,r)
 
     def test_unauthorized_accounting_write_or_missing_case_refused(self):
