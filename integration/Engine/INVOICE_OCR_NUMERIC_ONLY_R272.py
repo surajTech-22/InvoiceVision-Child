@@ -16,7 +16,7 @@ _ALLOWED_WHITELIST="0123456789.,-"
 def read_numeric_source(executable,image,psm=7):
     import cv2
     import numpy as np
-    if type(executable) not in (str,Path):
+    if not isinstance(executable,(str,os.PathLike)):
         raise ValueError("Installed local Tesseract path required")
     exe=Path(executable)
     if (not exe.is_absolute() or not exe.is_file() or not os.access(exe,os.X_OK)
