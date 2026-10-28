@@ -31,6 +31,7 @@ on:
       - 'experiments/r270_private_original_acceptance.py'
       - 'experiments/test_r270_private_original_acceptance.py'
       - 'experiments/test_r272_numeric_only.py'
+      - 'experiments/test_r273_pcs_right_source.py'
       - 'experiments/test_r248_amount_reread.py'
   workflow_dispatch:
 permissions:
