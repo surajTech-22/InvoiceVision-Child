@@ -90,7 +90,22 @@ def audit(truth,results):
             not set(excluded)<={"invoice_number"} or
             any(not isinstance(v,str) or len(v.strip())<8 for v in excluded.values())):
             raise ValueError("Unsafe acceptance source schema or exclusions")
-        if not set(_MANDATORY_ITEM)<=set(case.get("required_item_fields",[])):
+        required_docs=case.get("required_document_fields")
+        if (not isinstance(required_docs,list) or not
+            all(isinstance(x,str) for x in required_docs) or
+            len(required_docs)!=len(set(required_docs)) or
+            len(required_docs)>40 or
+            not {"invoice_number","invoice_date","net_total"}<=set(required_docs)):
+            raise ValueError("Unspecified mandatory printed invoice metadata")
+        if (not set(required_docs)<=set(expected_fields)|set(excluded) or
+            set(expected_fields)&set(excluded)):
+            raise ValueError("Missing document truth or contradictory exclusion")
+        required_items=case.get("required_item_fields")
+        if (not isinstance(required_items,list) or
+            not all(isinstance(x,str) for x in required_items) or
+            len(required_items)!=len(set(required_items)) or
+            len(required_items)>40 or
+            not set(_MANDATORY_ITEM)<=set(required_items)):
             raise ValueError("Missing required description, quantity or amount")
         defects=[];field_checks=0
         if not same_source:defects.append("source_photo_sha_or_dimensions_mismatch")
