@@ -153,5 +153,32 @@ class R261(unittest.TestCase):
         with self.assertRaises(ValueError):
             m.review(scene(),bands(),source(),1600,850,reader="not callable")
 
+    def test_r263_pcs_not_discount_per_piece_when_source_column_bracketed(self):
+        v=source()
+        for variant in v:
+            ws=variant["source_words"]
+            ws.extend([token("CS)",680,309,35),
+                       token("/Pes",1390,309,48)])
+        out=m.review(scene(),bands(),v,1600,850)
+        self.assertIn("printed_pcs",out["printed_numeric_headers_found"])
+        self.assertNotIn("printed_pcs",out["ambiguous_printed_headers"])
+        x=out["column_geometry"]["printed_pcs"]["heading_x"]
+        self.assertLess(x,800)
+        self.assertGreater(x,700)
+        self.assertFalse(out["posting_eligible"])
+
+    def test_r263_two_bracketed_quantity_headings_remain_ambiguous(self):
+        v=source()
+        for variant in v:
+            variant["source_words"].extend(
+              [token("CS",680,309,35),token("Pcs",790,309,40),
+               token("Total",850,309,40),
+               token("CS",880,309,35),token("Pcs",940,309,40),
+               token("Total",990,309,48)])
+        out=m.review(scene(),bands(),v,1600,850)
+        self.assertIn("printed_pcs",out["ambiguous_printed_headers"])
+        self.assertNotIn("printed_pcs",out["printed_numeric_headers_found"])
+        self.assertEqual(out["certified_item_rows"],0)
+
 if __name__=="__main__":
     unittest.main(verbosity=2)
