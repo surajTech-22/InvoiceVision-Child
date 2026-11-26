@@ -1,0 +1,265 @@
+<Window x:Class="InvoiceVisionChild.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="InvoiceVision Child v2 — GST OCR &amp; Verification Studio"
+        Height="860" Width="1460" MinHeight="680" MinWidth="1060"
+        WindowStartupLocation="CenterScreen"
+        Icon="Assets\InvoiceVisionChild.ico"
+        Background="{StaticResource BgBrush}">
+    <Grid Margin="10">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Top Toolbar -->
+        <Border Grid.Row="0" Background="{StaticResource CardBrush}" BorderBrush="{StaticResource BorderBrushLight}" BorderThickness="1" CornerRadius="8" Padding="10,8" Margin="0,0,0,8">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock Text="InvoiceVision Child" FontSize="17" FontWeight="Bold" Foreground="{StaticResource TextPrimaryBrush}" VerticalAlignment="Center"/>
+                    <Border Background="#DBEAFE" CornerRadius="4" Padding="6,2" Margin="8,0,0,0" VerticalAlignment="Center">
+                        <TextBlock Text="v2 · LightOn 1B + Qwen3-VL-4B" FontSize="11" FontWeight="SemiBold" Foreground="#1E40AF"/>
+                    </Border>
+                    <TextBlock x:Name="ClientContextBadge" Text="" FontSize="11" Foreground="{StaticResource TextSecondaryBrush}" Margin="10,0,0,0" VerticalAlignment="Center"/>
+                </StackPanel>
+
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button Content="+ Add Photos / PDFs" Click="AddFiles_Click" Margin="0,0,6,0"/>
+                    <Button Content="+ Folder" Click="AddFolder_Click" Margin="0,0,10,0"/>
+                    <Button x:Name="RunHybridBtn" Content="Extract (Hybrid Auto)" Click="RunHybrid_Click" Style="{StaticResource PrimaryButtonStyle}" Margin="0,0,6,0"/>
+                    <Button x:Name="RunFastBtn" Content="Fast (LightOn 1B)" Click="RunFast_Click" Margin="0,0,6,0"/>
+                    <Button x:Name="CancelRunBtn" Content="Cancel" Click="CancelRun_Click" IsEnabled="False" Margin="0,0,10,0"/>
+                    <Button x:Name="SaveResultBtn" Content="Save Verified JSON" Click="SaveResult_Click" Margin="0,0,6,0"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- Main Split Workspace -->
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="43*" MinWidth="360"/>
+                <ColumnDefinition Width="6"/>
+                <ColumnDefinition Width="57*" MinWidth="540"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- Left Source Image Pane -->
+            <Border Grid.Column="0" Background="{StaticResource CardBrush}" BorderBrush="{StaticResource BorderBrushLight}" BorderThickness="1" CornerRadius="8" Padding="8">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,6">
+                        <TextBlock Text="Source Photo:" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                        <ComboBox x:Name="InputSelector" Width="210" SelectionChanged="InputSelector_SelectionChanged" Margin="0,0,6,0"/>
+                        <ComboBox x:Name="PageViewSelector" Width="135" SelectionChanged="PageViewSelector_SelectionChanged">
+                            <ComboBoxItem Content="Original Photo" IsSelected="True"/>
+                            <ComboBoxItem Content="Dewarped (P2)"/>
+                        </ComboBox>
+                    </StackPanel>
+
+                    <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,6">
+                        <RadioButton x:Name="FitViewRadio" Content="Fit" IsChecked="True" Checked="ZoomMode_Changed" Margin="0,0,10,0" VerticalAlignment="Center"/>
+                        <RadioButton x:Name="ActualViewRadio" Content="100% Zoom" Checked="ZoomMode_Changed" Margin="0,0,12,0" VerticalAlignment="Center"/>
+                        <Button Content="↺ -90°" Click="RotateLeft_Click" Padding="8,3" Margin="0,0,4,0"/>
+                        <Button Content="↻ +90°" Click="RotateRight_Click" Padding="8,3" Margin="0,0,8,0"/>
+                        <TextBlock x:Name="ImageMetaText" Text="No file selected" FontSize="11" Foreground="{StaticResource TextSecondaryBrush}" VerticalAlignment="Center"/>
+                    </StackPanel>
+
+                    <Border Grid.Row="2" Background="#0F172A" CornerRadius="6">
+                        <Grid>
+                            <TextBlock x:Name="NoImageHint" Text="Add an invoice photo or PDF (or launch from AAH Phone Link)" Foreground="#94A3B8" HorizontalAlignment="Center" VerticalAlignment="Center" TextWrapping="Wrap" Margin="20"/>
+                            <ScrollViewer x:Name="ImageScroller" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+                                <Image x:Name="PreviewImage" Stretch="Uniform" RenderOptions.BitmapScalingMode="HighQuality" Margin="6">
+                                    <Image.LayoutTransform>
+                                        <RotateTransform x:Name="ImageRotateTransform" Angle="0"/>
+                                    </Image.LayoutTransform>
+                                </Image>
+                            </ScrollViewer>
+                        </Grid>
+                    </Border>
+                </Grid>
+            </Border>
+
+            <GridSplitter Grid.Column="1" Width="6" HorizontalAlignment="Stretch" Background="Transparent"/>
+
+            <!-- Right Extracted & Verification Pane -->
+            <Border Grid.Column="2" Background="{StaticResource CardBrush}" BorderBrush="{StaticResource BorderBrushLight}" BorderThickness="1" CornerRadius="8" Padding="10">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*" MinHeight="180"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="170"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- Verification Banner -->
+                    <Border x:Name="VerifyBanner" Grid.Row="0" Background="#F1F5F9" CornerRadius="6" Padding="10,7" Margin="0,0,0,8">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock x:Name="VerifyBannerText" Text="Ready. Select an invoice image or PDF and click Extract." FontWeight="SemiBold" TextWrapping="Wrap"/>
+                            <TextBlock Grid.Column="1" x:Name="EngineBadgeText" Text="" FontSize="11" Foreground="{StaticResource TextSecondaryBrush}" Margin="10,0,0,0" VerticalAlignment="Center"/>
+                        </Grid>
+                    </Border>
+
+                    <!-- Header & Parties Card -->
+                    <Border Grid.Row="1" BorderBrush="{StaticResource BorderBrushLight}" BorderThickness="1" CornerRadius="6" Padding="8" Margin="0,0,0,8">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="10"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+
+                            <!-- Left Col: Supplier + Direction + Inv No -->
+                            <StackPanel Grid.Row="0" Grid.Column="0" Orientation="Horizontal" Margin="0,0,0,4">
+                                <TextBlock Text="Seller Name:" Width="88" VerticalAlignment="Center" FontSize="12"/>
+                                <TextBox x:Name="SellerNameBox" Width="210" Padding="4,2" TextChanged="EditableHeader_Changed"/>
+                            </StackPanel>
+                            <StackPanel Grid.Row="1" Grid.Column="0" Orientation="Horizontal" Margin="0,0,0,4">
+                                <TextBlock Text="Seller GSTIN:" Width="88" VerticalAlignment="Center" FontSize="12"/>
+                                <TextBox x:Name="SellerGstinBox" Width="150" Padding="4,2" CharacterCasing="Upper" TextChanged="EditableHeader_Changed"/>
+                                <TextBlock x:Name="SellerGstinStateText" Text="" FontSize="11" Margin="6,0,0,0" VerticalAlignment="Center"/>
+                            </StackPanel>
+                            <StackPanel Grid.Row="2" Grid.Column="0" Orientation="Horizontal" Margin="0,0,0,4">
+                                <TextBlock Text="Invoice No:" Width="88" VerticalAlignment="Center" FontSize="12"/>
+                                <TextBox x:Name="InvoiceNoBox" Width="130" Padding="4,2" TextChanged="EditableHeader_Changed" Margin="0,0,8,0"/>
+                                <TextBlock Text="Date:" VerticalAlignment="Center" FontSize="12" Margin="0,0,4,0"/>
+                                <TextBox x:Name="InvoiceDateBox" Width="92" Padding="4,2" TextChanged="EditableHeader_Changed"/>
+                            </StackPanel>
+                            <StackPanel Grid.Row="3" Grid.Column="0" Orientation="Horizontal">
+                                <TextBlock Text="Direction:" Width="88" VerticalAlignment="Center" FontSize="12"/>
+                                <ComboBox x:Name="DirectionBox" Width="105" SelectionChanged="DirectionBox_SelectionChanged" Margin="0,0,8,0">
+                                    <ComboBoxItem Content="Purchase"/>
+                                    <ComboBoxItem Content="Sales"/>
+                                    <ComboBoxItem Content="Unknown"/>
+                                </ComboBox>
+                                <TextBlock Text="Doc Type:" VerticalAlignment="Center" FontSize="12" Margin="0,0,4,0"/>
+                                <TextBox x:Name="DocTypeBox" Width="105" Padding="4,2" TextChanged="EditableHeader_Changed"/>
+                            </StackPanel>
+
+                            <!-- Right Col: Buyer + Totals Summary Quick Fields -->
+                            <StackPanel Grid.Row="0" Grid.Column="2" Orientation="Horizontal" Margin="0,0,0,4">
+                                <TextBlock Text="Buyer Name:" Width="84" VerticalAlignment="Center" FontSize="12"/>
+                                <TextBox x:Name="BuyerNameBox" Width="210" Padding="4,2" TextChanged="EditableHeader_Changed"/>
+                            </StackPanel>
+                            <StackPanel Grid.Row="1" Grid.Column="2" Orientation="Horizontal" Margin="0,0,0,4">
+                                <TextBlock Text="Buyer GSTIN:" Width="84" VerticalAlignment="Center" FontSize="12"/>
+                                <TextBox x:Name="BuyerGstinBox" Width="150" Padding="4,2" CharacterCasing="Upper" TextChanged="EditableHeader_Changed"/>
+                                <TextBlock x:Name="BuyerGstinStateText" Text="" FontSize="11" Margin="6,0,0,0" VerticalAlignment="Center"/>
+                            </StackPanel>
+                            <StackPanel Grid.Row="2" Grid.Column="2" Orientation="Horizontal" Margin="0,0,0,4">
+                                <TextBlock Text="Place Supply:" Width="84" VerticalAlignment="Center" FontSize="12"/>
+                                <TextBox x:Name="PosBox" Width="210" Padding="4,2" TextChanged="EditableHeader_Changed"/>
+                            </StackPanel>
+                            <StackPanel Grid.Row="3" Grid.Column="2" Orientation="Horizontal">
+                                <TextBlock Text="Taxable:" VerticalAlignment="Center" FontSize="12" Margin="0,0,4,0"/>
+                                <TextBox x:Name="TaxableTotalBox" Width="76" Padding="4,2" TextChanged="EditableHeader_Changed" Margin="0,0,6,0"/>
+                                <TextBlock Text="CN:" VerticalAlignment="Center" FontSize="12" Margin="0,0,3,0"/>
+                                <TextBox x:Name="CreditNoteBox" Width="58" Padding="4,2" TextChanged="EditableHeader_Changed" Margin="0,0,6,0"/>
+                                <TextBlock Text="Total:" FontWeight="Bold" VerticalAlignment="Center" FontSize="12" Margin="0,0,4,0"/>
+                                <TextBox x:Name="InvoiceTotalBox" Width="82" FontWeight="Bold" Padding="4,2" TextChanged="EditableHeader_Changed"/>
+                            </StackPanel>
+                        </Grid>
+                    </Border>
+
+                    <!-- Line Items DataGrid -->
+                    <DockPanel Grid.Row="2" LastChildFill="True">
+                        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,4">
+                            <TextBlock Text="Extracted Item Rows" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                            <Button Content="+ Add Row" Click="AddRow_Click" Padding="7,2" Margin="10,0,4,0" FontSize="11"/>
+                            <Button Content="- Delete Row" Click="DeleteRow_Click" Padding="7,2" FontSize="11"/>
+                            <Button Content="Re-Audit Math" Click="Reaudit_Click" Padding="7,2" Margin="8,0,0,0" FontSize="11"/>
+                        </StackPanel>
+                        <DataGrid x:Name="RowsGrid" AutoGenerateColumns="False" CanUserAddRows="False" CellEditEnding="RowsGrid_CellEditEnding">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="#" Binding="{Binding LineNumber}" Width="34" IsReadOnly="True"/>
+                                <DataGridTextColumn Header="Description" Binding="{Binding Description, UpdateSourceTrigger=PropertyChanged}" Width="190"/>
+                                <DataGridTextColumn Header="HSN" Binding="{Binding HsnSac, UpdateSourceTrigger=PropertyChanged}" Width="70"/>
+                                <DataGridTextColumn Header="Qty" Binding="{Binding Quantity, UpdateSourceTrigger=PropertyChanged}" Width="56"/>
+                                <DataGridTextColumn Header="Unit" Binding="{Binding Unit, UpdateSourceTrigger=PropertyChanged}" Width="48"/>
+                                <DataGridTextColumn Header="Rate" Binding="{Binding Rate, UpdateSourceTrigger=PropertyChanged, StringFormat=0.##}" Width="66"/>
+                                <DataGridTextColumn Header="Taxable" Binding="{Binding Taxable, UpdateSourceTrigger=PropertyChanged, StringFormat=0.00}" Width="78"/>
+                                <DataGridTextColumn Header="GST%" Binding="{Binding GstRate, UpdateSourceTrigger=PropertyChanged, StringFormat=0.##}" Width="52"/>
+                                <DataGridTextColumn Header="CGST" Binding="{Binding Cgst, UpdateSourceTrigger=PropertyChanged, StringFormat=0.00}" Width="66"/>
+                                <DataGridTextColumn Header="SGST" Binding="{Binding Sgst, UpdateSourceTrigger=PropertyChanged, StringFormat=0.00}" Width="66"/>
+                                <DataGridTextColumn Header="IGST" Binding="{Binding Igst, UpdateSourceTrigger=PropertyChanged, StringFormat=0.00}" Width="64"/>
+                                <DataGridTextColumn Header="Line Total" Binding="{Binding LineTotal, UpdateSourceTrigger=PropertyChanged, StringFormat=0.00}" Width="80"/>
+                                <DataGridTextColumn Header="Math" Binding="{Binding MathStatus}" Width="68" IsReadOnly="True"/>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </DockPanel>
+
+                    <!-- Totals Strip -->
+                    <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,6,0,6">
+                        <TextBlock Text="CGST:" VerticalAlignment="Center" Margin="0,0,4,0" FontSize="12"/>
+                        <TextBox x:Name="CgstTotalBox" Width="72" Padding="4,2" TextChanged="EditableHeader_Changed" Margin="0,0,10,0"/>
+                        <TextBlock Text="SGST:" VerticalAlignment="Center" Margin="0,0,4,0" FontSize="12"/>
+                        <TextBox x:Name="SgstTotalBox" Width="72" Padding="4,2" TextChanged="EditableHeader_Changed" Margin="0,0,10,0"/>
+                        <TextBlock Text="IGST:" VerticalAlignment="Center" Margin="0,0,4,0" FontSize="12"/>
+                        <TextBox x:Name="IgstTotalBox" Width="72" Padding="4,2" TextChanged="EditableHeader_Changed" Margin="0,0,10,0"/>
+                        <TextBlock Text="Round Off:" VerticalAlignment="Center" Margin="0,0,4,0" FontSize="12"/>
+                        <TextBox x:Name="RoundOffBox" Width="64" Padding="4,2" TextChanged="EditableHeader_Changed"/>
+                    </StackPanel>
+
+                    <!-- Detail Tabs -->
+                    <TabControl Grid.Row="4">
+                        <TabItem Header="GST Slabs">
+                            <DataGrid x:Name="SlabsGrid" AutoGenerateColumns="False" IsReadOnly="True">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="GST %" Binding="{Binding GstRate, StringFormat=0.##}" Width="75"/>
+                                    <DataGridTextColumn Header="Taxable" Binding="{Binding Taxable, StringFormat=N2}" Width="110"/>
+                                    <DataGridTextColumn Header="CGST" Binding="{Binding Cgst, StringFormat=N2}" Width="95"/>
+                                    <DataGridTextColumn Header="SGST" Binding="{Binding Sgst, StringFormat=N2}" Width="95"/>
+                                    <DataGridTextColumn Header="IGST" Binding="{Binding Igst, StringFormat=N2}" Width="95"/>
+                                    <DataGridTextColumn Header="Combined Tax" Binding="{Binding CombinedTax, StringFormat=N2}" Width="110"/>
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </TabItem>
+                        <TabItem Header="Verification Checks">
+                            <TextBox x:Name="ChecksTextBox" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" FontFamily="Consolas" FontSize="12"/>
+                        </TabItem>
+                        <TabItem Header="NIC e-Invoice QR">
+                            <TextBox x:Name="QrTextBox" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" FontFamily="Consolas" FontSize="12"/>
+                        </TabItem>
+                        <TabItem Header="Raw OCR / HTML">
+                            <TextBox x:Name="RawOcrTextBox" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" FontFamily="Consolas" FontSize="12"/>
+                        </TabItem>
+                    </TabControl>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <!-- Status Footer -->
+        <Border Grid.Row="2" Background="{StaticResource CardBrush}" BorderBrush="{StaticResource BorderBrushLight}" BorderThickness="1" CornerRadius="6" Padding="10,6" Margin="0,8,0,0">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="200"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock x:Name="RuntimeBadgeText" Text="Checking runtime..." FontSize="11" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                <TextBlock Grid.Column="1" x:Name="StatusFooterText" Text="Ready." FontSize="12" Foreground="{StaticResource TextSecondaryBrush}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                <ProgressBar Grid.Column="2" x:Name="WorkProgressBar" Height="14" Minimum="0" Maximum="100" Value="0"/>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

@@ -1,0 +1,15 @@
+bin/
+obj/
+publish/
+Runtime/
+.venv/
+__pycache__/
+*.pyc
+*.gguf
+*.onnx
+*.tmp
+*.log
+*.user
+*.suo
+.vs/
+v2/tests/fixtures/

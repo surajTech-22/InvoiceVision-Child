@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <AssemblyName>InvoiceVisionChild.Tests</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\InvoiceVisionChild.Contracts\InvoiceVisionChild.Contracts.csproj" />
+    <ProjectReference Include="..\..\src\InvoiceVisionChild.Core\InvoiceVisionChild.Core.csproj" />
+    <ProjectReference Include="..\..\src\InvoiceVisionChild.App\InvoiceVisionChild.App.csproj" />
+  </ItemGroup>
+</Project>
