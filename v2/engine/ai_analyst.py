@@ -142,9 +142,15 @@ def run_deterministic_audit(req: Dict[str, Any], memory_db: str = "") -> Dict[st
         findings.append(f"Invoice Total {inv_total:.2f} disagrees with Taxable+GST+RoundOff ({computed_grand:.2f}, diff {grand_diff:.2f}).")
         recommendations.append("Check Credit Note deduction, Freight/TCS charges, or Round Off sign on the original bill.")
 
-    if abs(cgst_total - sgst_total) > 0.15 and igst_total <= 0.05:
+    if igst_total <= 0.05 and abs(cgst_total - sgst_total) > 0.005:
         severity = max(severity, 2)
         findings.append(f"CGST ({cgst_total:.2f}) and SGST ({sgst_total:.2f}) are unequal.")
+        recommendations.append("Equalize CGST and SGST on intra-state invoices so both equal Taxable × GST% / 2.")
+    for idx, r in enumerate(rows, 1):
+        rcg, rsg, rig = _f(r.get("cgst")), _f(r.get("sgst")), _f(r.get("igst"))
+        if rig <= 0.005 and (rcg > 0.0 or rsg > 0.0) and abs(rcg - rsg) > 0.005:
+            severity = max(severity, 2)
+            findings.append(f"Row {idx} has unequal CGST ({rcg:.2f}) vs SGST ({rsg:.2f}).")
 
     # Posting Preview (Accounting Invoice vs Item Invoice clarity)
     unique_rates = sorted({round(_f(s.get("gstRate")), 2) for s in slabs if _f(s.get("taxable")) > 0} | {round(_f(r.get("gstRate")), 2) for r in rows if _f(r.get("taxable")) > 0})

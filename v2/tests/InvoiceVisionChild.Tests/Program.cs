@@ -17,7 +17,8 @@ internal static class Program
             ("InvoiceExtractionOrchestrator converts Python worker payload to Canonical result", TestWorkerPayloadConversion),
             ("InvoiceMathVerifier verifies 0%-GST exempt and case-rate invoices", TestExemptAndCaseRateInvoices),
             ("App ParseArgs handles --extract, --analyze and --source --result CLI options", TestCliParsing),
-            ("SupplierMemory & Request contracts round-trip cleanly", TestSupplierMemoryAndAnalysisContracts)
+            ("SupplierMemory & Request contracts round-trip cleanly", TestSupplierMemoryAndAnalysisContracts),
+            ("InvoiceMathVerifier requires exact CGST == SGST on intra-state invoices", TestCgstSgstEqualityGate)
         };
 
         var passed = 0;
@@ -361,5 +362,44 @@ internal static class Program
               res.SupplierMemory.CanonicalName == "LEARNED SUPPLIER PVT LTD" &&
               res.SupplierMemory.AppliedRules.Count == 1,
             "SupplierMemory summary conversion mismatch");
+    }
+
+    private static void TestCgstSgstEqualityGate()
+    {
+        var seller = "29ABCDE1234F1Z" + GstChecksumValidator.ComputeCheckDigit("29ABCDE1234F1Z");
+        var buyer = "29KLMNO9876P1Z" + GstChecksumValidator.ComputeCheckDigit("29KLMNO9876P1Z");
+
+        var unequal = new InvoiceExtractionResult
+        {
+            InvoiceNumber = "A001532",
+            InvoiceDate = "2026-10-29",
+            Seller = new InvoicePartyInfo { Name = "SRI RAMA ENTERPRISES", Gstin = seller },
+            Buyer = new InvoicePartyInfo { Name = "BALAJI TRADING CO", Gstin = buyer },
+            TaxableTotal = 2619.05m,
+            CgstTotal = 65.48m,
+            SgstTotal = 65.47m,
+            InvoiceTotal = 2750.00m,
+            Rows =
+            [
+                new InvoiceLineItem
+                {
+                    Description = "CHILLY PW", HsnSac = "090422", Quantity = 10m, Rate = 261.90m,
+                    Taxable = 2619.05m, GstRate = 5m, Cgst = 65.48m, Sgst = 65.47m, LineTotal = 2750.00m
+                }
+            ]
+        };
+        InvoiceMathVerifier.Verify(unequal);
+        Check(!unequal.Verification.IsBalanced && unequal.Status == "ReviewRequired",
+            "Expected unequal CGST (65.48) vs SGST (65.47) to fail strict equality gate.");
+
+        unequal.CgstTotal = 65.48m;
+        unequal.SgstTotal = 65.48m;
+        unequal.RoundOff = -0.01m;
+        unequal.Rows[0].Cgst = 65.48m;
+        unequal.Rows[0].Sgst = 65.48m;
+        unequal.Rows[0].LineTotal = 2750.01m;
+        InvoiceMathVerifier.Verify(unequal);
+        Check(unequal.Verification.IsBalanced && unequal.Status == "Verified",
+            "Expected equal CGST (65.48) == SGST (65.48) to verify cleanly.");
     }
 }

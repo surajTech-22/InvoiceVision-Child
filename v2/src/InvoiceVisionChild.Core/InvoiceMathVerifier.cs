@@ -55,6 +55,9 @@ public static class InvoiceMathVerifier
             }
 
             var taxSum = row.Cgst + row.Sgst + row.Igst;
+            if (row.Igst == 0m && (row.Cgst > 0m || row.Sgst > 0m) && Math.Abs(row.Cgst - row.Sgst) > 0.005m)
+                rowIssues.Add($"CGST ({row.Cgst:N2}) != SGST ({row.Sgst:N2})");
+
             if (row.GstRate > 0m && row.Taxable > 0m)
             {
                 var expectedTax = Math.Round(row.Taxable * row.GstRate / 100m, 2, MidpointRounding.AwayFromZero);
@@ -115,6 +118,9 @@ public static class InvoiceMathVerifier
 
             RebuildGstSlabs(result);
         }
+
+        if (result.IgstTotal == 0m && (result.CgstTotal > 0m || result.SgstTotal > 0m) && Math.Abs(result.CgstTotal - result.SgstTotal) > 0.005m)
+            errors.Add($"CGST total ({result.CgstTotal:N2}) does not equal SGST total ({result.SgstTotal:N2}).");
 
         var computedGrandTotal = result.TaxableTotal + result.CgstTotal + result.SgstTotal + result.IgstTotal + result.CessTotal - result.CreditNoteTotal + result.RoundOff;
         if (result.InvoiceTotal <= 0m)

@@ -12,6 +12,15 @@ MONTHS = {
 }
 
 
+def _equal_local_tax_half(taxable: float, gst_rate: float, combined_tax: float = 0.0) -> float:
+    """Compute equal per-side CGST/SGST without 1-paisa asymmetry."""
+    if taxable > 0.0 and gst_rate > 0.0:
+        by_rate = round2(taxable * gst_rate / 200.0)
+        if combined_tax <= 0.0 or abs(2.0 * by_rate - combined_tax) <= 0.15:
+            return by_rate
+    return round2(combined_tax / 2.0) if combined_tax > 0.0 else 0.0
+
+
 def clean_num(val: Any) -> float:
     if val is None:
         return 0.0
@@ -331,9 +340,10 @@ def _try_parse_dual_stacked_itc_table(mat_norm: List[List[str]], data_start: int
             i += 2
         else:
             taxable = round2(gross - disc) if gross > 0 else round2(lt - tot_tax)
-            cgst = round2(tot_tax / 2.0)
-            sgst = round2(tot_tax - cgst)
             gst_rate = round2((tot_tax / taxable) * 100.0) if (taxable > 0 and tot_tax > 0) else 0.0
+            half = _equal_local_tax_half(taxable, gst_rate, tot_tax)
+            cgst = half
+            sgst = half
             i += 1
         if taxable == 0.0 and gross > 0:
             taxable = round2(gross - disc)
@@ -590,8 +600,9 @@ def _parse_item_rows_from_matrix(mat: List[List[str]]) -> Tuple[List[Dict[str, A
         combined_tax_col = pick_num("tax_amt")
         tax_from_combined = False
         if cgst == 0.0 and sgst == 0.0 and igst == 0.0 and combined_tax_col > 0:
-            cgst = round2(combined_tax_col / 2.0)
-            sgst = round2(combined_tax_col - cgst)
+            half = _equal_local_tax_half(taxable, gst_rate, combined_tax_col)
+            cgst = half
+            sgst = half
             tax_from_combined = True
         line_total = pick_num("total")
 
@@ -1262,11 +1273,11 @@ def parse_document_text_to_canonical(
             for r in rows:
                 tx = round2(r["_raw_amt_only"])
                 rt = r["gstRate"]
-                tax_amt = round2(tx * rt / 100.0)
+                half = round2(tx * rt / 200.0)
                 r["taxable"] = tx
-                r["cgst"] = round2(tax_amt / 2.0)
-                r["sgst"] = round2(tax_amt - r["cgst"])
-                r["lineTotal"] = round2(tx + tax_amt)
+                r["cgst"] = half
+                r["sgst"] = half
+                r["lineTotal"] = round2(tx + 2.0 * half)
     for r in rows:
         r.pop("_raw_amt_only", None)
         if r["quantity"] > 0 and r["rate"] > 0 and r["taxable"] > 0 and abs((r["quantity"] * r["rate"] - r["discount"]) - r["taxable"]) > max(1.5, r["taxable"] * 0.01):
@@ -1309,13 +1320,15 @@ def parse_document_text_to_canonical(
         elif row_item["gstRate"] == 0.0 and len(summary_slabs) == 1:
             row_item["gstRate"] = next(iter(summary_slabs.keys()))
         if row_item["taxable"] > 0 and row_item["gstRate"] > 0 and (row_item["cgst"] + row_item["sgst"] + row_item["igst"]) == 0.0:
-            tax_amt = round2(row_item["taxable"] * row_item["gstRate"] / 100.0)
             if igst_total > 0 and cgst_total == 0 and sgst_total == 0:
+                tax_amt = round2(row_item["taxable"] * row_item["gstRate"] / 100.0)
                 row_item["igst"] = tax_amt
+                row_item["lineTotal"] = round2(row_item["taxable"] + tax_amt)
             else:
-                row_item["cgst"] = round2(tax_amt / 2.0)
-                row_item["sgst"] = round2(tax_amt - row_item["cgst"])
-            row_item["lineTotal"] = round2(row_item["taxable"] + tax_amt)
+                half = round2(row_item["taxable"] * row_item["gstRate"] / 200.0)
+                row_item["cgst"] = half
+                row_item["sgst"] = half
+                row_item["lineTotal"] = round2(row_item["taxable"] + 2.0 * half)
 
     if inv_total == 0.0 and taxable_total > 0:
         inv_total = round2(taxable_total + cgst_total + sgst_total + igst_total - credit_note + round_off)
@@ -1386,9 +1399,27 @@ def normalize_canonical_dict(obj: Dict[str, Any], raw_text: str = "", qr_einvoic
         elif taxable == 0.0 and lt > 0 and gst_rate > 0:
             taxable = round2(lt / (1.0 + gst_rate / 100.0))
         if taxable > 0 and gst_rate > 0 and (cgst + sgst + igst) == 0.0:
-            tax_amt = round2(taxable * gst_rate / 100.0)
-            cgst = round2(tax_amt / 2.0)
-            sgst = round2(tax_amt - cgst)
+            half = round2(taxable * gst_rate / 200.0)
+            cgst = half
+            sgst = half
+        if igst == 0.0 and (cgst > 0.0 or sgst > 0.0) and abs(cgst - sgst) > 0.005:
+            old_sum = round2(cgst + sgst)
+            chosen: Optional[float] = None
+            if taxable > 0.0 and gst_rate > 0.0:
+                exp_half = round2(taxable * gst_rate / 200.0)
+                if abs(cgst - exp_half) <= 0.05 and abs(sgst - exp_half) <= 0.05:
+                    chosen = exp_half
+                elif abs(cgst - exp_half) <= 0.05 or abs(sgst - exp_half) <= 0.05:
+                    chosen = cgst if abs(cgst - exp_half) <= abs(sgst - exp_half) else sgst
+                elif abs(cgst - sgst) <= 0.25:
+                    chosen = exp_half
+            elif abs(cgst - sgst) <= 0.15:
+                chosen = round2((cgst + sgst) / 2.0)
+            if chosen is not None:
+                cgst = round2(chosen)
+                sgst = round2(chosen)
+                if lt > 0.0 and abs((taxable + old_sum + cess) - lt) <= 0.25:
+                    lt = round2(taxable + cgst + sgst + igst + cess)
         if lt == 0.0 and taxable > 0:
             lt = round2(taxable + cgst + sgst + igst + cess)
         if taxable > 0 and (cgst + sgst + igst) > 0:
@@ -1430,10 +1461,22 @@ def normalize_canonical_dict(obj: Dict[str, Any], raw_text: str = "", qr_einvoic
         taxable_total = round2(sum(r["taxable"] for r in norm_rows))
     if discount_total == 0.0 and norm_rows:
         discount_total = round2(sum(r["discount"] for r in norm_rows))
-    if cgst_total == 0.0 and norm_rows:
-        cgst_total = round2(sum(r["cgst"] for r in norm_rows))
-    if sgst_total == 0.0 and norm_rows:
-        sgst_total = round2(sum(r["sgst"] for r in norm_rows))
+    if igst_total == 0.0 and norm_rows and any((r["cgst"] > 0.0 or r["sgst"] > 0.0) for r in norm_rows):
+        row_cg_sum = round2(sum(r["cgst"] for r in norm_rows))
+        row_sg_sum = round2(sum(r["sgst"] for r in norm_rows))
+        if cgst_total == 0.0 or sgst_total == 0.0 or abs(cgst_total - sgst_total) > 0.005:
+            cgst_total = row_cg_sum
+            sgst_total = row_sg_sum
+    if igst_total == 0.0 and (cgst_total > 0.0 or sgst_total > 0.0) and 0.005 < abs(cgst_total - sgst_total) <= 0.15:
+        avg_half = round2((cgst_total + sgst_total) / 2.0)
+        cgst_total = avg_half
+        sgst_total = avg_half
+    if inv_total > 0.0 and taxable_total > 0.0:
+        computed_no_ro = round2(taxable_total + cgst_total + sgst_total + igst_total + cess_total - credit_note)
+        if abs((computed_no_ro + round_off) - inv_total) > 0.005:
+            cand_ro = round2(inv_total - computed_no_ro)
+            if abs(cand_ro) <= 1.00:
+                round_off = cand_ro
     if igst_total == 0.0 and norm_rows:
         igst_total = round2(sum(r["igst"] for r in norm_rows))
     if cess_total == 0.0 and norm_rows:

@@ -161,7 +161,7 @@ def audit_invoice_math(inv: Dict[str, Any]) -> Dict[str, Any]:
             if abs(exp_tax - got_tax) > max(0.35, tx * 0.005):
                 issues.append(f"gst_rate_mismatch(exp={exp_tax:.2f},got={got_tax:.2f})")
         if ig == 0 and (cg > 0 or sg > 0):
-            if abs(cg - sg) > 0.25:
+            if abs(cg - sg) > 0.005:
                 issues.append(f"cgst_sgst_split_mismatch({cg}!={sg})")
             if rate == 0:
                 issues.append("missing_gst_rate")
@@ -179,6 +179,7 @@ def audit_invoice_math(inv: Dict[str, Any]) -> Dict[str, Any]:
     taxable_match = len(rows) > 0 and eff_tx > 0 and abs(row_taxable_sum - eff_tx) <= max(0.50, 0.001 * eff_tx)
     tax_match = len(rows) > 0 and abs(row_tax_sum - eff_tax) <= max(0.50, 0.002 * max(eff_tax, 1.0))
     header_taxable_ok = (invoice_total <= 0) or (taxable_total > 0)
+    header_cgst_sgst_ok = (igst_total > 0) or (abs(cgst_total - sgst_total) <= 0.005)
 
     expected_grand = eff_tx + eff_tax + eff_cess - credit_note + round_off
     grand_diff = abs(expected_grand - invoice_total) if invoice_total > 0 else 9999.0
@@ -210,6 +211,7 @@ def audit_invoice_math(inv: Dict[str, Any]) -> Dict[str, Any]:
             and tax_match
             and grand_balanced
             and header_taxable_ok
+            and header_cgst_sgst_ok
             and seller_ok
         ),
     }
