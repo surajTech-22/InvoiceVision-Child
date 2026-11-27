@@ -251,6 +251,7 @@ def _is_item_table_header(header_row: List[str]) -> bool:
     is_tax_summary = (
         "cgst 2.5" in joined
         or ("taxable value" in joined and "central gst" in joined)
+        or (has_hsn and "taxable" in joined and not has_desc and not any(k in joined for k in ("qty", "quantity", "units", "pcs", "rate", "mrp", "sku", "pack")))
         or ("cgst %" in joined and "cgst amount" in joined and not any(k in joined for k in ("qty", "quantity", "rate", "product", "item", "particulars", "description")))
     )
     is_scheme_table = ("initiative name" in joined or "credit note number" in joined)
@@ -262,6 +263,11 @@ def _is_item_table_header(header_row: List[str]) -> bool:
 def _is_tax_summary_table(rows_mat: List[List[str]]) -> bool:
     joined_hdr = " ".join(" ".join(r) for r in rows_mat[:2]).lower()
     joined = " ".join(" ".join(r) for r in rows_mat[:3]).lower()
+    if ("hsn" in joined_hdr or "sac" in joined_hdr) and "taxable" in joined_hdr and not any(
+        k in joined_hdr for k in ("product", "item", "description", "particulars", "goods", "service", "qty", "quantity", "pcs", "units", "mrp", "sku", "pack")
+    ):
+        if "rate" not in joined_hdr or any(k in joined_hdr for k in ("central gst", "state gst", "cgst", "sgst", "igst", "total tax")):
+            return True
     if "hsn" in joined_hdr and ("central gst" in joined_hdr or "taxable value" in joined_hdr) and "rate" in joined_hdr and not any(k in joined_hdr for k in ("qty", "quantity", "sku", "mrp", "gross")):
         return True
     if "cgst %" in joined_hdr and "cgst amount" in joined_hdr and not any(k in joined_hdr for k in ("qty", "quantity", "rate", "product", "item", "particulars", "description")):
@@ -716,12 +722,13 @@ def _parse_item_rows_from_matrix(mat: List[List[str]]) -> Tuple[List[Dict[str, A
 
 
 _PARTY_NOISE_PREFIX_RE = re.compile(
-    r"^(?:page\s+\d+|print\s+copy|pan(?:\s+no)?|fssai(?:\s+no)?|essai(?:\s+lic)?|gstin(?:/uin)?|gstn(?:\s+no)?|state(?:\s+name|\s+code)?|"
-    r"phone|ph(?:\s+no)?|mob(?:ile)?|contact|email|e-?mail|cin|van|beat|order\s+no|dse\s+name|"
-    r"salesperson|eway|e-?way|irn|ack\.?\s*(?:no|date)|e-?inv|from|to|buyer(?:\s*\(bill\s*to\))?|"
-    r"bill\s*to|billed\s*to|ship\s*to|shipping\s+(?:address|date)|registered\s+address|customer\s+(?:address|details)|"
-    r"cust\.?\s*code|party\s+(?:mobile|gstin)|branch\s+name|channel|tax\s+type|place\s+of\s+(?:sale|supply)|"
-    r"date\b|dated\b|inv(?:oice)?\s*no|bill\s*no|doc(?:ument)?\s*(?:no|number)|sm\s+name|rt\s+name|all\s+taxes\s+are|"
+    r"^(?:page\s+\d+|print\s+copy|pan(?:\s+no)?|fssai(?:\s+(?:no|lic))?|essai(?:\s+lic)?|gstin(?:/uin)?|gstn(?:\s+no)?|state(?:\s+name|\s+code)?|"
+    r"phone|ph(?:\s+no)?|mob(?:ile)?|contact|email|e-?mail|cin|van|beat|order\s*(?:no|number)|customer\s+order|dse\s+name|"
+    r"salesperson|eway|e-?way|irn\b|tkn\b|ack\.?\s*(?:no|date)|e-?inv|from|to|buyer(?:\s*\(bill\s*to\))?|"
+    r"bill\s*to(?:\s+gstin)?|billed\s*to|ship\s*to(?:\s+gstin)?|shipping\s+(?:address|date)|supplier\s+address|registered\s+address|customer\s+(?:address|details)|"
+    r"cust\.?\s*code|party\s+(?:mobile|gstin)|branch\s+name|channel|tax\s+type|place\s+of\s+(?:sale|supply)|mode\s+of\s+payment|"
+    r"cn\s+(?:number|date)|sdp\s+id|number\s+of\s+totes|ids?\s+of\s+totes|scan\s+this\s+qr|"
+    r"date\b|dated\b|inv(?:oice)?\s*(?:no|number)|bill\s*(?:no|number)|doc(?:ument)?\s*(?:no|number)|voucher\s*(?:no|number)|sm\s+name|rt\s+name|all\s+taxes\s+are|"
     r"gst\s+invoice(?:/cash)?|tax\s+invoice(?:\s*\(credit\))?|bill\s+of\s+supply|original(?:\s+for\s+recipient)?|"
     r"duplicate|triplicate|reverse\s+charge|for\s+)\b",
     re.IGNORECASE,
@@ -775,10 +782,22 @@ def _extract_party_name_near(lines: List[str], target_gstin: str, role_keywords:
     clean_lines = [_strip_md(ln) for ln in lines[:65]]
     clean_lines = [ln for ln in clean_lines if ln]
 
+    def _with_top_brand_prefix(name: str) -> str:
+        if fallback_top and clean_lines:
+            top_brand = _clean_party_name(clean_lines[0])
+            if (
+                top_brand
+                and re.fullmatch(r"[A-Z][A-Z0-9&.\-]{2,15}", top_brand)
+                and top_brand.lower() not in name.lower()
+                and re.match(r"^(?:cash\s+and\s+carry|wholesale|retail|india\s+ltd|private\s+ltd|pvt\.?\s*ltd)\b", name, re.IGNORECASE)
+            ):
+                return f"{top_brand} {name}"[:120]
+        return name
+
     # 1. Explicit role label on line (e.g. "Party Name : BALAJI..." or "To BALAJI TRADING CO" or "From:\nVEERABHADRESHWARA...")
     for i, ln in enumerate(clean_lines[:55]):
         low = ln.lower()
-        if any(noise in low for noise in ("original for", "duplicate for", "triplicate for", "for recipient")):
+        if any(noise in low for noise in ("original for", "duplicate for", "triplicate for", "for recipient", "supplier address", "registered address", "shipping address")):
             continue
         m_direct = re.match(r"^(?:to|from|party\s*name|customer\s*name|buyer\s*name|supplier\s*name|seller\s*name)\s*[:\-]?\s+(.+)$", ln, re.IGNORECASE)
         if m_direct and (
@@ -787,17 +806,17 @@ def _extract_party_name_near(lines: List[str], target_gstin: str, role_keywords:
         ):
             after = _clean_party_name(m_direct.group(1))
             if after:
-                return after
+                return _with_top_brand_prefix(after)
         if any(k in low for k in role_keywords):
             if ":" in ln:
                 after = _clean_party_name(ln.split(":", 1)[1])
                 if after:
-                    return after
+                    return _with_top_brand_prefix(after)
             for nxt in range(1, 4):
                 if i + nxt < len(clean_lines):
                     cand = _clean_party_name(clean_lines[i + nxt])
                     if cand:
-                        return cand
+                        return _with_top_brand_prefix(cand)
 
     # 2. Walk near target GSTIN line (upwards first, then downwards 1..3 lines if seller GSTIN is above heading)
     if target_gstin:
@@ -819,19 +838,28 @@ def _extract_party_name_near(lines: List[str], target_gstin: str, role_keywords:
                             break
                         cand = _clean_party_name(clean_lines[i - back])
                         if cand and not any(re.match(r"^(?:m/s|bill(?:ed)?\s*to|buyer)\b", clean_lines[k].lower()) for k in range(max(0, i - back - 2), i - back)):
-                            return cand
+                            return _with_top_brand_prefix(cand)
                 for fwd in range(1, 4):
                     if i + fwd < len(clean_lines):
                         cand = _clean_party_name(clean_lines[i + fwd])
                         if cand:
-                            return cand
+                            return _with_top_brand_prefix(cand)
 
     # 3. Top header fallback for seller
     if fallback_top:
-        for ln in clean_lines[:10]:
+        for idx, ln in enumerate(clean_lines[:10]):
             cand = _clean_party_name(ln)
             if cand:
-                return cand
+                if re.fullmatch(r"[A-Z][A-Z0-9&.\-]{2,15}", cand):
+                    for nxt_ln in clean_lines[idx + 1:idx + 6]:
+                        nxt_cand = _clean_party_name(nxt_ln)
+                        if nxt_cand and cand.lower() not in nxt_cand.lower() and re.match(
+                            r"^(?:cash\s+and\s+carry|wholesale|retail|india\s+ltd|private\s+ltd|pvt\.?\s*ltd)\b",
+                            nxt_cand,
+                            re.IGNORECASE,
+                        ):
+                            return f"{cand} {nxt_cand}"[:120]
+                return _with_top_brand_prefix(cand)
     return ""
 
 
@@ -1004,11 +1032,12 @@ def parse_document_text_to_canonical(
     qr_einvoice: Optional[Dict[str, Any]] = None,
     known_client_gstin: Optional[str] = None,
     direction_hint: str = "Auto",
+    qr_upi_meta: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Unified parser handling JSON VLM output, multi-page OTSL/HTML/Markdown tables, or plain OCR text."""
     obj = extract_json_object(raw_text)
     if obj and (obj.get("rows") or obj.get("invoiceNumber") or obj.get("invoiceTotal")):
-        return normalize_canonical_dict(obj, raw_text, qr_einvoice)
+        return normalize_canonical_dict(obj, raw_text, qr_einvoice, qr_upi_meta=qr_upi_meta)
 
     page_texts = [p.strip() for p in re.split(r"<!--\s*PAGE\s+BREAK\s*-->", raw_text or "", flags=re.IGNORECASE) if p.strip()]
     if not page_texts:
@@ -1073,6 +1102,18 @@ def parse_document_text_to_canonical(
                 continue
 
     rows = all_rows
+    if rows:
+        named_rows = [r for r in rows if (r.get("description") or "").strip()]
+        unnamed_summary_rows = [
+            r for r in rows
+            if not (r.get("description") or "").strip() and float(r.get("quantity") or 0.0) == 0.0 and float(r.get("rate") or 0.0) == 0.0
+        ]
+        if named_rows and unnamed_summary_rows and len(named_rows) + len(unnamed_summary_rows) == len(rows):
+            named_tx = round2(sum(float(r.get("taxable") or 0.0) for r in named_rows))
+            unnamed_tx = round2(sum(float(r.get("taxable") or 0.0) for r in unnamed_summary_rows))
+            if named_tx > 0 and abs(named_tx - unnamed_tx) <= 1.0:
+                rows = named_rows
+
     plain_lines_clean = [_strip_md(re.sub(r"\|+", " ", ln)) for ln in plain.splitlines()]
     plain_lines_clean = [ln for ln in plain_lines_clean if ln]
     plain_joined = "\n".join(plain_lines_clean)
@@ -1084,9 +1125,16 @@ def parse_document_text_to_canonical(
     header_scope_text = first_joined if len(page_texts) > 1 else plain_joined
     header_scope_lines = first_page_lines if len(page_texts) > 1 else plain_lines
 
-    gstins = find_gstins_in_text(header_scope_text, extra_candidates=[known_client_gstin] if known_client_gstin else None)
+    extra_gstin_hints: List[str] = []
+    if known_client_gstin:
+        extra_gstin_hints.append(known_client_gstin)
+    upi_seller_gstin = str((qr_upi_meta or {}).get("sellerGstin") or "").strip().upper()
+    if upi_seller_gstin and is_valid_gstin(upi_seller_gstin):
+        extra_gstin_hints.append(upi_seller_gstin)
+
+    gstins = find_gstins_in_text(header_scope_text, extra_candidates=extra_gstin_hints or None)
     if not gstins and len(page_texts) > 1:
-        gstins = find_gstins_in_text(plain_joined, extra_candidates=[known_client_gstin] if known_client_gstin else None)
+        gstins = find_gstins_in_text(plain_joined, extra_candidates=extra_gstin_hints or None)
     seller_gstin, buyer_gstin = resolve_seller_buyer(first_page_plain if len(page_texts) > 1 else plain, gstins, known_client_gstin, direction_hint)
     seller_name = _extract_party_name_near(header_scope_lines, seller_gstin, ("registered name", "supplier", "seller", "from:"), fallback_top=True)
     buyer_name = _extract_party_name_near(header_scope_lines, buyer_gstin, ("buyer (bill to)", "customer name", "party name", "buyer", "bill to", "billed to", "recipient", "customer", "consignee", "to:"), fallback_top=False)
@@ -1361,10 +1409,15 @@ def parse_document_text_to_canonical(
         "rows": rows,
         "rawTablesHtml": extract_html_tables(raw_text),
     }
-    return normalize_canonical_dict(raw_dict, raw_text, qr_einvoice)
+    return normalize_canonical_dict(raw_dict, raw_text, qr_einvoice, qr_upi_meta=qr_upi_meta)
 
 
-def normalize_canonical_dict(obj: Dict[str, Any], raw_text: str = "", qr_einvoice: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def normalize_canonical_dict(
+    obj: Dict[str, Any],
+    raw_text: str = "",
+    qr_einvoice: Optional[Dict[str, Any]] = None,
+    qr_upi_meta: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     seller_obj = obj.get("seller") if isinstance(obj.get("seller"), dict) else {}
     buyer_obj = obj.get("buyer") if isinstance(obj.get("buyer"), dict) else {}
     s_gstin_raw = seller_obj.get("gstin") or obj.get("sellerGstin") or ""
@@ -1384,6 +1437,8 @@ def normalize_canonical_dict(obj: Dict[str, Any], raw_text: str = "", qr_einvoic
         hsn = re.sub(r"[^0-9]", "", str(r.get("hsnSac") or r.get("hsn") or ""))
         qty = clean_num(r.get("quantity") or r.get("qty"))
         unit = str(r.get("unit") or "").strip()
+        if unit.lower() == "packel":
+            unit = "Packet"
         rate_price = clean_num(r.get("rate") or r.get("unitPrice"))
         disc = clean_num(r.get("discount"))
         taxable = clean_num(r.get("taxable") or r.get("taxableAmount"))
@@ -1498,8 +1553,18 @@ def normalize_canonical_dict(obj: Dict[str, Any], raw_text: str = "", qr_einvoic
         if qr_einvoice.get("TotInvVal"):
             inv_total = round2(clean_num(qr_einvoice["TotInvVal"]))
 
+    seller_name_val = str(seller_obj.get("name") or obj.get("sellerName") or "").strip()
+    if qr_upi_meta:
+        upi_g = str(qr_upi_meta.get("sellerGstin") or "").strip().upper()
+        if upi_g and is_valid_gstin(upi_g) and not is_valid_gstin(s_gstin) and upi_g != b_gstin:
+            s_gstin = upi_g
+        if not seller_name_val or not _clean_party_name(seller_name_val):
+            upi_payee = str(qr_upi_meta.get("payeeName") or "").strip()
+            if upi_payee:
+                seller_name_val = upi_payee
+
     canon = {
-        "seller": {"name": str(seller_obj.get("name") or obj.get("sellerName") or "").strip(), "gstin": s_gstin},
+        "seller": {"name": seller_name_val, "gstin": s_gstin},
         "buyer": {"name": str(buyer_obj.get("name") or obj.get("buyerName") or "").strip(), "gstin": b_gstin},
         "invoiceNumber": inv_no,
         "invoiceDate": inv_date,

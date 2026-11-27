@@ -264,12 +264,16 @@ def math_fitness(canon: Dict[str, Any]) -> tuple:
     )
 
 
-def merge_consensus(candidates: List[Dict[str, Any]], qr_einv: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def merge_consensus(
+    candidates: List[Dict[str, Any]],
+    qr_einv: Optional[Dict[str, Any]] = None,
+    qr_upi_meta: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """Math-aware consensus reconciliation across primary LightOnOCR-2-1B and escalated Qwen3-VL-4B."""
     if not candidates:
         return {}
     if len(candidates) == 1:
-        return normalize_canonical_dict(candidates[0], qr_einvoice=qr_einv)
+        return normalize_canonical_dict(candidates[0], qr_einvoice=qr_einv, qr_upi_meta=qr_upi_meta)
 
     ranked = sorted(candidates, key=math_fitness, reverse=True)
     best = json.loads(json.dumps(ranked[0]))
@@ -331,4 +335,4 @@ def merge_consensus(candidates: List[Dict[str, Any]], qr_einv: Optional[Dict[str
         if not best.get("rawTablesHtml") and c.get("rawTablesHtml"):
             best["rawTablesHtml"] = c["rawTablesHtml"]
 
-    return normalize_canonical_dict(best, qr_einvoice=qr_einv)
+    return normalize_canonical_dict(best, qr_einvoice=qr_einv, qr_upi_meta=qr_upi_meta)

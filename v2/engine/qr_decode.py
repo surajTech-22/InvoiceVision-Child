@@ -3,7 +3,9 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 from typing import Any, Dict, List, Optional
+from urllib.parse import parse_qs, urlparse
 
 import cv2
 import numpy as np
@@ -15,6 +17,34 @@ def decode_b64url(s: str) -> bytes:
     s = s.strip()
     pad = (-len(s)) % 4
     return base64.urlsafe_b64decode(s + ("=" * pad))
+
+
+def parse_upi_invoice_meta(raw_text: str) -> Optional[Dict[str, Any]]:
+    if not raw_text:
+        return None
+    s = raw_text.strip()
+    if not s.lower().startswith("upi://"):
+        return None
+    try:
+        parsed = urlparse(s)
+        qs = parse_qs(parsed.query, keep_blank_values=False)
+        lowered = {k.lower(): (v[0].strip() if v else "") for k, v in qs.items()}
+        gstin = re.sub(r"[^A-Za-z0-9]", "", lowered.get("gstin") or "").upper()
+        if not re.fullmatch(r"[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]", gstin):
+            gstin = ""
+        inv_no = (lowered.get("invoiceno") or lowered.get("tr") or "").strip()
+        payee = (lowered.get("pn") or "").strip()
+        amt = (lowered.get("am") or "").strip()
+        if not gstin and not inv_no:
+            return None
+        return {
+            "sellerGstin": gstin,
+            "payeeName": payee,
+            "invoiceNo": inv_no,
+            "amount": amt,
+        }
+    except Exception:
+        return None
 
 
 def parse_einvoice_jwt(raw_text: str) -> Optional[Dict[str, Any]]:
@@ -105,10 +135,11 @@ def _decode_single(image_path: str) -> Dict[str, Any]:
     seen_texts = set()
     einvoice: Optional[Dict[str, Any]] = None
     upi_codes: List[str] = []
+    upi_meta: Optional[Dict[str, Any]] = None
     decode_pass = None
 
     def try_region(region_name: str, region_bgr: np.ndarray) -> bool:
-        nonlocal einvoice, decode_pass
+        nonlocal einvoice, upi_meta, decode_pass
         for vname, var in _prep_variants(region_bgr):
             texts = _scan_array(var, qr_det)
             for t in texts:
@@ -117,6 +148,8 @@ def _decode_single(image_path: str) -> Dict[str, Any]:
                     raw_codes.append(t)
                     if t.strip().lower().startswith("upi://"):
                         upi_codes.append(t)
+                        if upi_meta is None:
+                            upi_meta = parse_upi_invoice_meta(t)
                 parsed = parse_einvoice_jwt(t)
                 if parsed and einvoice is None:
                     einvoice = parsed
@@ -148,6 +181,7 @@ def _decode_single(image_path: str) -> Dict[str, Any]:
     return {
         "raw_codes": raw_codes,
         "upi_codes": upi_codes,
+        "upi_meta": upi_meta,
         "einvoice": einvoice,
         "decode_pass": decode_pass,
     }
@@ -159,6 +193,7 @@ def decode_qr_from_image(image_path: str, extra_paths: Optional[List[str]] = Non
     all_raw: List[str] = []
     all_upi: List[str] = []
     einvoice: Optional[Dict[str, Any]] = None
+    upi_meta: Optional[Dict[str, Any]] = None
     decode_pass = None
     for r in results:
         for code in r["raw_codes"]:
@@ -167,6 +202,8 @@ def decode_qr_from_image(image_path: str, extra_paths: Optional[List[str]] = Non
         for code in r["upi_codes"]:
             if code not in all_upi:
                 all_upi.append(code)
+        if r.get("upi_meta") and upi_meta is None:
+            upi_meta = r["upi_meta"]
         if r["einvoice"] and einvoice is None:
             einvoice = r["einvoice"]
             decode_pass = r["decode_pass"]
@@ -175,6 +212,7 @@ def decode_qr_from_image(image_path: str, extra_paths: Optional[List[str]] = Non
         "einvoice_found": einvoice is not None,
         "decode_pass": decode_pass,
         "einvoice": einvoice,
+        "upi_meta": upi_meta,
         "raw_codes": all_raw,
         "upi_ignored_count": len(all_upi),
         "other_qr_count": max(0, len(all_raw) - len(all_upi) - (1 if einvoice else 0)),

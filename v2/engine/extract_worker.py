@@ -131,6 +131,7 @@ def run_extraction(args: argparse.Namespace) -> Dict[str, Any]:
                         qr_einvoice=qr_fast.get("einvoice"),
                         known_client_gstin=args.client_gstin,
                         direction_hint=args.direction,
+                        qr_upi_meta=qr_fast.get("upi_meta"),
                     )
                     fast_mem = apply_supplier_memory(fast_canon, getattr(args, "memory_db", "") or "")
                     fast_audit = fast_canon.get("_audit") or audit_invoice_math(fast_canon)
@@ -169,6 +170,7 @@ def run_extraction(args: argparse.Namespace) -> Dict[str, Any]:
 
     qr_info = decode_qr_from_image(str(raw_pages[0]), [str(p) for p in raw_pages[1:]])
     qr_einv = qr_info.get("einvoice")
+    qr_upi_meta = qr_info.get("upi_meta")
 
     emit_progress(args.progress, 15, f"Preprocessing {len(raw_pages)} page(s) (orientation + dewarp)...")
     prep_records = preprocess_pages_p2(
@@ -210,6 +212,7 @@ def run_extraction(args: argparse.Namespace) -> Dict[str, Any]:
             qr_einvoice=qr_einv,
             known_client_gstin=args.client_gstin,
             direction_hint=args.direction,
+            qr_upi_meta=qr_upi_meta,
         )
         memory_meta = apply_supplier_memory(canon_lighton, memory_db)
         final_canon = canon_lighton
@@ -278,7 +281,7 @@ def run_extraction(args: argparse.Namespace) -> Dict[str, Any]:
                     qwen_replies.append(reply)
 
             page_canons = [
-                parse_document_text_to_canonical(r, qr_einvoice=qr_einv, known_client_gstin=args.client_gstin, direction_hint=args.direction)
+                parse_document_text_to_canonical(r, qr_einvoice=qr_einv, known_client_gstin=args.client_gstin, direction_hint=args.direction, qr_upi_meta=qr_upi_meta)
                 for r in qwen_replies
             ]
             if len(page_canons) == 1:
@@ -301,10 +304,10 @@ def run_extraction(args: argparse.Namespace) -> Dict[str, Any]:
                         merged_obj["roundOff"] = pc.get("roundOff", 0.0)
                         merged_obj["creditNoteTotal"] = pc.get("creditNoteTotal", 0.0)
                         break
-                canon_qwen = normalize_canonical_dict(merged_obj, "\n\n".join(qwen_replies), qr_einv)
+                canon_qwen = normalize_canonical_dict(merged_obj, "\n\n".join(qwen_replies), qr_einv, qr_upi_meta=qr_upi_meta)
 
             if canon_lighton is not None:
-                final_canon = merge_consensus([canon_lighton, canon_qwen], qr_einv=qr_einv)
+                final_canon = merge_consensus([canon_lighton, canon_qwen], qr_einv=qr_einv, qr_upi_meta=qr_upi_meta)
                 engine_used = "Hybrid(LightOnOCR-2-1B+Qwen3-VL-4B)"
                 final_raw = combined_lighton + "\n\n===== QWEN3-VL-4B VERIFICATION =====\n" + "\n\n".join(qwen_replies)
             else:
