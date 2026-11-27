@@ -40,6 +40,19 @@ def _norm_name_tokens(name: str) -> str:
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
+_GENERIC_TRADE_WORDS = {
+    "MARKETING", "ENTERPRISES", "TRADERS", "TRADING", "AGENCIES",
+    "PRIVATE", "LIMITED", "PVT", "LTD", "CO", "COMPANY", "INDIA",
+    "STORES", "DISTRIBUTORS", "CORPORATION", "INDUSTRIES", "PRODUCTS",
+    "SOLUTIONS", "SERVICES", "AND",
+}
+
+
+def _distinctive_name_tokens(name: str) -> str:
+    tokens = [t for t in _norm_name_tokens(name).split() if t not in _GENERIC_TRADE_WORDS]
+    return " ".join(tokens)
+
+
 def _norm_hsn(hsn: str) -> str:
     digits = re.sub(r"\D", "", hsn or "")
     return digits[:8] if len(digits) >= 4 else ""
@@ -143,10 +156,10 @@ def lookup_supplier_profile(db_path: str, seller_gstin: str, seller_name: str = 
                 "SELECT * FROM supplier_profiles WHERE gstin = ?",
                 (norm_gstin,),
             ).fetchone()
-            if row is not None:
-                return _row_to_profile(conn, row)
+            return _row_to_profile(conn, row) if row is not None else None
 
         target_name = _norm_name_tokens(seller_name)
+        target_distinct = _distinctive_name_tokens(seller_name)
         if len(target_name) < 4:
             return None
 
@@ -163,6 +176,11 @@ def lookup_supplier_profile(db_path: str, seller_gstin: str, seller_name: str = 
                 if len(nn) < 4:
                     continue
                 score = difflib.SequenceMatcher(None, target_name, nn).ratio()
+                nn_distinct = _distinctive_name_tokens(n)
+                if len(target_distinct) >= 3 and len(nn_distinct) >= 3:
+                    d_score = difflib.SequenceMatcher(None, target_distinct, nn_distinct).ratio()
+                    if d_score < 0.88:
+                        continue
                 if score > best_score:
                     best_score = score
                     best_row = cand
@@ -352,6 +370,8 @@ def apply_supplier_memory(canon: Dict[str, Any], db_path: str) -> Dict[str, Any]
 
     profile = lookup_supplier_profile(db_path, seller_gstin, seller_name)
     if profile is None:
+        return meta
+    if is_valid_gstin(seller_gstin) and normalize_gstin(profile.get("gstin")) != seller_gstin:
         return meta
 
     meta["profileFound"] = True

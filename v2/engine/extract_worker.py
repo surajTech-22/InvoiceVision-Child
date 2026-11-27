@@ -135,8 +135,8 @@ def run_extraction(args: argparse.Namespace) -> Dict[str, Any]:
                     )
                     fast_mem = apply_supplier_memory(fast_canon, getattr(args, "memory_db", "") or "")
                     fast_audit = fast_canon.get("_audit") or audit_invoice_math(fast_canon)
-                    if fast_audit.get("fully_balanced"):
-                        emit_progress(args.progress, 96, "Cached multi-page stitch balanced cleanly.")
+                    if fast_canon and (fast_canon.get("rows") or fast_canon.get("invoiceNumber") or fast_canon.get("invoiceTotal")):
+                        emit_progress(args.progress, 96, "Cached multi-page stitch complete (no re-OCR).")
                         fast_canon.pop("_audit", None)
                         return {
                             "schema": "AAH-INVOICEVISION-WORKER-V1",
@@ -203,7 +203,7 @@ def run_extraction(args: argparse.Namespace) -> Dict[str, Any]:
         with LlamaServerSession(str(llama_server), str(lighton_model), str(lighton_mmproj), log_dir, threads=args.threads, repeat_penalty=1.12) as srv:
             for idx, p2_img in enumerate(p2_paths, 1):
                 emit_progress(args.progress, 35 + int(25 * idx / len(p2_paths)), f"LightOnOCR-2-1B reading page {idx}/{len(p2_paths)}...")
-                txt = srv.chat_image(img_to_data_url(str(p2_img)), LIGHTON_PROMPT, max_tokens=4096, timeout_s=360)
+                txt = srv.chat_image(img_to_data_url(str(p2_img)), LIGHTON_PROMPT, max_tokens=4096, timeout_s=600)
                 raw_texts_lighton.append(txt)
 
         combined_lighton = "\n\n<!-- PAGE BREAK -->\n\n".join(raw_texts_lighton)
@@ -275,7 +275,7 @@ def run_extraction(args: argparse.Namespace) -> Dict[str, Any]:
                         img_to_data_url(str(q_img)),
                         qwen_prompt,
                         max_tokens=2400,
-                        timeout_s=420,
+                        timeout_s=600,
                         json_schema=QWEN_INVOICE_JSON_SCHEMA,
                     )
                     qwen_replies.append(reply)
@@ -307,6 +307,8 @@ def run_extraction(args: argparse.Namespace) -> Dict[str, Any]:
                 canon_qwen = normalize_canonical_dict(merged_obj, "\n\n".join(qwen_replies), qr_einv, qr_upi_meta=qr_upi_meta)
 
             if canon_lighton is not None:
+                canon_lighton["_source"] = "lighton"
+                canon_qwen["_source"] = "qwen"
                 final_canon = merge_consensus([canon_lighton, canon_qwen], qr_einv=qr_einv, qr_upi_meta=qr_upi_meta)
                 engine_used = "Hybrid(LightOnOCR-2-1B+Qwen3-VL-4B)"
                 final_raw = combined_lighton + "\n\n===== QWEN3-VL-4B VERIFICATION =====\n" + "\n\n".join(qwen_replies)

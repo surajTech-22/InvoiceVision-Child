@@ -1027,6 +1027,24 @@ def _to_plain_text(txt: str) -> str:
     return soup.get_text("\n") if soup else cleaned
 
 
+def _repair_single_digit_qty_slip(qty: float, rate_price: float, disc: float, taxable: float) -> float:
+    """Repair a single-digit OCR slip on Qty (e.g. 160 -> 150) when Qty * Rate differs from Taxable."""
+    if (
+        qty > 0
+        and rate_price > 0
+        and taxable > 0
+        and disc == 0.0
+        and abs(qty * rate_price - taxable) > max(1.5, taxable * 0.01)
+    ):
+        implied_qty = taxable / rate_price
+        if implied_qty > 0 and abs(implied_qty - round(implied_qty)) <= 1e-4 and abs(qty - round(qty)) <= 1e-4:
+            s_old = str(int(round(qty)))
+            s_new = str(int(round(implied_qty)))
+            if len(s_old) == len(s_new) and sum(a != b for a, b in zip(s_old, s_new)) == 1:
+                return float(int(round(implied_qty)))
+    return qty
+
+
 def parse_document_text_to_canonical(
     raw_text: str,
     qr_einvoice: Optional[Dict[str, Any]] = None,
@@ -1200,11 +1218,15 @@ def parse_document_text_to_canonical(
         r"(?:Grand\s*Total|Invoice\s*Total|Total\s*Invoice\s*Value|Total\s*Payable)\s*[:\-]?\s*(?:INR|Rs\.?)?\s*([0-9,]+[.,]\d{2})",
         r"(?:^|\n)Total\b[^\n]{0,60}(?:₹|INR|Rs\.?)\s*([0-9,]+\.\d{2})",
     ]:
-        m = re.search(pat, rev_plain_clean, re.IGNORECASE)
-        if m:
-            inv_total = clean_num(m.group(1))
-            if inv_total > 0:
+        for m in re.finditer(pat, rev_plain_clean, re.IGNORECASE):
+            cand_val = clean_num(m.group(1))
+            if cand_val >= 1.0:
+                inv_total = cand_val
                 break
+            elif inv_total == 0.0 and cand_val > 0.0:
+                inv_total = cand_val
+        if inv_total >= 1.0:
+            break
 
     credit_note = 0.0
     m_cn = re.search(r"Credit\s*(?:Note|Adj/Payout)[^\d\n]{0,20}([0-9,]+\.\d{2})", rev_plain_clean, re.IGNORECASE)
@@ -1301,7 +1323,12 @@ def parse_document_text_to_canonical(
 
     if credit_note == 0.0 and summary_credit_note > 0:
         credit_note = round2(summary_credit_note)
-    if summary_net_payable > 0 and (inv_total == 0.0 or summary_credit_note > 0 or abs(inv_total - summary_net_payable) <= 1.0):
+    if summary_net_payable > 0 and (
+        inv_total == 0.0
+        or summary_credit_note > 0
+        or abs(inv_total - summary_net_payable) <= 1.0
+        or inv_total < summary_net_payable * 0.5
+    ):
         inv_total = round2(summary_net_payable)
 
     raw_only_rows = [r for r in rows if r.get("_raw_amt_only", 0.0) > 0]
@@ -1333,6 +1360,8 @@ def parse_document_text_to_canonical(
                 r["rate"] = round2((r["taxable"] + r["discount"]) / r["quantity"])
             elif r["discount"] > 0 and abs((r["quantity"] * r["rate"]) - r["taxable"]) <= max(1.5, r["taxable"] * 0.01):
                 r["rate"] = round2((r["taxable"] + r["discount"]) / r["quantity"])
+            else:
+                r["quantity"] = _repair_single_digit_qty_slip(r["quantity"], r["rate"], r["discount"], r["taxable"])
 
     # Single-row digit-slip repair via Net Amount - Tax & slab taxable summary cross-check
     for r in rows:
@@ -1377,6 +1406,13 @@ def parse_document_text_to_canonical(
                 row_item["cgst"] = half
                 row_item["sgst"] = half
                 row_item["lineTotal"] = round2(row_item["taxable"] + 2.0 * half)
+
+    expected_grand = round2(taxable_total + cgst_total + sgst_total + igst_total - credit_note) if taxable_total > 0 else 0.0
+    if expected_grand > 10.0 and (inv_total == 0.0 or inv_total < expected_grand * 0.25):
+        if summary_net_payable > 0 and abs(summary_net_payable - expected_grand) <= 2.0:
+            inv_total = round2(summary_net_payable)
+        elif footer_hints.get("table_total_last", 0.0) > 0 and abs(footer_hints["table_total_last"] - expected_grand) <= 2.0:
+            inv_total = round2(footer_hints["table_total_last"])
 
     if inv_total == 0.0 and taxable_total > 0:
         inv_total = round2(taxable_total + cgst_total + sgst_total + igst_total - credit_note + round_off)
@@ -1453,6 +1489,7 @@ def normalize_canonical_dict(
             taxable = round2(lt - (cgst + sgst + igst + cess))
         elif taxable == 0.0 and lt > 0 and gst_rate > 0:
             taxable = round2(lt / (1.0 + gst_rate / 100.0))
+        qty = _repair_single_digit_qty_slip(qty, rate_price, disc, taxable)
         if taxable > 0 and gst_rate > 0 and (cgst + sgst + igst) == 0.0:
             half = round2(taxable * gst_rate / 200.0)
             cgst = half

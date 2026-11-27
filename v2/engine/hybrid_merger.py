@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import difflib
 import json
 import os
 import socket
@@ -11,7 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import requests
-from gst_math import audit_invoice_math, is_valid_gstin
+from gst_math import audit_invoice_math, is_valid_gstin, round2
 from gst_parser import _clean_party_name, normalize_canonical_dict
 
 QWEN_INVOICE_JSON_PROMPT = """Extract all fields from this Indian GST Tax Invoice accurately as a single valid JSON object ONLY (no markdown explanation).
@@ -300,11 +301,27 @@ def merge_consensus(
                 best["buyer"]["name"] = nm
                 break
 
+    best_expected = round2(
+        float(best.get("taxableTotal") or 0.0)
+        + float(best.get("cgstTotal") or 0.0)
+        + float(best.get("sgstTotal") or 0.0)
+        + float(best.get("igstTotal") or 0.0)
+        + float(best.get("cessTotal") or 0.0)
+        - float(best.get("creditNoteTotal") or 0.0)
+    )
     for c in candidates:
         if float(best.get("invoiceTotal") or 0.0) <= 0.0 and float(c.get("invoiceTotal") or 0.0) > 0.0:
             best["invoiceTotal"] = c["invoiceTotal"]
             best["roundOff"] = c.get("roundOff", best.get("roundOff", 0.0))
             best["creditNoteTotal"] = c.get("creditNoteTotal", best.get("creditNoteTotal", 0.0))
+        elif (
+            best_expected > 10.0
+            and abs((best_expected + float(best.get("roundOff") or 0.0)) - float(best.get("invoiceTotal") or 0.0)) > 2.0
+            and float(c.get("invoiceTotal") or 0.0) > 0.0
+            and abs(float(c["invoiceTotal"]) - best_expected) <= 1.0
+        ):
+            best["invoiceTotal"] = c["invoiceTotal"]
+            best["roundOff"] = round2(float(c["invoiceTotal"]) - best_expected)
         best_tax_sum = float(best.get("cgstTotal") or 0.0) + float(best.get("sgstTotal") or 0.0) + float(best.get("igstTotal") or 0.0)
         cand_tax_sum = float(c.get("cgstTotal") or 0.0) + float(c.get("sgstTotal") or 0.0) + float(c.get("igstTotal") or 0.0)
         if best_tax_sum <= 0.0 and cand_tax_sum > 0.0 and float(best.get("invoiceTotal") or 0.0) > float(best.get("taxableTotal") or 0.0):
@@ -314,16 +331,35 @@ def merge_consensus(
 
     inv_votes: Counter = Counter()
     dt_votes: Counter = Counter()
+    inv_sources: Dict[str, str] = {}
     for c in candidates:
         w = 2 if math_fitness(c)[0] == 1 else 1
         ino = (c.get("invoiceNumber") or "").strip()
         idt = (c.get("invoiceDate") or "").strip()
         if ino:
             inv_votes[ino] += w
+            src = str(c.get("_source") or "")
+            if src:
+                inv_sources[src] = ino
         if len(idt) == 10 and idt[4] == "-":
             dt_votes[idt] += w
     if inv_votes:
-        best["invoiceNumber"] = inv_votes.most_common(1)[0][0]
+        top_inv = inv_votes.most_common(2)
+        if (
+            len(top_inv) == 2
+            and top_inv[0][1] == top_inv[1][1]
+            and "qwen" in inv_sources
+            and "lighton" in inv_sources
+            and inv_sources["qwen"] != inv_sources["lighton"]
+        ):
+            q_inv = inv_sources["qwen"]
+            l_inv = inv_sources["lighton"]
+            if abs(len(q_inv) - len(l_inv)) <= 1 and difflib.SequenceMatcher(None, q_inv.upper(), l_inv.upper()).ratio() >= 0.75:
+                best["invoiceNumber"] = q_inv
+            else:
+                best["invoiceNumber"] = top_inv[0][0]
+        else:
+            best["invoiceNumber"] = top_inv[0][0]
     if dt_votes:
         best["invoiceDate"] = dt_votes.most_common(1)[0][0]
 
