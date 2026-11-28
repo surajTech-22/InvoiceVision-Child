@@ -159,12 +159,19 @@ class LlamaServerSession:
             cmd.extend(["--mmproj", self.mmproj_path])
 
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        startupinfo = None
+        if os.name == "nt":
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = 0
         self._log_file = open(self.log_path, "w", encoding="utf-8", errors="replace")
         self.proc = subprocess.Popen(
             cmd,
+            stdin=subprocess.DEVNULL,
             stdout=self._log_file,
             stderr=subprocess.STDOUT,
             creationflags=creationflags,
+            startupinfo=startupinfo,
         )
 
         deadline = time.time() + 120

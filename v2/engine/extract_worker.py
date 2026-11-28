@@ -497,8 +497,13 @@ def main() -> int:
                         msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
                     port = _read_live_port()
                     if port <= 0:
+                        daemon_py = sys.executable
+                        if os.name == "nt":
+                            pw = Path(sys.executable).with_name("pythonw.exe")
+                            if pw.is_file():
+                                daemon_py = str(pw)
                         dcmd = [
-                            sys.executable, str(Path(__file__).resolve()),
+                            daemon_py, str(Path(__file__).resolve()),
                             "--daemon", "--idle-timeout", str(args.idle_timeout),
                             "--cache-dir", str(cache_dir),
                             "--threads", str(args.threads),
@@ -507,8 +512,8 @@ def main() -> int:
                             "--lighton-mmproj", str(lo_mmproj),
                             "--paddlex-cache", str(pdx_cache),
                         ]
-                        # Use CREATE_NO_WINDOW alone (combining DETACHED_PROCESS causes uv's python shim on Win11
-                        # to spawn a visible WindowsTerminal/conhost window when re-execing CPython).
+                        # pythonw.exe (SUBSYSTEM:WINDOWS) + CREATE_NO_WINDOW + SW_HIDE guarantees
+                        # Windows never allocates or flashes a cmd/WindowsTerminal console window.
                         cflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
                         si = None
                         if os.name == "nt":
@@ -519,6 +524,7 @@ def main() -> int:
                             dcmd,
                             stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL,
+                            stdin=subprocess.DEVNULL,
                             creationflags=cflags,
                             startupinfo=si,
                             close_fds=True,
