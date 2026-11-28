@@ -551,7 +551,16 @@ def _is_item_table_header(header_row: List[str]) -> bool:
     is_tax_summary = (
         "cgst 2.5" in joined
         or ("taxable value" in joined and "central gst" in joined)
-        or (has_hsn and "taxable" in joined and not has_desc and not any(k in joined for k in ("qty", "quantity", "units", "pcs", "rate", "mrp", "sku", "pack")))
+        or (
+            has_hsn
+            and "taxable" in joined
+            and not has_desc
+            and not any(k in joined for k in ("rate", "mrp", "sku", "pack", "price"))
+            and (
+                not any(k in joined for k in ("qty", "quantity", "units", "pcs"))
+                or any(k in joined for k in ("cgst", "sgst", "utgst", "igst"))
+            )
+        )
         or ("cgst %" in joined and "cgst amount" in joined and not any(k in joined for k in ("qty", "quantity", "rate", "product", "item", "particulars", "description")))
         or ("class" in joined and "total gst" in joined)
     )
@@ -565,9 +574,12 @@ def _is_tax_summary_table(rows_mat: List[List[str]]) -> bool:
     joined_hdr = " ".join(" ".join(r) for r in rows_mat[:2]).lower()
     joined = " ".join(" ".join(r) for r in rows_mat[:3]).lower()
     if ("hsn" in joined_hdr or "sac" in joined_hdr) and "taxable" in joined_hdr and not any(
-        k in joined_hdr for k in ("product", "item", "description", "particulars", "goods", "service", "qty", "quantity", "pcs", "units", "mrp", "sku", "pack")
+        k in joined_hdr for k in ("product", "item", "description", "particulars", "goods", "service", "mrp", "sku", "pack", "price")
     ):
-        if "rate" not in joined_hdr or any(k in joined_hdr for k in ("central gst", "state gst", "cgst", "sgst", "igst", "total tax")):
+        has_qty_hdr = any(k in joined_hdr for k in ("qty", "quantity", "pcs", "units"))
+        if ("rate" not in joined_hdr and (not has_qty_hdr or any(k in joined_hdr for k in ("cgst", "sgst", "igst", "utgst")))) or (
+            not has_qty_hdr and any(k in joined_hdr for k in ("central gst", "state gst", "cgst", "sgst", "igst", "total tax"))
+        ):
             return True
     if "hsn" in joined_hdr and ("central gst" in joined_hdr or "taxable value" in joined_hdr) and "rate" in joined_hdr and not any(k in joined_hdr for k in ("qty", "quantity", "sku", "mrp", "gross")):
         return True
@@ -623,13 +635,14 @@ def _try_parse_dual_stacked_itc_table(mat_norm: List[List[str]], data_start: int
     while i < len(mat_norm):
         r1 = mat_norm[i]
         r2 = mat_norm[i + 1] if i + 1 < len(mat_norm) else []
-        is_paired = len(r1) >= 12 and len(r2) >= 8 and not r2[0].strip() and not r2[1].strip()
-        if not re.search(r"\b\d{4,8}\b", " ".join(r1)) and not clean_num(r1[-1] if r1 else 0):
+        r2_hsn = r2[1].strip() if len(r2) > 1 and re.fullmatch(r"\d{4,8}", r2[1].strip()) else ""
+        is_paired = len(r1) >= 12 and len(r2) >= 8 and not r2[0].strip() and (not r2[1].strip() or bool(r2_hsn))
+        if not re.search(r"\b\d{4,8}\b", " ".join(r1)) and not r2_hsn and not clean_num(r1[-1] if r1 else 0):
             i += 1
             continue
         desc_cell = r1[desc_col].strip() if desc_col < len(r1) else ""
         hsn_m = re.search(r"\b(\d{6,8})\b", desc_cell)
-        hsn = hsn_m.group(1) if hsn_m else ""
+        hsn = hsn_m.group(1) if hsn_m else r2_hsn
         desc = re.sub(r"\|\s*\d+(?:\.\d+)?\s*[A-Za-z]+\b", "", desc_cell)
         desc = re.sub(r"\b\d{6,8}\b", "", desc).strip(" |")
         unit_cell = r1[uom_col].strip() if uom_col < len(r1) else ""

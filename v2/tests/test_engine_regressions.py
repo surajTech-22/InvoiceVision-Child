@@ -698,6 +698,70 @@ class EngineRegressionTests(unittest.TestCase):
             self.assertGreaterEqual(len(tsv["correctionsApplied"]), 2)
             self.assertIn("twoStageVerification", out["agentPipelineTrace"])
 
+    def test_009_itc_stacked_hsn_and_013_hsn_qty_summary_table(self) -> None:
+        raw_009 = f"""
+        <table>
+          <thead><tr><th>Original/Duplicate/Triplicate</th><th>TAX INVOICE</th><th>Page No: 1 of 1</th></tr></thead>
+          <tbody>
+            <tr><td>SRI GANGADHARESHWARA ENTERPRISE<br>KATHA NO.3801/10</td><td>CIN:</td><td>GSTIN: 29AAKPD6045LZZD</td></tr>
+            <tr><td>Billed To : BALAJI TRADING CO<br>GSTIN : {CLIENT_GSTIN}</td><td></td><td></td></tr>
+            <tr><td>Invoice No. : I/26-27/047899</td><td>Invoice Date: 31/10/2026</td><td></td></tr>
+          </tbody>
+        </table>
+        <table>
+          <thead><tr>
+            <th>#</th><th>Item Name<br>HSN</th><th>Qty in SUOM</th><th>UOM<br>Taxable Amt</th>
+            <th>MRP<br>CGST %</th><th>Rate<br>CGST Amt</th><th>Qty</th><th>GrossAmt<br>SGST%</th>
+            <th>Free<br>SGST Amt</th><th>Disc%</th><th>Disc.Amt</th><th>Other Disc</th><th>Tot.Tax</th><th>Amount</th>
+          </tr></thead>
+          <tbody>
+            <tr>
+              <td>1</td><td>AASHIRVAAD ATTA 2KG<br>11010000</td><td>[30.00KG</td><td>CFC<br>1516.46</td>
+              <td>116.00<br>2.50</td><td>1516.46<br>37.91</td><td>1.00</td><td>1516.46<br>2.50</td>
+              <td>0.00<br>37.91</td><td>0.00</td><td>0.00</td><td>0.00</td><td>75.82</td><td>1592.28</td>
+            </tr>
+            <tr>
+              <td>2</td><td>AASHIRVAAD SALT 1KG<br>25010010</td><td>[15.00KG</td><td>PAC<br>0.00</td>
+              <td>32.00<br>0.00</td><td>0.00<br>0.00</td><td>0.00</td><td>0.00<br>0.00</td>
+              <td>15.00<br>0.00</td><td>0.00</td><td>0.00</td><td>0.00</td><td>0.00</td><td>0.00</td>
+            </tr>
+          </tbody>
+        </table>
+        Net Amt Payable : 1592.28
+        """
+        c9 = gst_parser.parse_document_text_to_canonical(raw_009, known_client_gstin=CLIENT_GSTIN)
+        self.assertEqual(c9["seller"]["name"], "SRI GANGADHARESHWARA ENTERPRISE")
+        self.assertEqual(c9["seller"]["gstin"], "29AAKPD6045L2ZD")
+        self.assertEqual(len(c9["rows"]), 2)
+        self.assertTrue(c9["_audit"]["fully_balanced"], c9["_audit"]["blocking_issues"])
+
+        raw_013 = f"""
+        ## GANGANANDHI OIL TRADERS
+        GSTIN : 29AAMFG4322R1ZQ
+        **Buyer**: BALAJI TRADING CO. PV MARK
+        Party GSTIN : {CLIENT_GSTIN}
+        Invoice No: 62074
+        Dated : 05/11/2026
+        <table>
+          <thead><tr><th>Sl.</th><th>Particulars</th><th>HSN/SAC</th><th>GST %</th><th>Quantity</th><th>Rate</th><th>Amount</th></tr></thead>
+          <tbody><tr><td>1</td><td>SUNPURE SF 15 LTR/TIN</td><td>15121910</td><td>5</td><td>10 Nos</td><td>2323.81</td><td>23,238.10</td></tr></tbody>
+        </table>
+        <table>
+          <thead>
+            <tr><th rowspan="2">HSN/SAC</th><th rowspan="2">Quantity</th><th rowspan="2">Taxable Value</th><th colspan="2">CGST</th><th colspan="2">SGST</th><th rowspan="2">Total</th></tr>
+            <tr><th>%</th><th>Amount</th><th>%</th><th>Amount</th></tr>
+          </thead>
+          <tbody><tr><td>151219</td><td>10</td><td>23238.10</td><td>2.5%</td><td>580.95</td><td>2.5%</td><td>580.95</td><td></td></tr></tbody>
+        </table>
+        Rupees : Twenty Four Thousand Four Hundred Only
+        Bill Amount ₹ 24,400.00
+        """
+        c13 = gst_parser.parse_document_text_to_canonical(raw_013, known_client_gstin=CLIENT_GSTIN)
+        self.assertEqual(len(c13["rows"]), 1)
+        self.assertAlmostEqual(c13["taxableTotal"], 23238.10, places=2)
+        self.assertAlmostEqual(c13["invoiceTotal"], 24400.00, places=2)
+        self.assertTrue(c13["_audit"]["fully_balanced"], c13["_audit"]["blocking_issues"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -470,6 +470,28 @@ def main() -> int:
         cache_dir = Path(local_app) / "InvoiceVisionChild" / "Cache"
         cache_dir.mkdir(parents=True, exist_ok=True)
 
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _local_qwen_file_lock():
+        if os.name != "nt":
+            yield
+            return
+        import msvcrt
+
+        lock_f = cache_dir / "qwen_infer.lock"
+        fd = os.open(str(lock_f), os.O_CREAT | os.O_RDWR)
+        try:
+            msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+            yield
+        finally:
+            try:
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+            except Exception:
+                pass
+            os.close(fd)
+
     def _try_stage25_text_ai(payload_dict: Dict[str, Any]) -> bool:
         if mode not in ("auto", "hybrid"):
             return False
@@ -488,19 +510,20 @@ def main() -> int:
 
             emit_progress(args.progress, 68, "Stage 2.5 Text AI analyzing HTML structure & layout memory...")
             t_tx0 = time.perf_counter()
-            res = analyze_html_with_text_ai(
-                llama_server=llama_srv,
-                text_model=text_model,
-                raw_html=raw_pl,
-                base_canon=payload_dict.get("canonical"),
-                audit=audit_pl,
-                work_dir=Path(args.work_dir).resolve() if args.work_dir else out_path.parent,
-                qr_info=payload_dict.get("qrInfo") or {},
-                client_gstin=args.client_gstin,
-                direction=args.direction,
-                memory_db=args.memory_db,
-                threads=args.threads,
-            )
+            with _local_qwen_file_lock():
+                res = analyze_html_with_text_ai(
+                    llama_server=llama_srv,
+                    text_model=text_model,
+                    raw_html=raw_pl,
+                    base_canon=payload_dict.get("canonical"),
+                    audit=audit_pl,
+                    work_dir=Path(args.work_dir).resolve() if args.work_dir else out_path.parent,
+                    qr_info=payload_dict.get("qrInfo") or {},
+                    client_gstin=args.client_gstin,
+                    direction=args.direction,
+                    memory_db=args.memory_db,
+                    threads=args.threads,
+                )
             if res.get("fullyBalanced") or res.get("improved"):
                 payload_dict["canonical"] = res["canonical"]
                 payload_dict["audit"] = res["audit"]
@@ -523,18 +546,19 @@ def main() -> int:
         qwen_m = Path(args.qwen_model or defaults["qwen_model"])
         qwen_mm = Path(args.qwen_mmproj or defaults["qwen_mmproj"])
         t_esc0 = time.perf_counter()
-        apply_qwen_escalation_to_worker_payload(
-            payload_dict,
-            llama_server=llama_srv,
-            qwen_model=qwen_m,
-            qwen_mmproj=qwen_mm,
-            work_dir=Path(args.work_dir).resolve() if args.work_dir else out_path.parent,
-            client_gstin=args.client_gstin,
-            direction=args.direction,
-            memory_db=args.memory_db,
-            threads=args.threads,
-            progress_cb=(lambda pct, msg: emit_progress(args.progress, pct, msg)),
-        )
+        with _local_qwen_file_lock():
+            apply_qwen_escalation_to_worker_payload(
+                payload_dict,
+                llama_server=llama_srv,
+                qwen_model=qwen_m,
+                qwen_mmproj=qwen_mm,
+                work_dir=Path(args.work_dir).resolve() if args.work_dir else out_path.parent,
+                client_gstin=args.client_gstin,
+                direction=args.direction,
+                memory_db=args.memory_db,
+                threads=args.threads,
+                progress_cb=(lambda pct, msg: emit_progress(args.progress, pct, msg)),
+            )
         payload_dict["elapsedSec"] = round(float(payload_dict.get("elapsedSec") or 0.0) + (time.perf_counter() - t_esc0), 2)
         tmp_path = out_path.with_suffix(".json.tmp")
         tmp_path.write_text(json.dumps(payload_dict, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -615,16 +639,17 @@ def main() -> int:
             from hybrid_merger import apply_two_stage_cross_verify_to_worker_payload
 
             t_xv0 = time.perf_counter()
-            apply_two_stage_cross_verify_to_worker_payload(
-                payload_dict,
-                llama_server=llama_srv,
-                text_model=text_model,
-                work_dir=work_p,
-                client_gstin=args.client_gstin,
-                direction=args.direction,
-                memory_db=args.memory_db,
-                threads=args.threads,
-            )
+            with _local_qwen_file_lock():
+                apply_two_stage_cross_verify_to_worker_payload(
+                    payload_dict,
+                    llama_server=llama_srv,
+                    text_model=text_model,
+                    work_dir=work_p,
+                    client_gstin=args.client_gstin,
+                    direction=args.direction,
+                    memory_db=args.memory_db,
+                    threads=args.threads,
+                )
             payload_dict["elapsedSec"] = round(float(payload_dict.get("elapsedSec") or 0.0) + (time.perf_counter() - t_xv0), 2)
             tmp_path = out_path.with_suffix(".json.tmp")
             tmp_path.write_text(json.dumps(payload_dict, indent=2, ensure_ascii=False), encoding="utf-8")

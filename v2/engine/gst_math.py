@@ -97,6 +97,11 @@ def repair_gstin(raw: str | None, pan_hints: List[str] | None = None) -> Tuple[s
                 cand_with_pan = struct_fixed[:2] + p + struct_fixed[12:]
                 if is_valid_gstin(cand_with_pan):
                     return cand_with_pan, True, "pan_hint_fix"
+                # Repair entity char OCR confusion (e.g. 'Z'->'2', 'I'->'1') before mutating check char
+                if cand_with_pan[12] in L2D:
+                    cand_ent_fix = cand_with_pan[:12] + L2D[cand_with_pan[12]] + cand_with_pan[13:]
+                    if is_valid_gstin(cand_ent_fix):
+                        return cand_ent_fix, True, "pan_hint_entity_l2d"
                 # Also try check digit at pos 14 computed directly if first 14 chars are clean
                 if re.match(r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z$", cand_with_pan[:14]):
                     cand_chk = cand_with_pan[:14] + compute_gstin_check_char(cand_with_pan[:14])
@@ -133,7 +138,7 @@ def is_supported_gst_rate(rate: float) -> bool:
 
 
 PARTY_NOISE_PREFIX_RE = re.compile(
-    r"^(?:page\s+\d+|print\s+copy|pan(?:\s+no)?|fssai(?:\s+(?:no|lic))?|essai(?:\s+lic)?|gst(?:\s*(?:no|num|number))?|gstin(?:/uin)?|gstn(?:\s+no)?|state(?:\s+name|\s+code)?|"
+    r"^(?:page\s*(?:no\.?)?\s*\d*|print\s+copy|pan(?:\s+no)?|fssai(?:\s+(?:no|lic))?|essai(?:\s+lic)?|gst(?:\s*(?:no|num|number))?|gstin(?:/uin)?|gstn(?:\s+no)?|state(?:\s+name|\s+code)?|"
     r"phone|ph(?:\s+no)?|mob(?:ile)?|contact|email|e-?mail|tel\.?\s*/\s*email|cin|van|beat|order\s*(?:no|number)|customer\s+order|dse\s+name|"
     r"salesperson|vehicle(?:\s*(?:no|num|number))?|ud(?:ay|y)?am(?:\s*(?:no|num|number|reg))?|msme(?:\s*(?:no|num|number))?|khatha\s+(?:no|number)|pid|mkt|eway|e-?way|irn|tkn|ack\.?\s*(?:no|date)|e-?inv|from|to|buyer(?:\s*\(bill\s*to\))?|"
     r"sn\.?|sl\.?\s*no|sr\.?\s*no|product(?:\s+name)?|particulars|description\s+of\s+goods|item\s+name|hsn(?:/sac)?|qty|quantity|mrp|amount|"
@@ -154,7 +159,7 @@ ADDRESS_HINT_RE = re.compile(
 )
 
 BUSINESS_KEYWORD_RE = re.compile(
-    r"\b(?:enterprises|traders|trading|marketing|distributors|agencies|agro|foods|pvt\s+ltd|private\s+limited|llp|limited|ltd\.?|inc\.?|corp\.?|company|wholesale|retail|cash\s+and\s+carry|stores|industries)\b",
+    r"\b(?:enterprises?|traders|trading|marketing|distributors|agencies|agro|foods|pvt\s+ltd|private\s+limited|llp|limited|ltd\.?|inc\.?|corp\.?|company|wholesale|retail|cash\s+and\s+carry|stores|industries)\b",
     re.IGNORECASE,
 )
 

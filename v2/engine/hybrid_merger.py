@@ -832,7 +832,7 @@ def analyze_html_with_text_ai(
     )
 
     log_dir = work_dir / "logs"
-    with LlamaServerSession(str(llama_server), str(text_model), None, log_dir, threads=threads, ctx=4096) as srv:
+    with LlamaServerSession(str(llama_server), str(text_model), None, log_dir, threads=threads, ctx=8192) as srv:
         reply = srv.chat_text(
             TEXT_ANALYZER_SYSTEM_PROMPT,
             user_prompt,
