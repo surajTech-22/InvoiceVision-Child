@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 import queue
+import re
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -33,7 +34,7 @@ from category_agents import (
     persist_learned_agent_memories,
 )
 from gst_math import audit_invoice_math, run_parallel_category_audits
-from gst_parser import normalize_canonical_dict
+from gst_parser import clean_num, normalize_canonical_dict, parse_document_text_to_canonical
 from hybrid_merger import LlamaServerSession, apply_qwen_escalation_to_worker_payload, img_to_data_url
 from preprocess import configure_isolated_paddlex, crop_footer_strip, preprocess_pages_p2, render_input_to_images
 from qr_decode import decode_qr_from_image
@@ -80,12 +81,14 @@ class ManagerAgent:
         threads: int = 10,
         subagent_workers: int = 6,
         progress_cb: Optional[Callable[[str, str, Dict[str, Any]], None]] = None,
+        daemon_log_dir: Optional[Path] = None,
     ) -> None:
         self.llama_server = Path(llama_server)
         self.lighton_model = Path(lighton_model)
         self.lighton_mmproj = Path(lighton_mmproj)
         self.paddlex_cache = Path(paddlex_cache)
         self.cache_dir = Path(cache_dir)
+        self.daemon_log_dir = Path(daemon_log_dir) if daemon_log_dir else None
         self.ocr_cache_dir = self.cache_dir / "ocr_cache"
         self.ocr_cache_dir.mkdir(parents=True, exist_ok=True)
         self.threads = max(2, int(threads))
@@ -158,11 +161,13 @@ class ManagerAgent:
     def _ensure_ocr_session(self, log_dir: Path) -> LlamaServerSession:
         with self._server_lock:
             if self._ocr_session is None:
+                eff_log_dir = self.daemon_log_dir or log_dir
+                eff_log_dir.mkdir(parents=True, exist_ok=True)
                 sess = LlamaServerSession(
                     str(self.llama_server),
                     str(self.lighton_model),
                     str(self.lighton_mmproj),
-                    log_dir,
+                    eff_log_dir,
                     threads=self.threads,
                     ctx=16384 * self.llama_parallel,
                     repeat_penalty=1.12,
@@ -355,26 +360,37 @@ class ManagerAgent:
         )
         return {"idx": idx, "text": txt, "finish_reason": fr, "truncated": tr, "cached": False}
 
-    def repair_footer_strip(self, invoice_id: str, p2_img_path: Path, work_dir: Path) -> str:
-        """Spawn a fast targeted Stage-2 child OCR call on the bottom 50% footer strip on truncation."""
+    def repair_footer_strip(
+        self,
+        invoice_id: str,
+        p2_img_path: Path,
+        work_dir: Path,
+        top_ratio: float = 0.48,
+        max_tokens: int = 1200,
+        prompt: Optional[str] = None,
+        child_name: str = "visual_ocr_footer_strip_child",
+    ) -> str:
+        """Spawn a fast targeted Stage-2 child OCR call on a bottom footer strip."""
         t0 = time.perf_counter()
-        strip_path = work_dir / "preprocessed" / f"{p2_img_path.stem}_footer_strip.png"
-        cropped = crop_footer_strip(p2_img_path, strip_path, top_ratio=0.48)
+        tag = f"{int(round(top_ratio * 100))}"
+        strip_path = work_dir / "preprocessed" / f"{p2_img_path.stem}_footer_strip_{tag}.png"
+        cropped = crop_footer_strip(p2_img_path, strip_path, top_ratio=top_ratio)
+        eff_prompt = prompt or "Extract the tax breakdown table, CGST, SGST, IGST, round off, grand total, and amount in words from this invoice bottom section."
         with self._lighton_inference_slot():
             srv = self._ensure_ocr_session(work_dir / "logs")
             res = srv.chat_image_stream(
                 img_to_data_url(str(cropped)),
-                "Extract the tax breakdown table, CGST, SGST, IGST, round off, grand total, and amount in words from this invoice bottom section.",
-                max_tokens=1200,
+                eff_prompt,
+                max_tokens=max_tokens,
                 timeout_s=180,
             )
         txt = str(res.get("text") or "")
         self.tracker.record_child_agent(
             invoice_id,
             "VISUAL_OCR",
-            "visual_ocr_footer_strip_child",
+            child_name,
             (time.perf_counter() - t0) * 1000.0,
-            detail={"chars": len(txt), "finishReason": res.get("finish_reason", "")},
+            detail={"chars": len(txt), "finishReason": res.get("finish_reason", ""), "topRatio": top_ratio},
         )
         return txt
 
@@ -543,9 +559,16 @@ class ManagerAgent:
 
                 # Fast Stage-2 footer-strip child recovery before considering heavier escalation
                 issues_low = " ".join(audit.get("blocking_issues") or []).lower()
+                raw_low = (ctx.raw_ocr_text or "").lower()
                 if (
                     not audit.get("fully_balanced")
-                    and (is_trunc or audit.get("truncated") or "printed grand total" in issues_low or "truncated mid-table" in issues_low)
+                    and (
+                        is_trunc
+                        or audit.get("truncated")
+                        or "printed grand total" in issues_low
+                        or "truncated mid-table" in issues_low
+                        or ("tax sum" in issues_low and "incl" in raw_low)
+                    )
                     and pkt.get("p2_paths")
                     and not pkt.get("cache_hit")
                 ):
@@ -573,6 +596,69 @@ class ManagerAgent:
                             qr_einvoice=qr_einv,
                             truncated=False,
                         )
+                        issues_low = " ".join(audit.get("blocking_issues") or []).lower()
+                        raw_low = (ctx.raw_ocr_text or "").lower()
+
+                # Verify whole-rupee Net Payable box via bottom 28% strip if Amount-in-Words is exact whole rupees
+                # while extracted invoiceTotal kept paise and no explicit Round Off line was detected.
+                amt_w = float(audit.get("amount_in_words") or 0.0)
+                inv_t = float(ctx.canonical.get("invoiceTotal") or 0.0)
+                ro_v = float(ctx.canonical.get("roundOff") or 0.0)
+                if (
+                    amt_w > 0.0
+                    and abs(amt_w - round(amt_w)) < 0.001
+                    and 0.04 <= abs(inv_t - amt_w) <= 0.99
+                    and "round off" not in raw_low
+                    and "round-off" not in raw_low
+                    and "rounding" not in raw_low
+                    and pkt.get("p2_paths")
+                ):
+                    np_txt = self.repair_footer_strip(
+                        job.invoice_id,
+                        Path(pkt["p2_paths"][-1]),
+                        Path(job.work_dir),
+                        top_ratio=0.72,
+                        max_tokens=500,
+                        prompt="Extract only the Tax Summary bottom Total row (especially Net Payable Amt), Round Off, Grand Total, and Amount in words accurately.",
+                        child_name="visual_ocr_net_payable_child",
+                    )
+                    if np_txt.strip():
+                        np_canon = parse_document_text_to_canonical(
+                            np_txt,
+                            qr_einvoice=qr_einv,
+                            known_client_gstin=job.client_gstin,
+                            direction_hint=job.direction,
+                            qr_upi_meta=qr_upi,
+                        )
+                        strip_tot = float(np_canon.get("invoiceTotal") or 0.0)
+                        target_whole = int(round(amt_w))
+                        # Also match printed whole-rupee Net Payable cell (e.g. 23,851.00 or 23851.00) if partial strip header lacked column label
+                        if abs(strip_tot - amt_w) > 0.01:
+                            for m_num in re.finditer(r"(?<![\d.])([0-9][0-9,]*)\.00\b", np_txt):
+                                if int(m_num.group(1).replace(",", "")) == target_whole:
+                                    strip_tot = float(target_whole)
+                                    break
+                        if strip_tot > 0 and abs(strip_tot - amt_w) <= 0.01:
+                            tx_v = float(ctx.canonical.get("taxableTotal") or 0.0)
+                            cg_v = float(ctx.canonical.get("cgstTotal") or 0.0)
+                            sg_v = float(ctx.canonical.get("sgstTotal") or 0.0)
+                            ig_v = float(ctx.canonical.get("igstTotal") or 0.0)
+                            cs_v = float(ctx.canonical.get("cessTotal") or 0.0)
+                            cn_v = float(ctx.canonical.get("creditNoteTotal") or 0.0)
+                            ctx.canonical["invoiceTotal"] = round(strip_tot, 2)
+                            ctx.canonical["roundOff"] = round(strip_tot - (tx_v + cg_v + sg_v + ig_v + cs_v - cn_v), 2)
+                            ctx.raw_ocr_text = (ctx.raw_ocr_text or "") + "\n\n<!-- NET PAYABLE VERIFY -->\n" + np_txt.strip()
+                            ctx.canonical = normalize_canonical_dict(ctx.canonical, ctx.raw_ocr_text, qr_einv, qr_upi_meta=qr_upi)
+                            audit, audit_children = run_parallel_category_audits(
+                                ctx.canonical,
+                                categories,
+                                pool=self._audit_pool,
+                                bus=self.bus,
+                                invoice_id=job.invoice_id,
+                                pass_no=ctx.pass_no,
+                                qr_einvoice=qr_einv,
+                                truncated=is_trunc,
+                            )
 
                 # Pass 2 targeted self-correction via direct PeerBus CorrectionDirectives + selective re-audit
                 if not audit.get("fully_balanced"):
@@ -666,7 +752,7 @@ class ManagerAgent:
                 saved_agents: List[str] = []
                 if job.memory_db:
                     if audit.get("fully_balanced"):
-                        memory_meta = apply_supplier_memory(canon, str(job.memory_db))
+                        memory_meta = apply_supplier_memory(canon, str(job.memory_db), client_gstin=job.client_gstin)
                         saved_agents = persist_learned_agent_memories(ctx)
                     else:
                         memory_meta["skippedReason"] = "audit_not_balanced"
@@ -766,8 +852,11 @@ def serve_warm_daemon(
     idle_timeout_s: float = 45.0,
 ) -> int:
     """Keep ManagerAgent + warm LightOnOCR-2-1B alive across C# ExtractionQueue calls and auto-exit when idle."""
+    if manager.daemon_log_dir is None:
+        manager.daemon_log_dir = manager.cache_dir / "logs"
     activity_lock = threading.Lock()
     last_activity = [time.monotonic()]
+    active_escalations = [0]
     stop_event = threading.Event()
 
     def touch() -> None:
@@ -819,6 +908,10 @@ def serve_warm_daemon(
                 stop_event.set()
                 return
             if self.path == "/escalate-qwen":
+                with activity_lock:
+                    active_escalations[0] += 1
+                    last_activity[0] = time.monotonic()
+                t_esc0 = time.perf_counter()
                 try:
                     req = json.loads(raw.decode("utf-8"))
                     out_p = Path(req["workerOutput"])
@@ -835,16 +928,24 @@ def serve_warm_daemon(
                             memory_db=str(req.get("memoryDb") or ""),
                             threads=manager.threads,
                         )
-                    wo["elapsedSec"] = round(float(wo.get("elapsedSec") or 0.0) + float(req.get("waitOffsetSec") or 0.0), 2)
+                    wo["elapsedSec"] = round(
+                        float(wo.get("elapsedSec") or 0.0)
+                        + (time.perf_counter() - t_esc0)
+                        + float(req.get("waitOffsetSec") or 0.0),
+                        2,
+                    )
                     tmp_out = out_p.with_suffix(".json.tmp")
                     tmp_out.write_text(json.dumps(wo, indent=2, ensure_ascii=False), encoding="utf-8")
                     os.replace(tmp_out, out_p)
-                    touch()
                     body = json.dumps({"ok": True, "engineUsed": wo["engineUsed"], "balanced": bool((wo["audit"] or {}).get("fully_balanced"))}).encode("utf-8")
                     self.send_response(200)
                 except Exception as ex:
                     body = json.dumps({"ok": False, "error": str(ex)}).encode("utf-8")
                     self.send_response(500)
+                finally:
+                    with activity_lock:
+                        active_escalations[0] = max(0, active_escalations[0] - 1)
+                        last_activity[0] = time.monotonic()
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
@@ -901,7 +1002,8 @@ def serve_warm_daemon(
             srv.handle_request()
             with activity_lock:
                 idle_for = time.monotonic() - last_activity[0]
-            if idle_for >= idle_timeout_s and manager._pending_count == 0:
+                esc_active = active_escalations[0]
+            if idle_for >= idle_timeout_s and manager._pending_count == 0 and esc_active == 0:
                 break
     finally:
         try:

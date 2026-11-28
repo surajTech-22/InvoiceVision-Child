@@ -341,6 +341,7 @@ def main() -> int:
             paddlex_cache=pdx_cache,
             cache_dir=cache_dir,
             threads=args.threads,
+            daemon_log_dir=cache_dir / "logs",
         )
         return serve_warm_daemon(mgr, cache_dir / "warm_daemon.json", idle_timeout_s=args.idle_timeout)
 
@@ -398,6 +399,7 @@ def main() -> int:
     def _escalate_payload_locally(payload_dict: Dict[str, Any]) -> Dict[str, Any]:
         qwen_m = Path(args.qwen_model or defaults["qwen_model"])
         qwen_mm = Path(args.qwen_mmproj or defaults["qwen_mmproj"])
+        t_esc0 = time.perf_counter()
         apply_qwen_escalation_to_worker_payload(
             payload_dict,
             llama_server=llama_srv,
@@ -410,6 +412,7 @@ def main() -> int:
             threads=args.threads,
             progress_cb=(lambda pct, msg: emit_progress(args.progress, pct, msg)),
         )
+        payload_dict["elapsedSec"] = round(float(payload_dict.get("elapsedSec") or 0.0) + (time.perf_counter() - t_esc0), 2)
         tmp_path = out_path.with_suffix(".json.tmp")
         tmp_path.write_text(json.dumps(payload_dict, indent=2, ensure_ascii=False), encoding="utf-8")
         os.replace(tmp_path, out_path)

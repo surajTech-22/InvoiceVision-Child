@@ -58,6 +58,9 @@ def repair_gstin(raw: str | None, pan_hints: List[str] | None = None) -> Tuple[s
         return s, False, f"bad_len_{len(s)}"
     if is_valid_gstin(s):
         return s, True, "exact"
+    # Reject purely numeric 15-digit IDs (e.g. e-Invoice Ack No / phone / barcode) so D2L never fabricates fake GSTINs
+    if s.isdigit() or sum(1 for ch in s[2:7] if ch.isalpha()) < 2:
+        return s, False, "not_gstin_pattern"
 
     chars = list(s)
     for i in (0, 1, 7, 8, 9, 10):

@@ -80,7 +80,7 @@ def parse_einvoice_jwt(raw_text: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _scan_array(img_bgr: np.ndarray, qr_det: cv2.QRCodeDetector) -> List[str]:
+def _scan_array(img_bgr: np.ndarray, qr_det: cv2.QRCodeDetector, use_cv2: bool = True) -> List[str]:
     found: List[str] = []
     try:
         for res in zxingcpp.read_barcodes(img_bgr, try_rotate=True, try_downscale=True):
@@ -88,6 +88,8 @@ def _scan_array(img_bgr: np.ndarray, qr_det: cv2.QRCodeDetector) -> List[str]:
                 found.append(res.text)
     except Exception:
         pass
+    if not use_cv2 or found:
+        return found
     try:
         ok, decoded_info, _, _ = qr_det.detectAndDecodeMulti(img_bgr)
         if ok and decoded_info is not None:
@@ -145,7 +147,7 @@ def _decode_single(image_path: str) -> Dict[str, Any]:
         for vname, var in _prep_variants(region_bgr, heavy=heavy):
             if stop_event.is_set():
                 return False
-            texts = _scan_array(var, qr_det)
+            texts = _scan_array(var, qr_det, use_cv2=(not heavy))
             for t in texts:
                 parsed = parse_einvoice_jwt(t)
                 with state_lock:
@@ -178,11 +180,11 @@ def _decode_single(image_path: str) -> Dict[str, Any]:
             for f in [pool.submit(try_region, rn, reg, False) for rn, reg in quads]:
                 f.result()
             if not stop_event.is_set():
-                # Wave 2: upscaled/otsu pass on natural orientation quadrants
+                # Wave 2: upscaled/otsu zxingcpp pass on corner quadrants
                 for f in [pool.submit(try_region, rn, reg, True) for rn, reg in quads[:4]]:
                     f.result()
-            if not stop_event.is_set():
-                # Wave 3: 90/270/180 rotated quadrants with heavy upscaling ONLY if e-Invoice QR wasn't found upright
+            if not stop_event.is_set() and "zxingcpp" not in globals():
+                # Wave 3: rotated quadrants fallback ONLY when zxingcpp native try_rotate is unavailable
                 rot_tasks: List[tuple] = []
                 for rot_name, k in [("rot90", 1), ("rot270", 3), ("rot180", 2)]:
                     rot_img = np.rot90(img_bgr, k).copy()

@@ -234,11 +234,14 @@ def _row_to_profile(conn: sqlite3.Connection, row: sqlite3.Row) -> Dict[str, Any
     }
 
 
-def lookup_supplier_profile(db_path: str, seller_gstin: str, seller_name: str = "") -> Optional[Dict[str, Any]]:
+def lookup_supplier_profile(db_path: str, seller_gstin: str, seller_name: str = "", client_gstin: str = "") -> Optional[Dict[str, Any]]:
     if not db_path or not Path(db_path).is_file():
         return None
     ensure_memory_db(db_path)
     norm_gstin = normalize_gstin(seller_gstin)
+    client_norm = normalize_gstin(client_gstin)
+    if client_norm and norm_gstin == client_norm:
+        return None
     with _connect(db_path) as conn:
         if is_valid_gstin(norm_gstin):
             row = conn.execute(
@@ -255,6 +258,8 @@ def lookup_supplier_profile(db_path: str, seller_gstin: str, seller_name: str = 
         best_row = None
         best_score = 0.0
         for cand in conn.execute("SELECT * FROM supplier_profiles").fetchall():
+            if client_norm and normalize_gstin(cand["gstin"]) == client_norm:
+                continue
             names = [str(cand["canonical_name"] or "")]
             try:
                 names.extend(str(a) for a in json.loads(cand["aliases_json"] or "[]"))
@@ -290,10 +295,14 @@ def record_supplier_learning(
     example_canonical: Optional[Dict[str, Any]] = None,
     invoice_number: str = "",
     field_diffs: Optional[Dict[str, Any]] = None,
+    client_gstin: str = "",
 ) -> Dict[str, Any]:
     if not db_path:
         return {"saved": False, "reason": "No memoryDbPath provided."}
     norm_gstin = normalize_gstin(gstin)
+    client_norm = normalize_gstin(client_gstin)
+    if client_norm and norm_gstin == client_norm:
+        return {"saved": False, "reason": "Skipped: client's own GSTIN cannot be saved as a supplier profile."}
     if not is_valid_gstin(norm_gstin):
         return {"saved": False, "reason": f"Valid 15-char GSTIN required (got '{gstin}')."}
 
@@ -439,10 +448,11 @@ def _find_learned_hsn_rate(hsn_map: Dict[str, float], raw_hsn: str) -> Optional[
     return None
 
 
-def apply_supplier_memory(canon: Dict[str, Any], db_path: str) -> Dict[str, Any]:
+def apply_supplier_memory(canon: Dict[str, Any], db_path: str, client_gstin: str = "") -> Dict[str, Any]:
     seller = canon.get("seller") or {}
     buyer = canon.get("buyer") or {}
     seller_gstin = normalize_gstin(str(seller.get("gstin") or ""))
+    client_norm = normalize_gstin(client_gstin)
     seller_name = str(seller.get("name") or "").strip()
 
     meta: Dict[str, Any] = {
@@ -454,10 +464,10 @@ def apply_supplier_memory(canon: Dict[str, Any], db_path: str) -> Dict[str, Any]
         "preferredRecognitionMode": "",
         "appliedRules": [],
     }
-    if not db_path:
+    if not db_path or (client_norm and seller_gstin == client_norm):
         return meta
 
-    profile = lookup_supplier_profile(db_path, seller_gstin, seller_name)
+    profile = lookup_supplier_profile(db_path, seller_gstin, seller_name, client_gstin=client_norm)
     if profile is None:
         return meta
     if is_valid_gstin(seller_gstin) and normalize_gstin(profile.get("gstin")) != seller_gstin:
@@ -495,6 +505,11 @@ def apply_supplier_memory(canon: Dict[str, Any], db_path: str) -> Dict[str, Any]
     )
 
     hsn_map = profile.get("hsnRates") or {}
+    inv_total_v = float(canon.get("invoiceTotal") or 0.0)
+    lt_sum_v = sum(float(r.get("lineTotal") or 0.0) for r in (canon.get("rows") or []))
+    is_incl_doc = bool(profile.get("taxInclusiveHint")) or (
+        inv_total_v > 0.0 and abs(lt_sum_v - inv_total_v) <= max(2.0, inv_total_v * 0.015)
+    )
     hsn_hits = 0
     for row in canon.get("rows") or []:
         tx = float(row.get("taxable") or 0.0)
@@ -508,7 +523,18 @@ def apply_supplier_memory(canon: Dict[str, Any], db_path: str) -> Dict[str, Any]
         hsn_hits += 1
         changed = True
         if learned_rate > 0.0 and float(row.get("cgst") or 0.0) == 0.0 and float(row.get("sgst") or 0.0) == 0.0 and float(row.get("igst") or 0.0) == 0.0:
-            if is_interstate:
+            if is_incl_doc:
+                lt_v = float(row.get("lineTotal") or tx)
+                tx_new = round(lt_v / (1.0 + learned_rate / 100.0), 2)
+                row["taxable"] = tx_new
+                if is_interstate:
+                    row["igst"] = round(lt_v - tx_new, 2)
+                else:
+                    half = round(tx_new * learned_rate / 200.0, 2)
+                    row["cgst"] = half
+                    row["sgst"] = half
+                row["lineTotal"] = round(lt_v, 2)
+            elif is_interstate:
                 igst = round(tx * learned_rate / 100.0, 2)
                 row["igst"] = igst
                 row["lineTotal"] = round(tx + igst, 2)
@@ -533,8 +559,8 @@ def apply_supplier_memory(canon: Dict[str, Any], db_path: str) -> Dict[str, Any]
     return meta
 
 
-def build_few_shot_prompt_hint(db_path: str, seller_gstin: str, seller_name: str = "") -> str:
-    profile = lookup_supplier_profile(db_path, seller_gstin, seller_name)
+def build_few_shot_prompt_hint(db_path: str, seller_gstin: str, seller_name: str = "", client_gstin: str = "") -> str:
+    profile = lookup_supplier_profile(db_path, seller_gstin, seller_name, client_gstin=client_gstin)
     if profile is None:
         return ""
     lines = [

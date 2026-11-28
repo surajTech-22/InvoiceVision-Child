@@ -537,7 +537,10 @@ def merge_consensus(
             best["roundOff"] = round2(float(c["invoiceTotal"]) - best_expected)
         best_tax_sum = float(best.get("cgstTotal") or 0.0) + float(best.get("sgstTotal") or 0.0) + float(best.get("igstTotal") or 0.0)
         cand_tax_sum = float(c.get("cgstTotal") or 0.0) + float(c.get("sgstTotal") or 0.0) + float(c.get("igstTotal") or 0.0)
-        if best_tax_sum <= 0.0 and cand_tax_sum > 0.0 and float(best.get("invoiceTotal") or 0.0) > float(best.get("taxableTotal") or 0.0):
+        if best_tax_sum <= 0.0 and cand_tax_sum > 0.0 and (
+            float(best.get("invoiceTotal") or 0.0) > float(best.get("taxableTotal") or 0.0)
+            or float(c.get("invoiceTotal") or 0.0) > float(best.get("taxableTotal") or 0.0)
+        ):
             best["cgstTotal"] = c.get("cgstTotal", 0.0)
             best["sgstTotal"] = c.get("sgstTotal", 0.0)
             best["igstTotal"] = c.get("igstTotal", 0.0)
@@ -611,6 +614,7 @@ def escalate_with_qwen(
         memory_db,
         str(seller_obj.get("gstin") or ""),
         str(seller_obj.get("name") or ""),
+        client_gstin=client_gstin,
     )
     qwen_prompt = QWEN_INVOICE_JSON_PROMPT + few_shot_hint
 
@@ -676,7 +680,7 @@ def escalate_with_qwen(
         engine_used = "Qwen3-VL-4B-P2"
         final_raw = "\n\n".join(qwen_replies)
 
-    memory_meta = apply_supplier_memory(final_canon, memory_db)
+    memory_meta = apply_supplier_memory(final_canon, memory_db, client_gstin=client_gstin)
     audit = final_canon.pop("_audit", None) or audit_invoice_math(final_canon, raw_text=final_raw, qr_einvoice=qr_einv)
     return {
         "canonical": final_canon,

@@ -7,9 +7,9 @@
     <StartupObject>InvoiceVisionChild.App.App</StartupObject>
     <AssemblyName>InvoiceVisionChild</AssemblyName>
     <RootNamespace>InvoiceVisionChild.App</RootNamespace>
-    <Version>2.8.0</Version>
-    <AssemblyVersion>2.8.0.0</AssemblyVersion>
-    <FileVersion>2.8.0.0</FileVersion>
+    <Version>2.8.1</Version>
+    <AssemblyVersion>2.8.1.0</AssemblyVersion>
+    <FileVersion>2.8.1.0</FileVersion>
     <Product>Invoice OCR Child</Product>
     <Title>InvoiceVision Child v2</Title>
     <Description>Local LightOnOCR-2-1B + Qwen3-VL-4B Indian GST invoice verification workspace for AAH</Description>
