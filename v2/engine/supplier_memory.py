@@ -115,6 +115,12 @@ def ensure_memory_db(db_path: str) -> None:
             );
             """
         )
+        try:
+            from ai_self_learning import ensure_self_learning_schema
+
+            ensure_self_learning_schema(conn)
+        except Exception:
+            pass
 
 
 def load_agent_memory(db_path: str, agent_name: str, gstin: str) -> Dict[str, Any]:
@@ -559,37 +565,78 @@ def apply_supplier_memory(canon: Dict[str, Any], db_path: str, client_gstin: str
     return meta
 
 
-def build_few_shot_prompt_hint(db_path: str, seller_gstin: str, seller_name: str = "", client_gstin: str = "") -> str:
+def build_few_shot_prompt_hint(
+    db_path: str,
+    seller_gstin: str,
+    seller_name: str = "",
+    client_gstin: str = "",
+    raw_text: str = "",
+) -> str:
+    lines: List[str] = []
     profile = lookup_supplier_profile(db_path, seller_gstin, seller_name, client_gstin=client_gstin)
-    if profile is None:
-        return ""
-    lines = [
-        "\nLearned Supplier Memory (apply only when consistent with the printed bill):",
-        f"- Verified Seller: {profile['canonicalName']} (GSTIN: {profile['gstin']}, confirmed {profile['confirmedCount']}x)",
-    ]
-    if profile.get("taxInclusiveHint"):
-        lines.append("- Note: supplier prices are often printed inclusive of GST; back-calculate Taxable before GST.")
-    hsn_rates = profile.get("hsnRates") or {}
-    if hsn_rates:
-        pairs = ", ".join(f"{k}->{v:g}%" for k, v in list(hsn_rates.items())[:8])
-        lines.append(f"- Verified HSN GST rates: {pairs}")
-    ex = profile.get("bestExample") or {}
-    if ex.get("rows"):
-        ex_json = json.dumps(ex, ensure_ascii=False, separators=(",", ":"))
-        lines.append(f"- Prior verified JSON pattern: {ex_json[:420]}")
+    if profile is not None:
+        lines.append("\nLearned Supplier Memory (apply only when consistent with the printed bill):")
+        lines.append(f"- Verified Seller: {profile['canonicalName']} (GSTIN: {profile['gstin']}, confirmed {profile['confirmedCount']}x)")
+        if profile.get("taxInclusiveHint"):
+            lines.append("- Note: supplier prices are often printed inclusive of GST; back-calculate Taxable before GST.")
+        hsn_rates = profile.get("hsnRates") or {}
+        if hsn_rates:
+            pairs = ", ".join(f"{k}->{v:g}%" for k, v in list(hsn_rates.items())[:8])
+            lines.append(f"- Verified HSN GST rates: {pairs}")
+        ex = profile.get("bestExample") or {}
+        if ex.get("rows"):
+            ex_json = json.dumps(ex, ensure_ascii=False, separators=(",", ":"))
+            lines.append(f"- Prior verified JSON pattern: {ex_json[:380]}")
+
+    try:
+        from ai_self_learning import lookup_layout_rules
+
+        layout_ctx = lookup_layout_rules(
+            db_path,
+            raw_text or "",
+            supplier_gstin=(profile["gstin"] if profile else seller_gstin),
+            supplier_name=seller_name,
+            client_gstin=client_gstin,
+        )
+        if layout_ctx.get("rules"):
+            if not lines:
+                lines.append("\nLearned Layout & Corrections Memory:")
+            lines.append(f"- Learned layout rules ({layout_ctx.get('matchType')}): {json.dumps(layout_ctx['rules'], ensure_ascii=False)[:320]}")
+        for corr in (layout_ctx.get("recentCorrections") or [])[:3]:
+            if not lines:
+                lines.append("\nLearned Layout & Corrections Memory:")
+            lines.append(f"- Prior user correction ({corr.get('field', '')}): {corr.get('from', '')} -> {corr.get('to', '')}")
+        for sim in (layout_ctx.get("similarExamples") or [])[:2]:
+            if not lines:
+                lines.append("\nLearned Layout & Corrections Memory:")
+            lines.append(
+                f"- Similar resolved invoice ({sim.get('supplierGstin')} inv={sim.get('invoiceNumber')} sim={sim.get('similarity')}): "
+                + json.dumps(sim.get("resolvedSummary") or {}, ensure_ascii=False)[:240]
+            )
+    except Exception:
+        pass
+
     text = "\n".join(lines)
-    return text[:900]
+    return text[:1600]
 
 
 def get_memory_stats(db_path: str) -> Dict[str, Any]:
     if not db_path or not Path(db_path).is_file():
-        return {"exists": False, "profiles": 0, "hsnRates": 0, "corrections": 0}
+        return {"exists": False, "profiles": 0, "hsnRates": 0, "corrections": 0, "layoutRules": 0, "layoutExamples": 0}
     ensure_memory_db(db_path)
     with _connect(db_path) as conn:
         p = int(conn.execute("SELECT COUNT(*) FROM supplier_profiles").fetchone()[0])
         h = int(conn.execute("SELECT COUNT(*) FROM supplier_hsn_rates").fetchone()[0])
         c = int(conn.execute("SELECT COUNT(*) FROM supplier_corrections").fetchone()[0])
-    return {"exists": True, "profiles": p, "hsnRates": h, "corrections": c}
+        try:
+            from ai_self_learning import ensure_self_learning_schema
+
+            ensure_self_learning_schema(conn)
+            lr = int(conn.execute("SELECT COUNT(*) FROM supplier_layout_rules").fetchone()[0])
+            le = int(conn.execute("SELECT COUNT(*) FROM layout_memory_examples").fetchone()[0])
+        except Exception:
+            lr, le = 0, 0
+    return {"exists": True, "profiles": p, "hsnRates": h, "corrections": c, "layoutRules": lr, "layoutExamples": le}
 
 
 def main() -> int:

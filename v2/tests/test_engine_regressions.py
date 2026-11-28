@@ -335,6 +335,183 @@ class EngineRegressionTests(unittest.TestCase):
             )
             self.assertEqual(mgr.daemon_log_dir, Path(td) / "logs")
 
+    def test_ramesh_snp0780_hyphenated_cgst_sgst_br_merged_ledgers(self) -> None:
+        raw = f"""
+        RAMESH & CO.,
+        GSTIN/UIN: 29AAAFR9433Q1ZF
+        Invoice No. SNP0780 Dated 4-Nov-26
+        Buyer (Bill to): Balaji Trading Co., GSTIN/UIN: {CLIENT_GSTIN}
+        <table>
+          <thead><tr><th>S</th><th>Description of Goods</th><th>HSN/SAC</th><th>GST Rate</th><th>Quantity</th><th>Rate</th><th>Disc. %</th><th>Amount</th></tr></thead>
+          <tbody>
+            <tr><td>1</td><td>Black Rose Kallimehand-hi 50gms<br><br>C-GST<br>S-GST</td><td>33059040</td><td>18 %</td><td>500.00 pc</td><td>6.69</td><td></td><td>3,347.46<br><br>301.27<br>301.27</td></tr>
+          </tbody>
+        </table>
+        Total ₹ 3,950.00
+        Rupees Three Thousand Nine Hundred Fifty Only
+        <table>
+          <thead><tr><th rowspan="2">Taxable Value</th><th colspan="2">CGST</th><th colspan="2">SGST/UTGST</th><th rowspan="2">Total Tax Amount</th></tr>
+          <tr><th>Rate</th><th>Amount</th><th>Rate</th><th>Amount</th></tr></thead>
+          <tbody><tr><td>3,347.46</td><td>9%</td><td>301.27</td><td>9%</td><td>301.27</td><td>602.54</td></tr></tbody>
+        </table>
+        """
+        can = gst_parser.parse_document_text_to_canonical(raw, known_client_gstin=CLIENT_GSTIN)
+        self.assertEqual(len(can["rows"]), 1)
+        self.assertAlmostEqual(can["taxableTotal"], 3347.46, places=2)
+        self.assertAlmostEqual(can["cgstTotal"], 301.27, places=2)
+        self.assertAlmostEqual(can["sgstTotal"], 301.27, places=2)
+        self.assertAlmostEqual(can["invoiceTotal"], 3950.00, places=2)
+        self.assertTrue(can["_audit"]["fully_balanced"])
+
+    def test_sree_general_ci_sut_gst_headers_and_component_tax_table(self) -> None:
+        raw = f"""
+        From: Sree General Agencies
+        GST No: 29AEIPK0028E1ZT
+        Bill/Ship To: BALAJI TRADING CO
+        GSTIN No: {CLIENT_GSTIN}
+        Invoice No: IN14461427006630
+        Invoice Date: 03/11/2026
+        <table>
+          <thead><tr><th>S No</th><th>HSN Code</th><th>Product Name</th><th>Qty CV</th><th>Qty Str</th><th>Rate</th><th>Disc Amt</th><th>Taxable Amt</th><th>C/I GST%</th><th>C/I GST Amt</th><th>S/UT GST%</th><th>S/UT GST Amt</th><th>Net Amt</th></tr></thead>
+          <tbody>
+            <tr><td>1</td><td>09023020</td><td>KD Green 100gm</td><td>0</td><td>12</td><td>27.33</td><td>32.80</td><td>1607.00</td><td>2.50</td><td>40.18</td><td>2.50</td><td>40.18</td><td>1687.35</td></tr>
+            <tr><td>2</td><td>09023010</td><td>KD Green Rs10</td><td>1</td><td>0</td><td>7.58</td><td>229.22</td><td>3045.34</td><td>2.50</td><td>76.13</td><td>2.50</td><td>76.13</td><td>3197.61</td></tr>
+          </tbody>
+        </table>
+        <table>
+          <thead><tr><th>Tax Desc</th><th>Tax %</th><th>Taxable</th><th>TaxAmt</th></tr></thead>
+          <tbody>
+            <tr><td>CGST</td><td>2.50</td><td>4652.34</td><td>116.31</td></tr>
+            <tr><td>SGST</td><td>2.50</td><td>4652.34</td><td>116.31</td></tr>
+            <tr><td>TCS</td><td>0.00</td><td>0.00</td><td>0.00</td></tr>
+          </tbody>
+        </table>
+        Net Payable: 4885.00
+        FOUR THOUSAND EIGHT HUNDRED EIGHTY FIVE RUPEES ONLY
+        """
+        can = gst_parser.parse_document_text_to_canonical(raw, known_client_gstin=CLIENT_GSTIN)
+        self.assertEqual(len(can["rows"]), 2)
+        self.assertAlmostEqual(can["rows"][0]["gstRate"], 5.0, places=2)
+        self.assertAlmostEqual(can["taxableTotal"], 4652.34, places=2)
+        self.assertAlmostEqual(can["cgstTotal"], 116.31, places=2)
+        self.assertAlmostEqual(can["sgstTotal"], 116.31, places=2)
+        self.assertAlmostEqual(can["invoiceTotal"], 4885.00, places=2)
+        self.assertTrue(can["_audit"]["fully_balanced"])
+
+    def test_nilgiri_party_role_and_less_discount_allowed(self) -> None:
+        raw = f"""
+        Invoice No. CF/26-27/1896 Dated 6-Nov-26
+        NILGIRI COFFEE PROPAGANDA -2026-27
+        Party : Balaji Trading Co.,
+        GSTIN/UIN : {CLIENT_GSTIN}
+        <table>
+          <tr><th>Sl No.</th><th>Description of Goods</th><th>HSN/SAC</th><th>GST Rate</th><th>Quantity</th><th>Rate (Incl. of Tax)</th><th>Rate per Kgs</th><th>Disc. %</th><th>Amount</th></tr>
+          <tr><td>1</td><td>Gold Beans Coffee Powder</td><td>090111</td><td>5%</td><td>15.00 Kgs</td><td></td><td>780.95 Kgs</td><td></td><td>11,714.25</td></tr>
+          <tr><td>2</td><td>Green Gold Coffee Powder</td><td>09019020</td><td>5%</td><td>5.00 Kgs</td><td></td><td>571.43 Kgs</td><td></td><td>2,857.15</td></tr>
+          <tr><td colspan="8"></td><td>14,571.40</td></tr>
+          <tr><td colspan="8">Less : DISCOUNT ALLOWED</td><td>(-)476.42</td></tr>
+          <tr><td colspan="8">CGST</td><td>352.37</td></tr>
+          <tr><td colspan="8">SGST</td><td>352.37</td></tr>
+          <tr><td colspan="8">Round Off</td><td>0.28</td></tr>
+          <tr><td></td><td>Total</td><td></td><td></td><td>20.00 Kgs</td><td></td><td></td><td></td><td>₹ 14,800.00</td></tr>
+        </table>
+        INR Fourteen Thousand Eight Hundred Only
+        Company’s GSTIN/UIN : 29AACFN2384G1Z6
+        for NILGIRI COFFEE PROPAGANDA -2026-27
+        """
+        can = gst_parser.parse_document_text_to_canonical(raw, known_client_gstin=CLIENT_GSTIN)
+        self.assertEqual(can["seller"]["gstin"], "29AACFN2384G1Z6")
+        self.assertEqual(can["buyer"]["gstin"], CLIENT_GSTIN)
+        self.assertEqual(len(can["rows"]), 2)
+        self.assertAlmostEqual(can["taxableTotal"], 14094.98, places=2)
+        self.assertAlmostEqual(can["cgstTotal"], 352.37, places=2)
+        self.assertAlmostEqual(can["sgstTotal"], 352.37, places=2)
+        self.assertAlmostEqual(can["invoiceTotal"], 14800.00, places=2)
+        self.assertTrue(can["_audit"]["fully_balanced"])
+
+    def test_nakul_nc04643_overwide_rows_and_single_row_ocr_slip_repair(self) -> None:
+        raw = f"""
+        NAKUL COMMERCIAL
+        GSTIN: 29DKOPS2501N1ZI
+        TO. BALAJI TRADING CO GSTIN: {CLIENT_GSTIN}
+        Invoice No. NC04643 Date: 17-10-2026
+        <table>
+          <thead><tr><th>Sl. No.</th><th>MRP</th><th>PCSRATE</th><th>HSN CD</th><th>Product</th><th>QUANTITY</th><th>Free</th><th>RATE</th><th>BRATE</th><th>GST%</th><th>DIS%</th><th>AMOUNT</th></tr></thead>
+          <tbody>
+            <tr><td>1.</td><td>200.00</td><td>172.00</td><td>15180039</td><td>DHL EPAM LAMP OIL</td><td>2</td><td>0</td><td>0</td><td>1720.00</td><td>163.81</td><td>5.0%</td><td>0.00</td><td>3410.60</td></tr>
+            <tr><td>2.</td><td>200.00</td><td>163.00</td><td>15180039</td><td>DHEEPAM POUCH</td><td>1</td><td>0</td><td>0</td><td>1630.00</td><td>155.24</td><td>5.0%</td><td>0.00</td><td>1630.00</td></tr>
+            <tr><td>3.</td><td>200.00</td><td>168.50</td><td>15121910</td><td>GOLDWINNER BOX</td><td>10</td><td>0</td><td>0</td><td>1685.00</td><td>160.48</td><td>5.0%</td><td>0.00</td><td>16850.00</td></tr>
+          </tbody>
+        </table>
+        <table>
+          <thead><tr><th>CLASS</th><th>SUB TOTAL</th><th>SGST</th><th>CGST</th><th>TOTAL GST</th></tr></thead>
+          <tbody><tr><td>GST 5%</td><td>20876.20</td><td>521.90</td><td>521.90</td><td>1043.80</td></tr></tbody>
+        </table>
+        Rs. Twenty One Thousand Nine Hundred and Twenty only
+        GRAND TOTAL: 21920.00
+        """
+        can = gst_parser.parse_document_text_to_canonical(raw, known_client_gstin=CLIENT_GSTIN)
+        self.assertEqual(len(can["rows"]), 3)
+        self.assertAlmostEqual(can["taxableTotal"], 20876.20, places=2)
+        self.assertAlmostEqual(can["cgstTotal"], 521.90, places=2)
+        self.assertAlmostEqual(can["sgstTotal"], 521.90, places=2)
+        self.assertAlmostEqual(can["invoiceTotal"], 21920.00, places=2)
+        self.assertTrue(can["_audit"]["fully_balanced"])
+
+    def test_self_learning_layout_rules_sqlite_vec_and_fts5_roundtrip(self) -> None:
+        import ai_self_learning
+
+        sample_raw = """
+        <table><thead><tr><th>No</th><th>Item Name</th><th>HSN</th><th>Qty</th><th>Rate</th><th>Custom GST%</th><th>Total</th></tr></thead>
+        <tbody><tr><td>1</td><td>Sample</td><td>09109100</td><td>2</td><td>100.00</td><td>5%</td><td>210.00</td></tr></tbody></table>
+        """
+        resolved = {
+            "seller": {"name": "Sample Trader", "gstin": "29AFQPC6468R1ZC"},
+            "buyer": {"name": "Balaji Trading Co", "gstin": CLIENT_GSTIN},
+            "invoiceNumber": "SL-001",
+            "taxableTotal": 200.0,
+            "cgstTotal": 5.0,
+            "sgstTotal": 5.0,
+            "igstTotal": 0.0,
+            "invoiceTotal": 210.0,
+            "rows": [{"description": "Sample", "taxable": 200.0, "cgst": 5.0, "sgst": 5.0, "igst": 0.0, "lineTotal": 210.0}],
+            "_audit": {"fully_balanced": True},
+        }
+        with tempfile.TemporaryDirectory() as td:
+            db_path = str(Path(td) / "mem.db")
+            res = ai_self_learning.save_layout_rule(
+                db_path,
+                sample_raw,
+                supplier_gstin="29AFQPC6468R1ZC",
+                supplier_name="Sample Trader",
+                rule_dict={"columnAliases": {"custom gst%": "gstrate"}, "taxInclusive": True},
+                invoice_number="SL-001",
+                resolved_summary=resolved,
+                client_gstin=CLIENT_GSTIN,
+            )
+            self.assertTrue(res["saved"])
+            # Same client GSTIN should NEVER pollute supplier rules
+            blocked = ai_self_learning.save_layout_rule(
+                db_path,
+                sample_raw,
+                supplier_gstin=CLIENT_GSTIN,
+                supplier_name="Client Self",
+                rule_dict={"taxInclusive": False},
+                client_gstin=CLIENT_GSTIN,
+            )
+            self.assertFalse(blocked["saved"])
+            # Verify vector + FTS5 + rule lookup across similar HTML layout
+            lctx = ai_self_learning.lookup_layout_rules(
+                db_path,
+                sample_raw,
+                supplier_gstin="29AFQPC6468R1ZC",
+                client_gstin=CLIENT_GSTIN,
+            )
+            self.assertTrue(lctx["matched"])
+            self.assertEqual(lctx["rules"]["columnAliases"]["custom gst%"], "gstrate")
+            self.assertGreaterEqual(len(lctx["similarExamples"]), 1)
+            self.assertGreater(lctx["similarExamples"][0]["similarity"], 0.8)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

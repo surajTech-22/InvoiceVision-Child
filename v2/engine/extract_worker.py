@@ -80,6 +80,7 @@ def resolve_default_paths() -> Dict[str, Path]:
         "llama_server": llama_server or (app_root / "Runtime" / "llama_bin" / "llama-server.exe"),
         "lighton_model": (models_dir or app_root / "Runtime" / "models") / "lightonocr-2-1b" / "LightOnOCR-2-1B-Q8_0.gguf",
         "lighton_mmproj": (models_dir or app_root / "Runtime" / "models") / "lightonocr-2-1b" / "mmproj-LightOnOCR-2-1B-f16.gguf",
+        "qwen_text_model": (models_dir or app_root / "Runtime" / "models") / "qwen3-1.7b" / "Qwen3-1.7B-Q4_K_M.gguf",
         "qwen_model": (models_dir or app_root / "Runtime" / "models") / "qwen3-vl-4b" / "Qwen3VL-4B-Instruct-Q4_K_M.gguf",
         "qwen_mmproj": (models_dir or app_root / "Runtime" / "models") / "qwen3-vl-4b" / "mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf",
         "paddlex_cache": paddlex_dir or (app_root / "Runtime"),
@@ -101,6 +102,7 @@ def run_extraction(args: argparse.Namespace) -> Dict[str, Any]:
     llama_server = Path(args.llama_server or defaults["llama_server"])
     lighton_model = Path(args.lighton_model or defaults["lighton_model"])
     lighton_mmproj = Path(args.lighton_mmproj or defaults["lighton_mmproj"])
+    qwen_text_model = Path(getattr(args, "qwen_text_model", "") or defaults["qwen_text_model"])
     qwen_model = Path(args.qwen_model or defaults["qwen_model"])
     qwen_mmproj = Path(args.qwen_mmproj or defaults["qwen_mmproj"])
     paddlex_root = Path(args.paddlex_cache or defaults["paddlex_cache"])
@@ -237,7 +239,7 @@ def run_extraction(args: argparse.Namespace) -> Dict[str, Any]:
                 and bool(re.search(r"\b(?:cont\.?\s*page\s*\d+|page\s*1\s*(?:of|/)\s*[2-9]|carry\s*forward|carried\s*forward|to\s+be\s+continued)\b", combined_lighton, re.IGNORECASE))
             )
             or (
-                bool(re.search(r"\bpage\s*1\s*(?:of|/)\s*[2-9]\b", combined_lighton, re.IGNORECASE))
+                bool(re.search(r"\b(?:cont\.?\s*page\s*\d+|page\s*1\s*(?:of|/)\s*[2-9]|carry\s*forward|carried\s*forward|to\s+be\s+continued)\b", combined_lighton, re.IGNORECASE))
                 and any("printed grand total was not found" in str(b).lower() for b in ((canon_lighton.get("_audit") or {}).get("blocking_issues") or []))
             )
             or (
@@ -259,6 +261,37 @@ def run_extraction(args: argparse.Namespace) -> Dict[str, Any]:
             or not audit.get("buyer_gstin_valid")
         ):
             need_escalation = True
+
+    if need_escalation and canon_lighton is not None and combined_lighton.strip():
+        text_ai_model = qwen_text_model if qwen_text_model.is_file() else qwen_model
+        if text_ai_model.is_file():
+            emit_progress(args.progress, 62, "Stage 2.5 Text AI analyzing HTML structure & layout memory...")
+            try:
+                from hybrid_merger import analyze_html_with_text_ai
+
+                txt_res = analyze_html_with_text_ai(
+                    llama_server=llama_server,
+                    text_model=text_ai_model,
+                    raw_html=combined_lighton,
+                    base_canon=canon_lighton,
+                    audit=canon_lighton.get("_audit") or {},
+                    work_dir=work_dir,
+                    qr_info=qr_info,
+                    client_gstin=args.client_gstin,
+                    direction=args.direction,
+                    memory_db=memory_db,
+                    threads=args.threads,
+                )
+                if txt_res.get("fullyBalanced") or txt_res.get("improved"):
+                    canon_lighton = txt_res["canonical"]
+                    canon_lighton["_audit"] = txt_res["audit"]
+                    final_canon = canon_lighton
+                    engine_used = txt_res["engineUsed"]
+                    memory_meta = txt_res["supplierMemory"]
+                    if txt_res.get("fullyBalanced"):
+                        need_escalation = False
+            except Exception as txt_ex:
+                emit_progress(args.progress, 64, f"Text AI note ({type(txt_ex).__name__}); continuing...")
 
     if need_escalation and qwen_model.is_file() and qwen_mmproj.is_file():
         emit_progress(args.progress, 65, "Escalating math/GSTIN verification to Qwen3-VL-4B...")
@@ -323,6 +356,7 @@ def main() -> int:
     parser.add_argument("--llama-server")
     parser.add_argument("--lighton-model")
     parser.add_argument("--lighton-mmproj")
+    parser.add_argument("--qwen-text-model")
     parser.add_argument("--qwen-model")
     parser.add_argument("--qwen-mmproj")
     parser.add_argument("--paddlex-cache")
@@ -408,7 +442,56 @@ def main() -> int:
         cache_dir = Path(local_app) / "InvoiceVisionChild" / "Cache"
         cache_dir.mkdir(parents=True, exist_ok=True)
 
+    def _try_stage25_text_ai(payload_dict: Dict[str, Any]) -> bool:
+        if mode not in ("auto", "hybrid"):
+            return False
+        audit_pl = payload_dict.get("audit") or {}
+        if audit_pl.get("fully_balanced"):
+            return False
+        raw_pl = str(payload_dict.get("rawOcrText") or "").strip()
+        if not raw_pl:
+            return False
+        q_txt = Path(getattr(args, "qwen_text_model", "") or defaults["qwen_text_model"])
+        text_model = q_txt if q_txt.is_file() else Path(args.qwen_model or defaults["qwen_model"])
+        if not text_model.is_file():
+            return False
+        try:
+            from hybrid_merger import analyze_html_with_text_ai
+
+            emit_progress(args.progress, 68, "Stage 2.5 Text AI analyzing HTML structure & layout memory...")
+            t_tx0 = time.perf_counter()
+            res = analyze_html_with_text_ai(
+                llama_server=llama_srv,
+                text_model=text_model,
+                raw_html=raw_pl,
+                base_canon=payload_dict.get("canonical"),
+                audit=audit_pl,
+                work_dir=Path(args.work_dir).resolve() if args.work_dir else out_path.parent,
+                qr_info=payload_dict.get("qrInfo") or {},
+                client_gstin=args.client_gstin,
+                direction=args.direction,
+                memory_db=args.memory_db,
+                threads=args.threads,
+            )
+            if res.get("fullyBalanced") or res.get("improved"):
+                payload_dict["canonical"] = res["canonical"]
+                payload_dict["audit"] = res["audit"]
+                payload_dict["engineUsed"] = res["engineUsed"]
+                payload_dict["supplierMemory"] = res["supplierMemory"]
+                payload_dict["elapsedSec"] = round(float(payload_dict.get("elapsedSec") or 0.0) + (time.perf_counter() - t_tx0), 2)
+                if isinstance(payload_dict.get("agentPipelineTrace"), dict):
+                    payload_dict["agentPipelineTrace"]["textAiAnalyzed"] = True
+                    payload_dict["agentPipelineTrace"]["selfLearnedRuleSaved"] = bool((res.get("ruleSaved") or {}).get("saved"))
+                tmp_path = out_path.with_suffix(".json.tmp")
+                tmp_path.write_text(json.dumps(payload_dict, indent=2, ensure_ascii=False), encoding="utf-8")
+                os.replace(tmp_path, out_path)
+            return bool(res.get("fullyBalanced"))
+        except Exception:
+            return False
+
     def _escalate_payload_locally(payload_dict: Dict[str, Any]) -> Dict[str, Any]:
+        if _try_stage25_text_ai(payload_dict):
+            return payload_dict
         qwen_m = Path(args.qwen_model or defaults["qwen_model"])
         qwen_mm = Path(args.qwen_mmproj or defaults["qwen_mmproj"])
         t_esc0 = time.perf_counter()
@@ -436,10 +519,6 @@ def main() -> int:
         audit_pl = payload_dict.get("audit") or {}
         if audit_pl.get("fully_balanced"):
             return False
-        qwen_m = Path(args.qwen_model or defaults["qwen_model"])
-        qwen_mm = Path(args.qwen_mmproj or defaults["qwen_mmproj"])
-        if not (qwen_m.is_file() and qwen_mm.is_file()):
-            return False
         raw_pl = payload_dict.get("rawOcrText") or ""
         canon_pl = payload_dict.get("canonical") or {}
         pages_cnt = len(payload_dict.get("renderedPageImages") or [])
@@ -451,11 +530,16 @@ def main() -> int:
             and audit_pl.get("row_count", 0) > 0
             and (
                 (inv_tot_pl <= 0.0 and bool(re.search(r"\b(?:cont\.?\s*page\s*\d+|page\s*1\s*(?:of|/)\s*[2-9]|carry\s*forward|to\s+be\s+continued)\b", raw_pl, re.IGNORECASE)))
-                or ("printed grand total was not found" in blk_pl and bool(re.search(r"\bpage\s*1\s*(?:of|/)\s*[2-9]\b", raw_pl, re.IGNORECASE)))
+                or ("printed grand total was not found" in blk_pl and bool(re.search(r"\b(?:cont\.?\s*page\s*\d+|page\s*1\s*(?:of|/)\s*[2-9]|carry\s*forward|to\s+be\s+continued)\b", raw_pl, re.IGNORECASE)))
                 or (inv_tot_pl > tx_tax_pl + 1.0 and bool(re.search(r"\bpage\s*[2-9]\s*(?:of|/)\s*[2-9]\b", raw_pl, re.IGNORECASE)))
             )
         )
-        return not is_partial_only
+        if is_partial_only:
+            return False
+        qwen_txt_m = Path(getattr(args, "qwen_text_model", "") or defaults["qwen_text_model"])
+        qwen_m = Path(args.qwen_model or defaults["qwen_model"])
+        qwen_mm = Path(args.qwen_mmproj or defaults["qwen_mmproj"])
+        return qwen_txt_m.is_file() or qwen_m.is_file() or (qwen_m.is_file() and qwen_mm.is_file())
 
     # Reuse warm local daemon (or spawn one safely under lock so parallel bursts share 1 LightOnOCR-2-1B instance)
     daemon_info_file = cache_dir / "warm_daemon.json"
@@ -594,6 +678,9 @@ def main() -> int:
                     if out_path.is_file():
                         d_out = json.loads(out_path.read_text(encoding="utf-8"))
                         if _needs_qwen_escalation(d_out):
+                            if _try_stage25_text_ai(d_out):
+                                emit_progress(args.progress, 100, f"Done in {d_out.get('elapsedSec', 0)}s ({d_out.get('engineUsed', 'TextAI')})")
+                                return 0
                             qwen_m = Path(args.qwen_model or defaults["qwen_model"])
                             qwen_mm = Path(args.qwen_mmproj or defaults["qwen_mmproj"])
                             emit_progress(args.progress, 75, "Hybrid Auditor fallback -> escalating unresolved bill to Qwen3-VL-4B (reusing LightOnOCR)...")

@@ -54,6 +54,17 @@ def repair_gstin(raw: str | None, pan_hints: List[str] | None = None) -> Tuple[s
     if not raw:
         return "", False, "empty"
     s = re.sub(r"[^A-Za-z0-9]", "", raw).upper()
+    if len(s) == 16:
+        for del_i in range(15, -1, -1):
+            sub15 = s[:del_i] + s[del_i + 1:]
+            if is_valid_gstin(sub15):
+                return sub15, True, f"len16_drop_{del_i}"
+        for del_i in (15, 14, 13, 12, 11):
+            sub15 = s[:del_i] + s[del_i + 1:]
+            if not sub15.isdigit() and sum(1 for ch in sub15[2:7] if ch.isalpha()) >= 2:
+                fixed15, ok15, why15 = repair_gstin(sub15, pan_hints=pan_hints)
+                if ok15:
+                    return fixed15, True, f"len16_drop_{del_i}_{why15}"
     if len(s) != 15:
         return s, False, f"bad_len_{len(s)}"
     if is_valid_gstin(s):

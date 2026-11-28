@@ -101,12 +101,36 @@ def initialize_base_parse(ctx: InvoiceWorkContext) -> None:
     """Build baseline canonical extraction once per invoice after Stage 2 OCR finishes."""
     qr_einv = (ctx.qr_info or {}).get("einvoice")
     qr_upi = (ctx.qr_info or {}).get("upi_meta")
+    learned_rules: Optional[Dict[str, Any]] = None
+    if ctx.memory_db:
+        try:
+            from ai_self_learning import lookup_layout_rules
+
+            prelim_gstins = find_gstins_in_text(ctx.raw_ocr_text or "")
+            cand_sup = next((g for g in prelim_gstins if g and g != (ctx.client_gstin or "").strip().upper()), "")
+            lctx = lookup_layout_rules(
+                str(ctx.memory_db),
+                ctx.raw_ocr_text or "",
+                supplier_gstin=cand_sup,
+                client_gstin=ctx.client_gstin,
+            )
+            if lctx.get("rules"):
+                learned_rules = lctx["rules"]
+                ctx.agent_notes["_layoutMemory"] = {
+                    "matched": True,
+                    "matchType": lctx.get("matchType", ""),
+                    "layoutHash": lctx.get("layoutHash", ""),
+                }
+        except Exception:
+            learned_rules = None
+
     ctx.canonical = parse_document_text_to_canonical(
         ctx.raw_ocr_text,
         qr_einvoice=qr_einv,
         known_client_gstin=ctx.client_gstin,
         direction_hint=ctx.direction,
         qr_upi_meta=qr_upi,
+        learned_rules=learned_rules,
     )
 
 

@@ -758,6 +758,21 @@ class ManagerAgent:
                     if audit.get("fully_balanced"):
                         memory_meta = apply_supplier_memory(canon, str(job.memory_db), client_gstin=job.client_gstin)
                         saved_agents = persist_learned_agent_memories(ctx)
+                        try:
+                            from ai_self_learning import synthesize_and_save_layout_rule
+
+                            sl_res = synthesize_and_save_layout_rule(
+                                str(job.memory_db),
+                                ctx.raw_ocr_text or "",
+                                None,
+                                {**canon, "_audit": audit},
+                                source="auto_verified_batch",
+                                client_gstin=job.client_gstin,
+                            )
+                            if sl_res.get("saved"):
+                                memory_meta.setdefault("appliedRules", []).append(f"Indexed layout exemplar ({sl_res.get('layoutHash', '')})")
+                        except Exception:
+                            pass
                     else:
                         memory_meta["skippedReason"] = "audit_not_balanced"
 

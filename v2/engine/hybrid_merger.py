@@ -443,6 +443,7 @@ class LlamaServerSession:
         user_prompt: str,
         max_tokens: int = 380,
         timeout_s: int = 90,
+        json_schema: Optional[Dict[str, Any]] = None,
     ) -> str:
         payload: Dict[str, Any] = {
             "model": "local",
@@ -453,9 +454,18 @@ class LlamaServerSession:
                 {"role": "user", "content": user_prompt},
             ],
         }
+        if json_schema is not None:
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {"name": "gst_invoice", "strict": True, "schema": json_schema},
+            }
         r = requests.post(f"http://127.0.0.1:{self.port}/v1/chat/completions", json=payload, timeout=timeout_s)
+        if r.status_code in (400, 422) and "response_format" in payload:
+            payload.pop("response_format", None)
+            r = requests.post(f"http://127.0.0.1:{self.port}/v1/chat/completions", json=payload, timeout=timeout_s)
         r.raise_for_status()
-        return r.json()["choices"][0]["message"]["content"]
+        raw_reply = str(r.json()["choices"][0]["message"]["content"] or "")
+        return re.sub(r"<think>.*?</think>", "", raw_reply, flags=re.DOTALL).strip()
 
 
 def math_fitness(canon: Dict[str, Any]) -> tuple:
@@ -682,6 +692,20 @@ def escalate_with_qwen(
 
     memory_meta = apply_supplier_memory(final_canon, memory_db, client_gstin=client_gstin)
     audit = final_canon.pop("_audit", None) or audit_invoice_math(final_canon, raw_text=final_raw, qr_einvoice=qr_einv)
+    if audit.get("fully_balanced") and memory_db and combined_lighton:
+        try:
+            from ai_self_learning import synthesize_and_save_layout_rule
+
+            synthesize_and_save_layout_rule(
+                memory_db,
+                combined_lighton,
+                canon_lighton,
+                {**final_canon, "_audit": audit},
+                source="vision_self_learned",
+                client_gstin=client_gstin,
+            )
+        except Exception:
+            pass
     return {
         "canonical": final_canon,
         "audit": audit,
@@ -734,3 +758,124 @@ def apply_qwen_escalation_to_worker_payload(
     if isinstance(wo.get("agentPipelineTrace"), dict):
         wo["agentPipelineTrace"]["qwenEscalated"] = True
     return wo
+
+
+TEXT_ANALYZER_SYSTEM_PROMPT = (
+    "You are an offline GST invoice HTML-to-JSON structure repair engine. "
+    "You receive OCR-extracted Markdown/HTML tables plus exact audit errors from a deterministic parser. "
+    "Fix swapped Seller vs Buyer GSTINs, shifted/misnamed tax columns (like C/I GST, S/UT GST, C-GST/S-GST, split Qty/Free), "
+    "pre-tax discounts, or missing totals ONLY using numbers present in the OCR text. "
+    "Return strict valid JSON matching the schema. Keep names & invoice numbers exact. /no_think"
+)
+
+
+def _compact_ocr_for_text_ai(raw_text: str, limit: int = 7500) -> str:
+    txt = str(raw_text or "").strip()
+    if len(txt) <= limit:
+        return txt
+    head_len = int(limit * 0.58)
+    tail_len = limit - head_len - 32
+    return txt[:head_len] + "\n\n... [MIDDLE TRIMMED] ...\n\n" + txt[-tail_len:]
+
+
+def analyze_html_with_text_ai(
+    *,
+    llama_server: Path,
+    text_model: Path,
+    raw_html: str,
+    base_canon: Optional[Dict[str, Any]],
+    audit: Dict[str, Any],
+    work_dir: Path,
+    qr_info: Dict[str, Any],
+    client_gstin: str = "",
+    direction: str = "Auto",
+    memory_db: str = "",
+    threads: int = 10,
+) -> Dict[str, Any]:
+    """Stage 2.5 fast CPU text-only AI repair on LightOn HTML + automatic self-learning rule synthesis."""
+    qr_einv = (qr_info or {}).get("einvoice")
+    qr_upi_meta = (qr_info or {}).get("upi_meta")
+    seller_obj = (base_canon or {}).get("seller") or {}
+    few_shot_hint = build_few_shot_prompt_hint(
+        memory_db,
+        str(seller_obj.get("gstin") or ""),
+        str(seller_obj.get("name") or ""),
+        client_gstin=client_gstin,
+        raw_text=raw_html,
+    )
+    blocking = "; ".join(str(x) for x in (audit.get("blocking_issues") or [])[:6])
+    cur_summary = {
+        "sellerGstin": seller_obj.get("gstin", ""),
+        "buyerGstin": ((base_canon or {}).get("buyer") or {}).get("gstin", ""),
+        "invoiceNumber": (base_canon or {}).get("invoiceNumber", ""),
+        "taxableTotal": (base_canon or {}).get("taxableTotal", 0.0),
+        "cgstTotal": (base_canon or {}).get("cgstTotal", 0.0),
+        "sgstTotal": (base_canon or {}).get("sgstTotal", 0.0),
+        "igstTotal": (base_canon or {}).get("igstTotal", 0.0),
+        "invoiceTotal": (base_canon or {}).get("invoiceTotal", 0.0),
+        "rowCount": len((base_canon or {}).get("rows") or []),
+    }
+    user_prompt = (
+        f"Known client GSTIN (our firm): {client_gstin or 'Unknown'} | Direction hint: {direction}\n"
+        f"Audit blocking errors: {blocking or 'none'}\n"
+        f"Current parse summary: {json.dumps(cur_summary, ensure_ascii=False)}\n"
+        f"{few_shot_hint}\n\n"
+        f"OCR Extracted Document (Markdown + HTML Tables):\n{_compact_ocr_for_text_ai(raw_html)}\n/no_think"
+    )
+
+    log_dir = work_dir / "logs"
+    with LlamaServerSession(str(llama_server), str(text_model), None, log_dir, threads=threads, ctx=4096) as srv:
+        reply = srv.chat_text(
+            TEXT_ANALYZER_SYSTEM_PROMPT,
+            user_prompt,
+            max_tokens=2000,
+            timeout_s=150,
+            json_schema=QWEN_INVOICE_JSON_SCHEMA,
+        )
+
+    canon_ai = parse_document_text_to_canonical(
+        reply,
+        qr_einvoice=qr_einv,
+        known_client_gstin=client_gstin,
+        direction_hint=direction,
+        qr_upi_meta=qr_upi_meta,
+    )
+    if base_canon is not None:
+        c_base = dict(base_canon)
+        c_base["_source"] = "lighton"
+        canon_ai["_source"] = "text_ai"
+        merged_canon = merge_consensus([c_base, canon_ai], qr_einv=qr_einv, qr_upi_meta=qr_upi_meta)
+    else:
+        merged_canon = canon_ai
+
+    memory_meta = apply_supplier_memory(merged_canon, memory_db, client_gstin=client_gstin)
+    merged_audit = merged_canon.pop("_audit", None) or audit_invoice_math(merged_canon, raw_text=raw_html, qr_einvoice=qr_einv)
+
+    base_audit = audit if (isinstance(audit, dict) and "fully_balanced" in audit) else audit_invoice_math(base_canon or {}, raw_text=raw_html, qr_einvoice=qr_einv)
+    improved = math_fitness({**merged_canon, "_audit": merged_audit}) > math_fitness({**(base_canon or {}), "_audit": base_audit})
+    rule_saved: Dict[str, Any] = {"saved": False}
+    if merged_audit.get("fully_balanced") and memory_db:
+        try:
+            from ai_self_learning import synthesize_and_save_layout_rule
+
+            rule_saved = synthesize_and_save_layout_rule(
+                memory_db,
+                raw_html,
+                base_canon,
+                {**merged_canon, "_audit": merged_audit},
+                source="ai_self_learned",
+                client_gstin=client_gstin,
+            )
+        except Exception:
+            pass
+
+    return {
+        "improved": improved,
+        "fullyBalanced": bool(merged_audit.get("fully_balanced")),
+        "canonical": merged_canon,
+        "audit": merged_audit,
+        "engineUsed": "Hybrid(LightOnOCR-2-1B+Qwen3-1.7B-TextAI)",
+        "rawReply": reply,
+        "supplierMemory": memory_meta,
+        "ruleSaved": rule_saved,
+    }

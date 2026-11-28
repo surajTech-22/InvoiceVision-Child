@@ -180,10 +180,10 @@ def run_deterministic_audit(req: Dict[str, Any], memory_db: str = "") -> Dict[st
         severity = max(severity, 1)
         findings.append("Verification notes flagged: " + "; ".join(blocking_flags[:4]))
 
-    # Supplier Self-Learning Memory Lookup
+    # Supplier Self-Learning Memory Lookup (Profiles + Layout Rules + Vector/FTS5 Examples)
     opposite_gstin = seller_gstin if direction.lower() != "sales" else buyer_gstin
     opposite_name = seller_name if direction.lower() != "sales" else buyer_name
-    profile = lookup_supplier_profile(memory_db, opposite_gstin or seller_gstin, opposite_name or seller_name)
+    profile = lookup_supplier_profile(memory_db, opposite_gstin or seller_gstin, opposite_name or seller_name, client_gstin=client_gstin)
     if profile is not None:
         hsn_count = len(profile.get("hsnRates") or {})
         pref_mode = profile.get("preferredRecognitionMode") or "Accounting Invoice"
@@ -192,6 +192,27 @@ def run_deterministic_audit(req: Dict[str, Any], memory_db: str = "") -> Dict[st
     else:
         mem_status = f"New supplier ({opposite_gstin or 'no GSTIN yet'}): confirming this invoice will teach Offline AI Memory in 1 shot."
         recommendations.append("Once fields look right, click 'Teach AI' or 'Confirm Mapping & Next' so future bills from this party auto-apply your corrections.")
+
+    if memory_db:
+        try:
+            from ai_self_learning import lookup_layout_rules
+
+            lctx = lookup_layout_rules(
+                memory_db,
+                raw_ocr,
+                supplier_gstin=(opposite_gstin or seller_gstin),
+                supplier_name=(opposite_name or seller_name),
+                client_gstin=client_gstin,
+            )
+            if lctx.get("rules"):
+                findings.append(f"Layout & rule memory matched ({lctx.get('matchType')}, hash={lctx.get('layoutHash')}).")
+            if lctx.get("similarExamples"):
+                top_sim = lctx["similarExamples"][0]
+                findings.append(f"Vector/FTS5 nearest layout exemplar: inv={top_sim.get('invoiceNumber')} (similarity={top_sim.get('similarity')}).")
+            if lctx.get("recentCorrections"):
+                findings.append(f"Found {len(lctx['recentCorrections'])} historical user correction diff(s) for this supplier.")
+        except Exception:
+            pass
 
     verdict = "Verified" if severity == 0 else ("Attention Needed" if severity == 1 else "Action Required")
     if not recommendations:
@@ -239,12 +260,15 @@ def resolve_default_qwen_paths() -> tuple[Path, Path]:
     app_root = SCRIPT_DIR.parent
     for root in (app_root / "Runtime", Path(r"C:\AccountingAutomationHub\InvoiceVisionChild\Runtime")):
         ls = root / "llama_bin" / "llama-server.exe"
+        q_txt = root / "models" / "qwen3-1.7b" / "Qwen3-1.7B-Q4_K_M.gguf"
+        if ls.is_file() and q_txt.is_file():
+            return ls, q_txt
         qm = root / "models" / "qwen3-vl-4b" / "Qwen3VL-4B-Instruct-Q4_K_M.gguf"
         if ls.is_file() and qm.is_file():
             return ls, qm
     return (
         app_root / "Runtime" / "llama_bin" / "llama-server.exe",
-        app_root / "Runtime" / "models" / "qwen3-vl-4b" / "Qwen3VL-4B-Instruct-Q4_K_M.gguf",
+        app_root / "Runtime" / "models" / "qwen3-1.7b" / "Qwen3-1.7B-Q4_K_M.gguf",
     )
 
 
