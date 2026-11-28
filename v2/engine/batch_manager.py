@@ -18,6 +18,7 @@ import queue
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -31,10 +32,10 @@ from category_agents import (
     initialize_base_parse,
     persist_learned_agent_memories,
 )
-from gst_math import audit_invoice_math
+from gst_math import audit_invoice_math, run_parallel_category_audits
 from gst_parser import normalize_canonical_dict
-from hybrid_merger import LlamaServerSession, img_to_data_url
-from preprocess import configure_isolated_paddlex, preprocess_pages_p2, render_input_to_images
+from hybrid_merger import LlamaServerSession, apply_qwen_escalation_to_worker_payload, img_to_data_url
+from preprocess import configure_isolated_paddlex, crop_footer_strip, preprocess_pages_p2, render_input_to_images
 from qr_decode import decode_qr_from_image
 from supplier_memory import apply_supplier_memory
 
@@ -88,10 +89,21 @@ class ManagerAgent:
         self.ocr_cache_dir = self.cache_dir / "ocr_cache"
         self.ocr_cache_dir.mkdir(parents=True, exist_ok=True)
         self.threads = max(2, int(threads))
+        self.llama_parallel = 2 if self.threads >= 8 else 1
 
         self.bus = PeerBus()
         self.tracker = InvoiceStageTracker(progress_cb=progress_cb)
+        self._prep_job_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="PrepJob")
+        self._prep_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="PrepQRChild")
+        self._ocr_job_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="OCRJob")
+        self._ocr_pool = ThreadPoolExecutor(max_workers=6, thread_name_prefix="VisualOCRChild")
         self.pool = ThreadPoolExecutor(max_workers=max(2, subagent_workers), thread_name_prefix="SubAgent")
+        self._audit_pool = ThreadPoolExecutor(max_workers=10, thread_name_prefix="AuditChild")
+        self._ocr_slot_sem = threading.Semaphore(self.llama_parallel)
+        self._infer_lock = threading.Lock()
+        self._infer_cond = threading.Condition(self._infer_lock)
+        self._active_ocr_slots = 0
+        self._qwen_active = False
 
         self._q_prep: queue.Queue[Optional[Dict[str, Any]]] = queue.Queue()
         self._q_ocr: queue.Queue[Optional[Dict[str, Any]]] = queue.Queue()
@@ -139,7 +151,8 @@ class ManagerAgent:
             q.put(None)
         for t in self._threads:
             t.join(timeout=15)
-        self.pool.shutdown(wait=True)
+        for p in (self._prep_job_pool, self._prep_pool, self._ocr_job_pool, self._ocr_pool, self.pool, self._audit_pool):
+            p.shutdown(wait=True)
         self._close_ocr_session()
 
     def _ensure_ocr_session(self, log_dir: Path) -> LlamaServerSession:
@@ -151,9 +164,9 @@ class ManagerAgent:
                     str(self.lighton_mmproj),
                     log_dir,
                     threads=self.threads,
-                    ctx=16384,
+                    ctx=16384 * self.llama_parallel,
                     repeat_penalty=1.12,
-                    parallel=1,
+                    parallel=self.llama_parallel,
                 )
                 sess.__enter__()
                 self._ocr_session = sess
@@ -210,108 +223,227 @@ class ManagerAgent:
             self._pending_count = max(0, self._pending_count - 1)
             self._all_done_cond.notify_all()
 
-    # ---------------- Stage 1: Prep + QR ----------------
+    @contextmanager
+    def _lighton_inference_slot(self):
+        with self._ocr_slot_sem:
+            with self._infer_cond:
+                while self._qwen_active:
+                    self._infer_cond.wait(timeout=0.5)
+                self._active_ocr_slots += 1
+            try:
+                yield
+            finally:
+                with self._infer_cond:
+                    self._active_ocr_slots = max(0, self._active_ocr_slots - 1)
+                    self._infer_cond.notify_all()
+
+    @contextmanager
+    def exclusive_qwen_gate(self):
+        with self._infer_cond:
+            while self._qwen_active or self._active_ocr_slots > 0:
+                self._infer_cond.wait(timeout=0.5)
+            self._qwen_active = True
+        try:
+            yield
+        finally:
+            with self._infer_cond:
+                self._qwen_active = False
+                self._infer_cond.notify_all()
+
+    # ---------------- Stage 1: Prep + QR (Parallel Child Agents) ----------------
+    def _prep_one_job(self, pkt: Dict[str, Any]) -> None:
+        job: BatchJob = pkt["job"]
+        try:
+            self.tracker.transition(job.invoice_id, "PREP_QR")
+            work_dir = Path(job.work_dir)
+            pages_dir = work_dir / "pages"
+            work_dir.mkdir(parents=True, exist_ok=True)
+
+            t_render = time.perf_counter()
+            raw_pages = render_input_to_images(job.input_paths, pages_dir, pdf_dpi=200)
+            if not raw_pages:
+                raise RuntimeError("No readable pages rendered from input")
+            self.tracker.record_child_agent(job.invoice_id, "PREP_QR", "render_pages_child", (time.perf_counter() - t_render) * 1000.0, detail={"pageCount": len(raw_pages)})
+
+            def _cache_probe_child() -> tuple:
+                t0 = time.perf_counter()
+                src_meta = [
+                    {"path": str(p), "sha256": sha256_file(p), "fileBytes": p.stat().st_size}
+                    for p in job.input_paths
+                ]
+                page_shas = [sha256_file(p) for p in raw_pages]
+                all_cached = all(self._read_ocr_cache(ps) is not None for ps in page_shas)
+                self.tracker.record_child_agent(job.invoice_id, "PREP_QR", "cache_probe_child", (time.perf_counter() - t0) * 1000.0, detail={"cacheReady": all_cached})
+                return src_meta, page_shas, all_cached
+
+            def _qr_child() -> Dict[str, Any]:
+                t0 = time.perf_counter()
+                res = decode_qr_from_image(str(raw_pages[0]), extra_paths=[str(p) for p in raw_pages[1:]])
+                self.tracker.record_child_agent(job.invoice_id, "PREP_QR", "qr_decode_child", (time.perf_counter() - t0) * 1000.0, detail={"einvoiceFound": bool(res.get("einvoice_found"))})
+                return res
+
+            fut_probe = self._prep_pool.submit(_cache_probe_child)
+            fut_qr = self._prep_pool.submit(_qr_child)
+
+            src_meta, page_shas, all_cached = fut_probe.result()
+            has_cached_override = bool(job.cached_ocr_json and Path(job.cached_ocr_json).is_file())
+            if all_cached or has_cached_override:
+                # Cache hits or explicit cached OCR don't need UVDoc dewarping; keep rendered pages cleanly
+                prep_records = [{"raw_page": str(p), "p2_path": str(p), "skipped_cached": True} for p in raw_pages]
+                p2_paths = list(raw_pages)
+                self.tracker.record_child_agent(job.invoice_id, "PREP_QR", "p2_prep_child", 0.0, status="skipped_cache_hit")
+            else:
+                def _p2_child() -> List[Dict[str, object]]:
+                    t0 = time.perf_counter()
+                    recs = preprocess_pages_p2(raw_pages, work_dir, paddlex_cache_dir=self.paddlex_cache, max_side=1536)
+                    self.tracker.record_child_agent(job.invoice_id, "PREP_QR", "p2_prep_child", (time.perf_counter() - t0) * 1000.0, detail={"pages": len(recs)})
+                    return recs
+
+                fut_p2 = self._prep_pool.submit(_p2_child)
+                prep_records = fut_p2.result()
+                p2_paths = [Path(str(r["p2_path"])) for r in prep_records]
+
+            qr_info = fut_qr.result()
+            job.source_sha256 = src_meta
+            pkt.update(
+                {
+                    "raw_pages": raw_pages,
+                    "prep_records": prep_records,
+                    "p2_paths": p2_paths,
+                    "page_shas": page_shas,
+                    "qr_info": qr_info,
+                }
+            )
+            self._q_ocr.put(pkt)
+        except Exception as ex:
+            self._mark_job_failed(pkt, f"Stage1 Prep+QR error: {ex}")
+
     def _run_prep_stage(self) -> None:
         configure_isolated_paddlex(self.paddlex_cache)
         while True:
             pkt = self._q_prep.get()
             if pkt is None:
                 break
-            job: BatchJob = pkt["job"]
-            try:
-                self.tracker.transition(job.invoice_id, "PREP_QR")
-                work_dir = Path(job.work_dir)
-                pages_dir = work_dir / "pages"
-                p2_dir = work_dir / "p2_prep"
-                work_dir.mkdir(parents=True, exist_ok=True)
-                raw_pages = render_input_to_images(job.input_paths, pages_dir, pdf_dpi=200)
-                if not raw_pages:
-                    raise RuntimeError("No readable pages rendered from input")
+            self._prep_job_pool.submit(self._prep_one_job, pkt)
 
-                prep_records = preprocess_pages_p2(raw_pages, work_dir, paddlex_cache_dir=self.paddlex_cache, max_side=1536)
-                p2_paths = [Path(str(r["p2_path"])) for r in prep_records]
+    # ---------------- Stage 2: Parallel Child Visual OCR (Single Warm Server + Strip Repair) ----------------
+    def _ocr_single_page_child(self, idx: int, p2_img: Path, p_sha: str, log_dir: Path, invoice_id: str, cached_text: Optional[str]) -> Dict[str, Any]:
+        t0 = time.perf_counter()
+        if cached_text is not None:
+            self.tracker.record_child_agent(invoice_id, "VISUAL_OCR", f"visual_ocr_cache_p{idx}", (time.perf_counter() - t0) * 1000.0)
+            return {"idx": idx, "text": cached_text, "finish_reason": "cache_override", "truncated": False, "cached": True}
 
-                qr_info = decode_qr_from_image(str(raw_pages[0]), extra_paths=[str(p) for p in raw_pages[1:]])
-                job.source_sha256 = [
-                    {"path": str(p), "sha256": sha256_file(p), "fileBytes": p.stat().st_size}
-                    for p in job.input_paths
+        cached = self._read_ocr_cache(p_sha)
+        if cached is not None:
+            self.tracker.record_child_agent(invoice_id, "VISUAL_OCR", f"visual_ocr_cache_p{idx}", (time.perf_counter() - t0) * 1000.0)
+            return {"idx": idx, "text": cached["text"], "finish_reason": f"cache:{cached.get('finish_reason', 'stop')}", "truncated": False, "cached": True}
+
+        with self._lighton_inference_slot():
+            srv = self._ensure_ocr_session(log_dir)
+            res = srv.chat_image_stream(img_to_data_url(str(p2_img)), LIGHTON_PROMPT, max_tokens=None, timeout_s=600)
+        txt = str(res.get("text") or "")
+        fr = str(res.get("finish_reason") or "")
+        tr = bool(res.get("truncated")) or bool(res.get("truncated_by_loop"))
+        if not tr:
+            self._write_ocr_cache(p_sha, txt, fr, False)
+        self.tracker.record_child_agent(
+            invoice_id,
+            "VISUAL_OCR",
+            f"visual_ocr_page_child_{idx}",
+            (time.perf_counter() - t0) * 1000.0,
+            detail={"finishReason": fr, "truncated": tr, "chars": len(txt)},
+        )
+        return {"idx": idx, "text": txt, "finish_reason": fr, "truncated": tr, "cached": False}
+
+    def repair_footer_strip(self, invoice_id: str, p2_img_path: Path, work_dir: Path) -> str:
+        """Spawn a fast targeted Stage-2 child OCR call on the bottom 50% footer strip on truncation."""
+        t0 = time.perf_counter()
+        strip_path = work_dir / "preprocessed" / f"{p2_img_path.stem}_footer_strip.png"
+        cropped = crop_footer_strip(p2_img_path, strip_path, top_ratio=0.48)
+        with self._lighton_inference_slot():
+            srv = self._ensure_ocr_session(work_dir / "logs")
+            res = srv.chat_image_stream(
+                img_to_data_url(str(cropped)),
+                "Extract the tax breakdown table, CGST, SGST, IGST, round off, grand total, and amount in words from this invoice bottom section.",
+                max_tokens=1200,
+                timeout_s=180,
+            )
+        txt = str(res.get("text") or "")
+        self.tracker.record_child_agent(
+            invoice_id,
+            "VISUAL_OCR",
+            "visual_ocr_footer_strip_child",
+            (time.perf_counter() - t0) * 1000.0,
+            detail={"chars": len(txt), "finishReason": res.get("finish_reason", "")},
+        )
+        return txt
+
+    def _ocr_one_job(self, pkt: Dict[str, Any]) -> None:
+        job: BatchJob = pkt["job"]
+        try:
+            self.tracker.transition(job.invoice_id, "VISUAL_OCR")
+            p2_paths: List[Path] = pkt["p2_paths"]
+            page_shas: List[str] = pkt["page_shas"]
+
+            cached_override: Optional[List[str]] = None
+            if job.cached_ocr_json and Path(job.cached_ocr_json).is_file():
+                raw_c = json.loads(Path(job.cached_ocr_json).read_text(encoding="utf-8"))
+                if isinstance(raw_c, list) and len(raw_c) == len(p2_paths):
+                    cached_override = [str(x) for x in raw_c]
+
+            log_dir = Path(job.work_dir) / "logs"
+            if len(p2_paths) <= 1:
+                page_results = [
+                    self._ocr_single_page_child(
+                        1,
+                        p2_paths[0],
+                        page_shas[0],
+                        log_dir,
+                        job.invoice_id,
+                        cached_override[0] if cached_override is not None else None,
+                    )
                 ]
-                pkt.update(
-                    {
-                        "raw_pages": raw_pages,
-                        "prep_records": prep_records,
-                        "p2_paths": p2_paths,
-                        "page_shas": [sha256_file(p) for p in raw_pages],
-                        "qr_info": qr_info,
-                    }
-                )
-                self._q_ocr.put(pkt)
-            except Exception as ex:
-                self._mark_job_failed(pkt, f"Stage1 Prep+QR error: {ex}")
+            else:
+                futs = [
+                    self._ocr_pool.submit(
+                        self._ocr_single_page_child,
+                        idx,
+                        p2_img,
+                        p_sha,
+                        log_dir,
+                        job.invoice_id,
+                        cached_override[idx - 1] if cached_override is not None else None,
+                    )
+                    for idx, (p2_img, p_sha) in enumerate(zip(p2_paths, page_shas), 1)
+                ]
+                page_results = [f.result() for f in futs]
 
-    # ---------------- Stage 2: Continuous Single-Load Visual OCR ----------------
+            page_texts = [r["text"] for r in page_results]
+            finish_reasons = [r["finish_reason"] for r in page_results]
+            ocr_truncated = any(r["truncated"] for r in page_results)
+            cache_hits = sum(1 for r in page_results if r["cached"])
+            combined_ocr = "\n\n<!-- PAGE BREAK -->\n\n".join(page_texts)
+            all_cached = cache_hits == len(p2_paths)
+            pkt.update(
+                {
+                    "page_texts": page_texts,
+                    "combined_ocr": combined_ocr,
+                    "ocr_truncated": ocr_truncated,
+                    "finish_reasons": finish_reasons,
+                    "cache_hit": all_cached,
+                }
+            )
+            self.tracker.transition(job.invoice_id, "VISUAL_OCR", {"cacheHit": all_cached})
+            self._q_dispatch.put(pkt)
+        except Exception as ex:
+            self._mark_job_failed(pkt, f"Stage2 VisualOCR error: {ex}")
+
     def _run_visual_ocr_stage(self) -> None:
         while True:
             pkt = self._q_ocr.get()
             if pkt is None:
                 break
-            job: BatchJob = pkt["job"]
-            try:
-                self.tracker.transition(job.invoice_id, "VISUAL_OCR")
-                p2_paths: List[Path] = pkt["p2_paths"]
-                page_shas: List[str] = pkt["page_shas"]
-                page_texts: List[str] = []
-                ocr_truncated = False
-                finish_reasons: List[str] = []
-                cache_hits = 0
-
-                cached_override: Optional[List[str]] = None
-                if job.cached_ocr_json and Path(job.cached_ocr_json).is_file():
-                    raw_c = json.loads(Path(job.cached_ocr_json).read_text(encoding="utf-8"))
-                    if isinstance(raw_c, list) and len(raw_c) == len(p2_paths):
-                        cached_override = [str(x) for x in raw_c]
-
-                for idx, (p2_img, p_sha) in enumerate(zip(p2_paths, page_shas)):
-                    if cached_override is not None:
-                        page_texts.append(cached_override[idx])
-                        finish_reasons.append("cache_override")
-                        cache_hits += 1
-                        continue
-                    cached = self._read_ocr_cache(p_sha)
-                    if cached is not None:
-                        page_texts.append(cached["text"])
-                        finish_reasons.append(f"cache:{cached.get('finish_reason', 'stop')}")
-                        cache_hits += 1
-                        continue
-
-                    srv = self._ensure_ocr_session(Path(job.work_dir) / "logs")
-                    res = srv.chat_image_stream(img_to_data_url(str(p2_img)), LIGHTON_PROMPT, max_tokens=None, timeout_s=600)
-                    txt = str(res.get("text") or "")
-                    fr = str(res.get("finish_reason") or "")
-                    tr = bool(res.get("truncated")) or bool(res.get("truncated_by_loop"))
-                    page_texts.append(txt)
-                    finish_reasons.append(fr)
-                    if tr:
-                        ocr_truncated = True
-                    else:
-                        self._write_ocr_cache(p_sha, txt, fr, False)
-
-                combined_ocr = "\n\n<!-- PAGE BREAK -->\n\n".join(page_texts)
-                all_cached = cache_hits == len(p2_paths)
-                pkt.update(
-                    {
-                        "page_texts": page_texts,
-                        "combined_ocr": combined_ocr,
-                        "ocr_truncated": ocr_truncated,
-                        "finish_reasons": finish_reasons,
-                        "cache_hit": all_cached,
-                    }
-                )
-                self.tracker.transition(job.invoice_id, "VISUAL_OCR", {"cacheHit": all_cached})
-                # Hand immediately to Category Dispatcher & continue straight to next photo in queue!
-                self._q_dispatch.put(pkt)
-            except Exception as ex:
-                self._mark_job_failed(pkt, f"Stage2 VisualOCR error: {ex}")
+            self._ocr_job_pool.submit(self._ocr_one_job, pkt)
 
     # ---------------- Stage 3: Dynamic Category Dispatcher + Reusable Sub-Agent Pool ----------------
     def _run_category_wave(self, ctx: InvoiceWorkContext, categories: List[str], directives: Optional[Dict[str, Dict[str, Any]]] = None) -> None:
@@ -383,7 +515,7 @@ class ManagerAgent:
             except Exception as ex:
                 self._mark_job_failed(pkt, f"Stage3 SubAgents error: {ex}")
 
-    # ---------------- Stage 4: Continuous AuditorAgent ----------------
+    # ---------------- Stage 4: Continuous Parallel N->N AuditorAgent ----------------
     def _run_audit_stage(self) -> None:
         while True:
             pkt = self._q_audit.get()
@@ -391,15 +523,58 @@ class ManagerAgent:
                 break
             job: BatchJob = pkt["job"]
             ctx: InvoiceWorkContext = pkt["ctx"]
+            categories: List[str] = list(pkt.get("categories") or [])
             try:
-                self.tracker.transition(job.invoice_id, "AUDIT")
-                audit = audit_invoice_math(ctx.canonical, qr_einvoice=(ctx.qr_info or {}).get("einvoice"))
-                if pkt.get("ocr_truncated") and not audit.get("truncated"):
-                    audit["truncated"] = True
-                    audit.setdefault("blocking_issues", []).append("Visual OCR stream stopped before natural EOS.")
-                    audit["fully_balanced"] = False
+                self.tracker.transition(job.invoice_id, "AUDIT", {"categoryAgentCount": len(categories)})
+                qr_einv = (ctx.qr_info or {}).get("einvoice")
+                qr_upi = (ctx.qr_info or {}).get("upi_meta")
+                is_trunc = bool(pkt.get("ocr_truncated"))
 
-                # Pass 2 targeted self-correction via direct PeerBus CorrectionDirectives
+                audit, audit_children = run_parallel_category_audits(
+                    ctx.canonical,
+                    categories,
+                    pool=self._audit_pool,
+                    bus=self.bus,
+                    invoice_id=job.invoice_id,
+                    pass_no=ctx.pass_no,
+                    qr_einvoice=qr_einv,
+                    truncated=is_trunc,
+                )
+
+                # Fast Stage-2 footer-strip child recovery before considering heavier escalation
+                issues_low = " ".join(audit.get("blocking_issues") or []).lower()
+                if (
+                    not audit.get("fully_balanced")
+                    and (is_trunc or audit.get("truncated") or "printed grand total" in issues_low or "truncated mid-table" in issues_low)
+                    and pkt.get("p2_paths")
+                    and not pkt.get("cache_hit")
+                ):
+                    footer_txt = self.repair_footer_strip(job.invoice_id, Path(pkt["p2_paths"][-1]), Path(job.work_dir))
+                    if footer_txt.strip():
+                        # Close unclosed partial table if needed and append recovered footer block
+                        base_txt = ctx.raw_ocr_text or ""
+                        if base_txt.lower().count("<table") > base_txt.lower().count("</table>"):
+                            base_txt += "</table>\n\n"
+                        ctx.raw_ocr_text = base_txt + "\n\n" + footer_txt.strip()
+                        if ctx.page_texts:
+                            ctx.page_texts[-1] = (ctx.page_texts[-1] or "") + "\n\n" + footer_txt.strip()
+                        pkt["ocr_truncated"] = False
+                        is_trunc = False
+                        initialize_base_parse(ctx)
+                        self._run_category_wave(ctx, categories)
+                        ctx.canonical = normalize_canonical_dict(ctx.canonical, ctx.raw_ocr_text, qr_einv, qr_upi_meta=qr_upi)
+                        audit, audit_children = run_parallel_category_audits(
+                            ctx.canonical,
+                            categories,
+                            pool=self._audit_pool,
+                            bus=self.bus,
+                            invoice_id=job.invoice_id,
+                            pass_no=ctx.pass_no,
+                            qr_einvoice=qr_einv,
+                            truncated=False,
+                        )
+
+                # Pass 2 targeted self-correction via direct PeerBus CorrectionDirectives + selective re-audit
                 if not audit.get("fully_balanced"):
                     directives: Dict[str, Dict[str, Any]] = {}
                     issues_blob = " ".join(audit.get("blocking_issues") or []).lower()
@@ -408,10 +583,12 @@ class ManagerAgent:
                     if not audit.get("buyer_gstin_valid"):
                         directives["buyer_direction"] = {"reason": "buyer_gstin_check"}
                     if audit.get("bad_rows") or not audit.get("slab_match") or not audit.get("tax_match"):
-                        directives["hsn_classification"] = {"reason": "row_or_slab_mismatch"}
-                        directives["tax_summary_slab"] = {"reason": "row_or_slab_mismatch"}
+                        for dc in ("line_items", "hsn_classification", "tax_summary_slab"):
+                            if dc in categories:
+                                directives[dc] = {"reason": "row_or_slab_mismatch"}
                     if not audit.get("grand_balanced") or not audit.get("words_match"):
-                        directives["totals_words"] = {"reason": "grand_total_or_words_mismatch"}
+                        if "totals_words" in categories:
+                            directives["totals_words"] = {"reason": "grand_total_or_words_mismatch"}
 
                     if directives:
                         ctx.pass_no = 2
@@ -419,21 +596,43 @@ class ManagerAgent:
                         for target_agent, d_payload in directives.items():
                             self.bus.publish("auditor_agent", target_agent, "correction_directive", ctx.invoice_id, d_payload, pass_no=2)
                         self._run_category_wave(ctx, list(directives.keys()), directives=directives)
-                        ctx.canonical = normalize_canonical_dict(
+                        ctx.canonical = normalize_canonical_dict(ctx.canonical, ctx.raw_ocr_text, qr_einv, qr_upi_meta=qr_upi)
+                        # Re-audit only the affected categories in parallel and merge into the 1:1 audit children list
+                        re_cats = [c for c in categories if c in directives] or list(directives.keys())
+                        new_audit, updated_children = run_parallel_category_audits(
                             ctx.canonical,
-                            ctx.raw_ocr_text,
-                            (ctx.qr_info or {}).get("einvoice"),
-                            qr_upi_meta=(ctx.qr_info or {}).get("upi_meta"),
+                            re_cats,
+                            pool=self._audit_pool,
+                            bus=self.bus,
+                            invoice_id=job.invoice_id,
+                            pass_no=2,
+                            qr_einvoice=qr_einv,
+                            truncated=is_trunc,
                         )
-                        audit = audit_invoice_math(ctx.canonical, qr_einvoice=(ctx.qr_info or {}).get("einvoice"))
+                        by_cat = {c["category"]: c for c in updated_children}
+                        merged_children = [by_cat.get(c["category"], c) for c in audit_children]
+                        for c_rec in updated_children:
+                            if all(m["category"] != c_rec["category"] for m in merged_children):
+                                merged_children.append(c_rec)
+                        audit = new_audit
+                        audit["auditAgentCount"] = len(merged_children)
+                        audit["categoryAgentCount"] = len(categories)
+                        audit["perAgentAudit"] = merged_children
+                        audit_children = merged_children
 
+                self.tracker.record_audit_children(job.invoice_id, audit_children)
                 ctx.audit = audit
+                pkt["audit_children"] = audit_children
                 self.bus.publish(
                     "auditor_agent",
                     "final_handoff",
                     "audit_verdict",
                     ctx.invoice_id,
-                    {"fullyBalanced": bool(audit.get("fully_balanced")), "blockingCount": len(audit.get("blocking_issues") or [])},
+                    {
+                        "fullyBalanced": bool(audit.get("fully_balanced")),
+                        "blockingCount": len(audit.get("blocking_issues") or []),
+                        "auditAgentCount": len(audit_children),
+                    },
                     pass_no=ctx.pass_no,
                 )
                 self._q_handoff.put(pkt)
@@ -474,16 +673,23 @@ class ManagerAgent:
 
                 elapsed = round(time.perf_counter() - float(pkt["started"]), 2)
                 engine_tag = "LightOnOCR-2-1B-P2-Cached" if pkt.get("cache_hit") else "LightOnOCR-2-1B-P2"
+                snap = self.tracker.snapshot(job.invoice_id)
+                audit_children = pkt.get("audit_children") or []
                 trace = {
                     "invoiceId": job.invoice_id,
                     "dispatchedCategories": pkt.get("categories", []),
+                    "categoryAgentCount": len(pkt.get("categories", [])),
+                    "auditAgentCount": len(audit_children),
+                    "auditChildAgents": audit_children,
+                    "stageChildAgents": snap.get("stageChildAgents", {}),
+                    "llamaParallelSlots": self.llama_parallel,
                     "passCount": ctx.pass_no,
                     "cacheHit": bool(pkt.get("cache_hit")),
                     "finishReasons": pkt.get("finish_reasons", []),
                     "savedAgentMemories": saved_agents,
                     "agentNotes": ctx.agent_notes,
                     "peerMessages": self.bus.trace_for_invoice(job.invoice_id),
-                    "stageHistory": self.tracker.snapshot(job.invoice_id).get("stageHistory", []),
+                    "stageHistory": snap.get("stageHistory", []),
                 }
 
                 payload = {
@@ -579,6 +785,26 @@ def serve_warm_daemon(
                 self.end_headers()
                 self.wfile.write(b'{"status":"ready"}')
                 return
+            if self.path.startswith("/progress"):
+                touch()
+                inv_id = ""
+                if "invoiceId=" in self.path:
+                    inv_id = self.path.split("invoiceId=", 1)[1].split("&", 1)[0]
+                snap = manager.tracker.snapshot(inv_id) if inv_id else {}
+                body = json.dumps(
+                    {
+                        "stage": snap.get("stage", ""),
+                        "activeAgents": snap.get("activeAgents", []),
+                        "completedAgents": snap.get("completedAgents", []),
+                        "dispatchedCategories": snap.get("dispatchedCategories", []),
+                    }
+                ).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             self.send_response(404)
             self.end_headers()
 
@@ -591,6 +817,38 @@ def serve_warm_daemon(
                 self.end_headers()
                 self.wfile.write(b'{"stopping":true}')
                 stop_event.set()
+                return
+            if self.path == "/escalate-qwen":
+                try:
+                    req = json.loads(raw.decode("utf-8"))
+                    out_p = Path(req["workerOutput"])
+                    wo = json.loads(out_p.read_text(encoding="utf-8"))
+                    with manager.exclusive_qwen_gate():
+                        apply_qwen_escalation_to_worker_payload(
+                            wo,
+                            llama_server=manager.llama_server,
+                            qwen_model=Path(req["qwenModel"]),
+                            qwen_mmproj=Path(req["qwenMmproj"]),
+                            work_dir=Path(req["workDir"]),
+                            client_gstin=str(req.get("clientGstin") or ""),
+                            direction=str(req.get("direction") or "Auto"),
+                            memory_db=str(req.get("memoryDb") or ""),
+                            threads=manager.threads,
+                        )
+                    wo["elapsedSec"] = round(float(wo.get("elapsedSec") or 0.0) + float(req.get("waitOffsetSec") or 0.0), 2)
+                    tmp_out = out_p.with_suffix(".json.tmp")
+                    tmp_out.write_text(json.dumps(wo, indent=2, ensure_ascii=False), encoding="utf-8")
+                    os.replace(tmp_out, out_p)
+                    touch()
+                    body = json.dumps({"ok": True, "engineUsed": wo["engineUsed"], "balanced": bool((wo["audit"] or {}).get("fully_balanced"))}).encode("utf-8")
+                    self.send_response(200)
+                except Exception as ex:
+                    body = json.dumps({"ok": False, "error": str(ex)}).encode("utf-8")
+                    self.send_response(500)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
                 return
             if self.path != "/extract":
                 self.send_response(404)

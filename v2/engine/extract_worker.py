@@ -31,6 +31,8 @@ from hybrid_merger import (
     QWEN_INVOICE_JSON_PROMPT,
     QWEN_INVOICE_JSON_SCHEMA,
     LlamaServerSession,
+    apply_qwen_escalation_to_worker_payload,
+    escalate_with_qwen,
     img_to_data_url,
     math_fitness,
     merge_consensus,
@@ -249,74 +251,25 @@ def run_extraction(args: argparse.Namespace) -> Dict[str, Any]:
     if need_escalation and qwen_model.is_file() and qwen_mmproj.is_file():
         emit_progress(args.progress, 65, "Escalating math/GSTIN verification to Qwen3-VL-4B...")
         try:
-            import cv2
-
-            seller_obj = (canon_lighton or {}).get("seller") or {}
-            few_shot_hint = build_few_shot_prompt_hint(
-                memory_db,
-                str(seller_obj.get("gstin") or ""),
-                str(seller_obj.get("name") or ""),
+            esc = escalate_with_qwen(
+                llama_server=llama_server,
+                qwen_model=qwen_model,
+                qwen_mmproj=qwen_mmproj,
+                p2_paths=p2_paths,
+                work_dir=work_dir,
+                qr_info=qr_info,
+                canon_lighton=canon_lighton,
+                combined_lighton=combined_lighton,
+                client_gstin=args.client_gstin,
+                direction=args.direction,
+                memory_db=memory_db,
+                threads=args.threads,
+                progress_cb=(lambda pct, msg: emit_progress(args.progress, pct, msg)),
             )
-            qwen_prompt = QWEN_INVOICE_JSON_PROMPT + few_shot_hint
-
-            qwen_dir = work_dir / "qwen_scaled"
-            qwen_dir.mkdir(parents=True, exist_ok=True)
-            qwen_replies: List[str] = []
-            with LlamaServerSession(str(llama_server), str(qwen_model), str(qwen_mmproj), log_dir, threads=args.threads) as srv:
-                for idx, p2_img in enumerate(p2_paths, 1):
-                    emit_progress(args.progress, 70 + int(22 * idx / len(p2_paths)), f"Qwen3-VL-4B verifying page {idx}/{len(p2_paths)}...")
-                    # Cap escalated Qwen input at 1280px max side so CPU inference finishes fast (~2 min)
-                    bgr = cv2.imread(str(p2_img))
-                    q_img = p2_img
-                    if bgr is not None and max(bgr.shape[:2]) > 1280:
-                        q_img = qwen_dir / p2_img.name
-                        cv2.imwrite(str(q_img), resize_max_side(bgr, 1280))
-                    reply = srv.chat_image(
-                        img_to_data_url(str(q_img)),
-                        qwen_prompt,
-                        max_tokens=2400,
-                        timeout_s=600,
-                        json_schema=QWEN_INVOICE_JSON_SCHEMA,
-                    )
-                    qwen_replies.append(reply)
-
-            page_canons = [
-                parse_document_text_to_canonical(r, qr_einvoice=qr_einv, known_client_gstin=args.client_gstin, direction_hint=args.direction, qr_upi_meta=qr_upi_meta)
-                for r in qwen_replies
-            ]
-            if len(page_canons) == 1:
-                canon_qwen = page_canons[0]
-            else:
-                merged_obj = dict(page_canons[0])
-                all_rows = []
-                for pc in page_canons:
-                    all_rows.extend(pc.get("rows") or [])
-                merged_obj["rows"] = all_rows
-                merged_obj["taxableTotal"] = 0.0
-                merged_obj["discountTotal"] = 0.0
-                merged_obj["cgstTotal"] = 0.0
-                merged_obj["sgstTotal"] = 0.0
-                merged_obj["igstTotal"] = 0.0
-                merged_obj["cessTotal"] = 0.0
-                for pc in reversed(page_canons):
-                    if float(pc.get("invoiceTotal") or 0.0) > 0:
-                        merged_obj["invoiceTotal"] = pc["invoiceTotal"]
-                        merged_obj["roundOff"] = pc.get("roundOff", 0.0)
-                        merged_obj["creditNoteTotal"] = pc.get("creditNoteTotal", 0.0)
-                        break
-                canon_qwen = normalize_canonical_dict(merged_obj, "\n\n".join(qwen_replies), qr_einv, qr_upi_meta=qr_upi_meta)
-
-            if canon_lighton is not None:
-                canon_lighton["_source"] = "lighton"
-                canon_qwen["_source"] = "qwen"
-                final_canon = merge_consensus([canon_lighton, canon_qwen], qr_einv=qr_einv, qr_upi_meta=qr_upi_meta)
-                engine_used = "Hybrid(LightOnOCR-2-1B+Qwen3-VL-4B)"
-                final_raw = combined_lighton + "\n\n===== QWEN3-VL-4B VERIFICATION =====\n" + "\n\n".join(qwen_replies)
-            else:
-                final_canon = canon_qwen
-                engine_used = "Qwen3-VL-4B-P2"
-                final_raw = "\n\n".join(qwen_replies)
-            memory_meta = apply_supplier_memory(final_canon, memory_db)
+            final_canon = esc["canonical"]
+            engine_used = esc["engineUsed"]
+            final_raw = esc["rawOcrText"]
+            memory_meta = esc["supplierMemory"]
         except Exception as esc_ex:
             if canon_lighton is None:
                 raise
@@ -442,18 +395,58 @@ def main() -> int:
         cache_dir = Path(local_app) / "InvoiceVisionChild" / "Cache"
         cache_dir.mkdir(parents=True, exist_ok=True)
 
+    def _escalate_payload_locally(payload_dict: Dict[str, Any]) -> Dict[str, Any]:
+        qwen_m = Path(args.qwen_model or defaults["qwen_model"])
+        qwen_mm = Path(args.qwen_mmproj or defaults["qwen_mmproj"])
+        apply_qwen_escalation_to_worker_payload(
+            payload_dict,
+            llama_server=llama_srv,
+            qwen_model=qwen_m,
+            qwen_mmproj=qwen_mm,
+            work_dir=Path(args.work_dir).resolve() if args.work_dir else out_path.parent,
+            client_gstin=args.client_gstin,
+            direction=args.direction,
+            memory_db=args.memory_db,
+            threads=args.threads,
+            progress_cb=(lambda pct, msg: emit_progress(args.progress, pct, msg)),
+        )
+        tmp_path = out_path.with_suffix(".json.tmp")
+        tmp_path.write_text(json.dumps(payload_dict, indent=2, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp_path, out_path)
+        return payload_dict
+
+    def _needs_qwen_escalation(payload_dict: Dict[str, Any]) -> bool:
+        if mode != "hybrid":
+            return False
+        audit_pl = payload_dict.get("audit") or {}
+        if audit_pl.get("fully_balanced"):
+            return False
+        qwen_m = Path(args.qwen_model or defaults["qwen_model"])
+        qwen_mm = Path(args.qwen_mmproj or defaults["qwen_mmproj"])
+        if not (qwen_m.is_file() and qwen_mm.is_file()):
+            return False
+        is_partial_only = (
+            audit_pl.get("row_count", 0) > 0
+            and float((payload_dict.get("canonical") or {}).get("invoiceTotal") or 0.0) <= 0.0
+            and bool(re.search(r"\b(?:cont\.?\s*page\s*\d+|page\s*1\s*(?:of|/)\s*[2-9]|carry\s*forward|to\s+be\s+continued)\b", payload_dict.get("rawOcrText") or "", re.IGNORECASE))
+        )
+        return not is_partial_only
+
     # Reuse warm local daemon (or spawn one safely under lock so parallel bursts share 1 LightOnOCR-2-1B instance)
     daemon_info_file = cache_dir / "warm_daemon.json"
     use_pipeline = mode in ("auto", "fast", "hybrid") and not args.cached_ocr_json
 
     if use_pipeline and not args.no_daemon and os.environ.get("AAH_IVC_NO_DAEMON") != "1":
         import subprocess
+        import threading
         import urllib.request
+
+        job_id_unique = f"{out_path.parent.name}_{out_path.stem}"
 
         def _try_submit_daemon(port_num: int) -> bool:
             req_body = json.dumps(
                 {
-                    "invoiceId": out_path.stem,
+                    "invoiceId": job_id_unique,
                     "inputs": [str(Path(p).resolve()) for p in args.input],
                     "output": str(out_path),
                     "workDir": str(Path(args.work_dir).resolve() if args.work_dir else Path(tempfile.mkdtemp(prefix="aah_ivc2_"))),
@@ -464,12 +457,36 @@ def main() -> int:
                     "cachedOcrJson": args.cached_ocr_json,
                 }
             ).encode("utf-8")
-            req = urllib.request.Request(f"http://127.0.0.1:{port_num}/extract", data=req_body, headers={"Content-Type": "application/json"}, method="POST")
-            with urllib.request.urlopen(req, timeout=1800) as resp:
-                if resp.status == 200:
-                    dres = json.loads(resp.read().decode("utf-8"))
-                    emit_progress(args.progress, 100, f"Done via warm daemon in {dres.get('elapsedSec', 0)}s ({dres.get('engineUsed', '')})")
-                    return True
+
+            done_flag = threading.Event()
+
+            def _heartbeat_poll() -> None:
+                last_stage = ""
+                stage_pct = {"QUEUED": 10, "PREP_QR": 20, "VISUAL_OCR": 45, "CATEGORY_DISPATCH": 70, "PEER_SUBAGENTS": 78, "AUDIT": 85, "SELF_CORRECT": 90, "FINAL_HANDOFF": 96}
+                while not done_flag.wait(12.0):
+                    try:
+                        with urllib.request.urlopen(f"http://127.0.0.1:{port_num}/progress?invoiceId={job_id_unique}", timeout=2) as pr:
+                            if pr.status == 200:
+                                st = json.loads(pr.read().decode("utf-8"))
+                                sg = str(st.get("stage") or "PROCESSING")
+                                if sg != last_stage or True:
+                                    last_stage = sg
+                                    emit_progress(args.progress, stage_pct.get(sg, 50), f"Warm daemon stage: {sg}")
+                    except Exception:
+                        emit_progress(args.progress, 50, "Warm daemon processing queued invoice...")
+
+            hb_thread = threading.Thread(target=_heartbeat_poll, daemon=True) if args.progress else None
+            if hb_thread is not None:
+                hb_thread.start()
+            try:
+                req = urllib.request.Request(f"http://127.0.0.1:{port_num}/extract", data=req_body, headers={"Content-Type": "application/json"}, method="POST")
+                with urllib.request.urlopen(req, timeout=1800) as resp:
+                    if resp.status == 200:
+                        dres = json.loads(resp.read().decode("utf-8"))
+                        emit_progress(args.progress, 100, f"Done via warm daemon in {dres.get('elapsedSec', 0)}s ({dres.get('engineUsed', '')})")
+                        return True
+            finally:
+                done_flag.set()
             return False
 
         def _read_live_port() -> int:
@@ -549,30 +566,42 @@ def main() -> int:
         if port > 0:
             try:
                 if _try_submit_daemon(port):
-                    if mode == "hybrid" and out_path.is_file():
+                    if out_path.is_file():
                         d_out = json.loads(out_path.read_text(encoding="utf-8"))
-                        if not (d_out.get("audit") or {}).get("fully_balanced"):
+                        if _needs_qwen_escalation(d_out):
                             qwen_m = Path(args.qwen_model or defaults["qwen_model"])
                             qwen_mm = Path(args.qwen_mmproj or defaults["qwen_mmproj"])
-                            is_partial_only = (
-                                (d_out.get("audit") or {}).get("row_count", 0) > 0
-                                and float((d_out.get("canonical") or {}).get("invoiceTotal") or 0.0) <= 0.0
-                                and bool(re.search(r"\b(?:cont\.?\s*page\s*\d+|page\s*1\s*(?:of|/)\s*[2-9]|carry\s*forward|to\s+be\s+continued)\b", d_out.get("rawOcrText") or "", re.IGNORECASE))
-                            )
-                            if not is_partial_only and qwen_m.is_file() and qwen_mm.is_file():
-                                emit_progress(args.progress, 75, "Hybrid Auditor fallback -> escalating unresolved bill to Qwen3-VL-4B...")
-                                tmp_path = out_path.with_suffix(".json.tmp")
-                                result = run_extraction(args)
-                                tmp_path.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
-                                os.replace(tmp_path, out_path)
-                                emit_progress(args.progress, 100, f"Done in {result['elapsedSec']}s ({result['engineUsed']})")
+                            emit_progress(args.progress, 75, "Hybrid Auditor fallback -> escalating unresolved bill to Qwen3-VL-4B (reusing LightOnOCR)...")
+                            t_q0 = time.perf_counter()
+                            esc_req = json.dumps(
+                                {
+                                    "workerOutput": str(out_path),
+                                    "qwenModel": str(qwen_m),
+                                    "qwenMmproj": str(qwen_mm),
+                                    "workDir": str(Path(args.work_dir).resolve() if args.work_dir else out_path.parent),
+                                    "clientGstin": args.client_gstin,
+                                    "direction": args.direction,
+                                    "memoryDb": args.memory_db,
+                                    "waitOffsetSec": 0.0,
+                                }
+                            ).encode("utf-8")
+                            try:
+                                qreq = urllib.request.Request(f"http://127.0.0.1:{port}/escalate-qwen", data=esc_req, headers={"Content-Type": "application/json"}, method="POST")
+                                with urllib.request.urlopen(qreq, timeout=900) as qresp:
+                                    if qresp.status == 200:
+                                        qres = json.loads(qresp.read().decode("utf-8"))
+                                        emit_progress(args.progress, 100, f"Done in {round(time.perf_counter()-t_q0,1)}s ({qres.get('engineUsed', 'Hybrid')})")
+                                        return 0
+                            except Exception:
+                                _escalate_payload_locally(d_out)
+                                emit_progress(args.progress, 100, f"Done in {d_out.get('elapsedSec', 0)}s ({d_out.get('engineUsed', 'Hybrid')})")
                     return 0
             except Exception:
                 pass
 
     if mode in ("auto", "fast", "hybrid"):
         job = BatchJob(
-            invoice_id=out_path.stem,
+            invoice_id=f"{out_path.parent.name}_{out_path.stem}",
             input_paths=[Path(p).resolve() for p in args.input],
             output_path=out_path,
             work_dir=Path(args.work_dir).resolve() if args.work_dir else Path(tempfile.mkdtemp(prefix="aah_ivc2_")),
@@ -595,23 +624,9 @@ def main() -> int:
         if job.error:
             raise RuntimeError(job.error)
         res_pl = job.result_payload or {}
-        audit_pl = res_pl.get("audit") or {}
-        qwen_m = Path(args.qwen_model or defaults["qwen_model"])
-        qwen_mm = Path(args.qwen_mmproj or defaults["qwen_mmproj"])
-        # In hybrid mode, only invoke Qwen3-VL-4B when Pass-2 Auditor still blocks and bill isn't a partial continuation page
-        is_partial_only = (
-            audit_pl.get("row_count", 0) > 0
-            and float((res_pl.get("canonical") or {}).get("invoiceTotal") or 0.0) <= 0.0
-            and bool(re.search(r"\b(?:cont\.?\s*page\s*\d+|page\s*1\s*(?:of|/)\s*[2-9]|carry\s*forward|to\s+be\s+continued)\b", res_pl.get("rawOcrText") or "", re.IGNORECASE))
-        )
-        if mode == "hybrid" and not audit_pl.get("fully_balanced") and not is_partial_only and qwen_m.is_file() and qwen_mm.is_file():
-            emit_progress(args.progress, 75, "Hybrid Auditor fallback -> escalating unresolved bill to Qwen3-VL-4B...")
-            tmp_path = out_path.with_suffix(".json.tmp")
-            result = run_extraction(args)
-            tmp_path.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
-            os.replace(tmp_path, out_path)
-            emit_progress(args.progress, 100, f"Done in {result['elapsedSec']}s ({result['engineUsed']})")
-            return 0
+        if _needs_qwen_escalation(res_pl):
+            emit_progress(args.progress, 75, "Hybrid Auditor fallback -> escalating unresolved bill to Qwen3-VL-4B (reusing LightOnOCR)...")
+            _escalate_payload_locally(res_pl)
         emit_progress(args.progress, 100, f"Done in {res_pl.get('elapsedSec', 0)}s ({res_pl.get('engineUsed', '')})")
         return 0
 

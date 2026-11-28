@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Optional, Tuple
+import time
+from concurrent.futures import Future, ThreadPoolExecutor
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 GSTIN_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
@@ -152,6 +154,7 @@ def audit_invoice_math(
     row_total_sum = sum(float(r.get("lineTotal") or 0.0) for r in rows)
 
     bad_rows = []
+    row_warnings = []
     for idx, r in enumerate(rows):
         tx = float(r.get("taxable") or 0.0)
         cg = float(r.get("cgst") or 0.0)
@@ -161,8 +164,33 @@ def audit_invoice_math(
         lt = float(r.get("lineTotal") or 0.0)
         rate = float(r.get("gstRate") or 0.0)
         issues = []
-        if lt > 0 and abs((tx + cg + sg + ig + cs) - lt) > 0.25:
+        row_warns = []
+        line_sum_ok = lt <= 0 or abs((tx + cg + sg + ig + cs) - lt) <= 0.25
+        if not line_sum_ok:
             issues.append(f"sum_mismatch({tx}+{cg}+{sg}+{ig}+{cs}!={lt})")
+        rate_math_ok = True
+        if rate == 0 and (cg + sg + ig) > 0.05:
+            issues.append(f"tax_on_zero_rate(tax={cg+sg+ig:.2f})")
+            rate_math_ok = False
+        if rate > 0 and tx > 0:
+            if not is_supported_gst_rate(rate):
+                issues.append(f"non_standard_gst_rate({rate})")
+                rate_math_ok = False
+            exp_tax = tx * (rate / 100.0)
+            got_tax = cg + sg + ig
+            if abs(exp_tax - got_tax) > max(0.35, tx * 0.005):
+                issues.append(f"gst_rate_mismatch(exp={exp_tax:.2f},got={got_tax:.2f})")
+                rate_math_ok = False
+        if ig == 0 and (cg > 0 or sg > 0):
+            if abs(cg - sg) > 0.005:
+                issues.append(f"cgst_sgst_split_mismatch({cg}!={sg})")
+                rate_math_ok = False
+            if rate == 0:
+                issues.append("missing_gst_rate")
+                rate_math_ok = False
+        if tx <= 0 and lt > 0:
+            issues.append("missing_row_taxable")
+            rate_math_ok = False
         qty = float(r.get("quantity") or 0.0)
         unit_rate = float(r.get("rate") or 0.0)
         disc = float(r.get("discount") or 0.0)
@@ -170,25 +198,16 @@ def audit_invoice_math(
             exp_tx = round2((qty * unit_rate) - disc)
             is_inclusive_unit = (lt > 0 and rate > 0 and abs(exp_tx - lt) <= max(1.50, lt * 0.01))
             if abs(exp_tx - tx) > max(1.50, tx * 0.01) and not is_inclusive_unit:
-                issues.append(f"qty_rate_disc_mismatch(exp={exp_tx:.2f},got={tx:.2f})")
-        if rate == 0 and (cg + sg + ig) > 0.05:
-            issues.append(f"tax_on_zero_rate(tax={cg+sg+ig:.2f})")
-        if rate > 0 and tx > 0:
-            if not is_supported_gst_rate(rate):
-                issues.append(f"non_standard_gst_rate({rate})")
-            exp_tax = tx * (rate / 100.0)
-            got_tax = cg + sg + ig
-            if abs(exp_tax - got_tax) > max(0.35, tx * 0.005):
-                issues.append(f"gst_rate_mismatch(exp={exp_tax:.2f},got={got_tax:.2f})")
-        if ig == 0 and (cg > 0 or sg > 0):
-            if abs(cg - sg) > 0.005:
-                issues.append(f"cgst_sgst_split_mismatch({cg}!={sg})")
-            if rate == 0:
-                issues.append("missing_gst_rate")
-        if tx <= 0 and lt > 0:
-            issues.append("missing_row_taxable")
+                msg = f"qty_rate_disc_mismatch(exp={exp_tx:.2f},got={tx:.2f})"
+                # If taxable+tax == lineTotal AND GST rate math holds, treat unit-rate difference as non-blocking warning
+                if lt > 0 and line_sum_ok and rate_math_ok:
+                    row_warns.append(msg)
+                else:
+                    issues.append(msg)
         if issues:
             bad_rows.append({"row": idx + 1, "issues": issues})
+        if row_warns:
+            row_warnings.append({"row": idx + 1, "warnings": row_warns})
 
     eff_tx = taxable_total if taxable_total > 0 else row_taxable_sum
     tax_sum = cgst_total + sgst_total + igst_total
@@ -254,6 +273,7 @@ def audit_invoice_math(
     return {
         "row_count": len(rows),
         "bad_rows": bad_rows,
+        "row_warnings": row_warnings,
         "row_taxable_sum": round2(row_taxable_sum),
         "row_cgst_sum": round2(row_cgst_sum),
         "row_sgst_sum": round2(row_sgst_sum),
@@ -287,3 +307,242 @@ def audit_invoice_math(
             and seller_ok
         ),
     }
+
+
+# ---------------- Stage 4 Parallel 1-to-1 Category Audit Child Registry ----------------
+AuditChildHandler = Callable[[Dict[str, Any], Dict[str, Any]], Dict[str, Any]]
+AUDIT_REGISTRY: Dict[str, AuditChildHandler] = {}
+
+
+def _audit_child_supplier_identity(inv: Dict[str, Any], meta_ctx: Dict[str, Any]) -> Dict[str, Any]:
+    s_gstin = (inv.get("seller") or {}).get("gstin")
+    ok = is_valid_gstin(s_gstin)
+    return {
+        "passed": ok,
+        "blocking": ([] if ok else ["Seller GSTIN checksum invalid or missing."]),
+        "warnings": [],
+        "metrics": {"sellerGstin": s_gstin or "", "valid": ok},
+    }
+
+
+def _audit_child_buyer_direction(inv: Dict[str, Any], meta_ctx: Dict[str, Any]) -> Dict[str, Any]:
+    b_gstin = (inv.get("buyer") or {}).get("gstin")
+    ok = is_valid_gstin(b_gstin)
+    return {
+        "passed": True,  # Buyer GSTIN may be unregistered B2C, tracked as advisory metric unless invalid format
+        "blocking": [],
+        "warnings": ([] if ok or not b_gstin else [f"Buyer GSTIN checksum invalid ({b_gstin})."]),
+        "metrics": {"buyerGstin": b_gstin or "", "valid": ok},
+    }
+
+
+def _audit_child_invoice_header(inv: Dict[str, Any], meta_ctx: Dict[str, Any]) -> Dict[str, Any]:
+    inv_no = str(inv.get("invoiceNumber") or "").strip()
+    inv_dt = str(inv.get("invoiceDate") or "").strip()
+    return {
+        "passed": bool(inv_no),
+        "blocking": [],
+        "warnings": ([] if inv_no else ["Invoice number missing."]),
+        "metrics": {"invoiceNumber": inv_no, "invoiceDate": inv_dt},
+    }
+
+
+def _audit_child_qr_authority(inv: Dict[str, Any], meta_ctx: Dict[str, Any]) -> Dict[str, Any]:
+    qr_e = meta_ctx.get("qr_einvoice") or {}
+    inv_tot = float(inv.get("invoiceTotal") or 0.0)
+    blocking: List[str] = []
+    if qr_e:
+        qtot = float(qr_e.get("TotInvVal") or 0.0)
+        if qtot > 0 and inv_tot > 0 and abs(qtot - inv_tot) > 1.05:
+            blocking.append(f"e-Invoice QR total ({qtot:.2f}) mismatches Invoice Total ({inv_tot:.2f}).")
+    return {
+        "passed": len(blocking) == 0,
+        "blocking": blocking,
+        "warnings": [],
+        "metrics": {"hasQr": bool(qr_e)},
+    }
+
+
+def _audit_child_multipage_continuity(inv: Dict[str, Any], meta_ctx: Dict[str, Any]) -> Dict[str, Any]:
+    raw_text = str(meta_ctx.get("raw_text") or "")
+    trunc = bool(meta_ctx.get("truncated")) or bool(
+        raw_text and (raw_text.lower().count("<table") > raw_text.lower().count("</table>") or raw_text.rstrip().endswith("<"))
+    )
+    return {
+        "passed": not trunc,
+        "blocking": (["OCR output was truncated mid-table before end of invoice."] if trunc else []),
+        "warnings": [],
+        "metrics": {"htmlComplete": not trunc},
+    }
+
+
+def _audit_child_line_items(inv: Dict[str, Any], meta_ctx: Dict[str, Any]) -> Dict[str, Any]:
+    base = meta_ctx.get("base_audit") or {}
+    blocking: List[str] = []
+    if base.get("row_count", 0) > 0 and not base.get("taxable_match"):
+        tx_sum = float(base.get("row_taxable_sum") or 0.0)
+        eff_tx = float(inv.get("taxableTotal") or tx_sum)
+        blocking.append(f"Row taxable sum ({tx_sum:.2f}) mismatches header taxable total ({eff_tx:.2f}).")
+    return {
+        "passed": len(blocking) == 0 and len(base.get("bad_rows") or []) == 0 and base.get("row_count", 0) > 0,
+        "blocking": blocking,
+        "warnings": [w for w in (base.get("row_warnings") or [])],
+        "metrics": {"rowCount": base.get("row_count", 0), "badRowCount": len(base.get("bad_rows") or [])},
+    }
+
+
+def _audit_child_hsn_classification(inv: Dict[str, Any], meta_ctx: Dict[str, Any]) -> Dict[str, Any]:
+    rows = inv.get("rows") or []
+    rate_issues = [
+        idx + 1
+        for idx, r in enumerate(rows)
+        if float(r.get("gstRate") or 0.0) > 0 and not is_supported_gst_rate(float(r.get("gstRate") or 0.0))
+    ]
+    return {
+        "passed": len(rate_issues) == 0,
+        "blocking": [],
+        "warnings": ([f"Rows with non-standard GST rate: {rate_issues}"] if rate_issues else []),
+        "metrics": {"nonStandardRows": len(rate_issues)},
+    }
+
+
+def _audit_child_discount_charges(inv: Dict[str, Any], meta_ctx: Dict[str, Any]) -> Dict[str, Any]:
+    ro = float(inv.get("roundOff") or 0.0)
+    cn = float(inv.get("creditNoteTotal") or 0.0)
+    return {
+        "passed": abs(ro) <= 5.0,
+        "blocking": [],
+        "warnings": ([] if abs(ro) <= 5.0 else [f"Large round-off ({ro:.2f})."]),
+        "metrics": {"roundOff": ro, "creditNoteTotal": cn},
+    }
+
+
+def _audit_child_tax_summary_slab(inv: Dict[str, Any], meta_ctx: Dict[str, Any]) -> Dict[str, Any]:
+    base = meta_ctx.get("base_audit") or {}
+    blocking: List[str] = []
+    if base.get("row_count", 0) > 0 and not base.get("tax_match"):
+        rt = float(base.get("row_tax_sum") or 0.0)
+        ht = float(inv.get("cgstTotal") or 0.0) + float(inv.get("sgstTotal") or 0.0) + float(inv.get("igstTotal") or 0.0)
+        blocking.append(f"Row tax sum ({rt:.2f}) mismatches header tax total ({(ht if ht > 0 else rt):.2f}).")
+    if not base.get("slab_match", True):
+        blocking.append("GST slab totals do not reconcile to invoice header taxable/tax totals.")
+    return {
+        "passed": len(blocking) == 0,
+        "blocking": blocking,
+        "warnings": [],
+        "metrics": {"taxMatch": bool(base.get("tax_match")), "slabMatch": bool(base.get("slab_match"))},
+    }
+
+
+def _audit_child_totals_words(inv: Dict[str, Any], meta_ctx: Dict[str, Any]) -> Dict[str, Any]:
+    base = meta_ctx.get("base_audit") or {}
+    inv_tot = float(inv.get("invoiceTotal") or 0.0)
+    tx = float(inv.get("taxableTotal") or base.get("row_taxable_sum") or 0.0)
+    ht = float(inv.get("cgstTotal") or 0.0) + float(inv.get("sgstTotal") or 0.0) + float(inv.get("igstTotal") or 0.0)
+    eff_tax = ht if ht > 0 else float(base.get("row_tax_sum") or 0.0)
+    cess = float(inv.get("cessTotal") or 0.0)
+    ro = float(inv.get("roundOff") or 0.0)
+    cn = float(inv.get("creditNoteTotal") or 0.0)
+    expected_grand = tx + eff_tax + cess - cn + ro
+    blocking: List[str] = []
+    if not base.get("grand_balanced"):
+        blocking.append(f"Taxable + Tax - CreditNote + RoundOff ({expected_grand:.2f}) != Invoice Total ({inv_tot:.2f}).")
+    words_val = float(base.get("amount_in_words") or 0.0)
+    if words_val > 0 and inv_tot > 0 and abs(words_val - inv_tot) > 1.05:
+        blocking.append(f"Printed Amount-in-Words ({words_val:.2f}) mismatches extracted Invoice Total ({inv_tot:.2f}).")
+    printed_found = meta_ctx.get("printed_total_found")
+    qr_e = meta_ctx.get("qr_einvoice") or {}
+    if printed_found is False and inv_tot > 0 and not words_val and not qr_e.get("TotInvVal"):
+        blocking.append("Printed grand total was not found directly; total was inferred only.")
+    return {
+        "passed": len(blocking) == 0,
+        "blocking": blocking,
+        "warnings": [],
+        "metrics": {"invoiceTotal": inv_tot, "amountInWords": words_val, "grandBalanced": bool(base.get("grand_balanced"))},
+    }
+
+
+def _audit_child_generic(cat_name: str, inv: Dict[str, Any], meta_ctx: Dict[str, Any]) -> Dict[str, Any]:
+    return {"passed": True, "blocking": [], "warnings": [], "metrics": {"category": cat_name, "mode": "generic"}}
+
+
+for _acat, _afn in (
+    ("supplier_identity", _audit_child_supplier_identity),
+    ("buyer_direction", _audit_child_buyer_direction),
+    ("invoice_header", _audit_child_invoice_header),
+    ("qr_authority", _audit_child_qr_authority),
+    ("multipage_continuity", _audit_child_multipage_continuity),
+    ("line_items", _audit_child_line_items),
+    ("hsn_classification", _audit_child_hsn_classification),
+    ("discount_charges", _audit_child_discount_charges),
+    ("tax_summary_slab", _audit_child_tax_summary_slab),
+    ("totals_words", _audit_child_totals_words),
+):
+    AUDIT_REGISTRY[_acat] = _afn
+
+
+def run_parallel_category_audits(
+    inv: Dict[str, Any],
+    categories: List[str],
+    pool: ThreadPoolExecutor,
+    bus: Any = None,
+    invoice_id: str = "",
+    pass_no: int = 1,
+    qr_einvoice: Optional[Dict[str, Any]] = None,
+    truncated: bool = False,
+) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+    """Spawn N parallel Stage-4 Audit Child Agents matching 1:1 with the N Stage-3 category sub-agents."""
+    meta_map = inv.get("_meta") if isinstance(inv.get("_meta"), dict) else {}
+    raw_text = str(meta_map.get("raw_text") or "")
+    base_audit = audit_invoice_math(inv, raw_text=raw_text, truncated=truncated, qr_einvoice=qr_einvoice)
+    meta_ctx = {
+        "raw_text": raw_text,
+        "truncated": bool(truncated or base_audit.get("truncated")),
+        "qr_einvoice": qr_einvoice or {},
+        "printed_total_found": meta_map.get("printed_total_found"),
+        "base_audit": base_audit,
+    }
+
+    target_cats = list(categories) if categories else ["supplier_identity", "line_items", "totals_words"]
+
+    def _exec_child(cat_name: str) -> Dict[str, Any]:
+        t0 = time.perf_counter()
+        fn = AUDIT_REGISTRY.get(cat_name)
+        res = fn(inv, meta_ctx) if fn is not None else _audit_child_generic(cat_name, inv, meta_ctx)
+        elapsed_ms = round((time.perf_counter() - t0) * 1000.0, 3)
+        child_rec = {
+            "agentName": f"audit_{cat_name}",
+            "category": cat_name,
+            "passed": bool(res.get("passed", True)),
+            "blocking": list(res.get("blocking") or []),
+            "warnings": list(res.get("warnings") or []),
+            "metrics": dict(res.get("metrics") or {}),
+            "elapsedMs": elapsed_ms,
+        }
+        if bus is not None and invoice_id:
+            bus.publish(
+                f"audit_{cat_name}",
+                "auditor_coordinator",
+                "audit_finding",
+                invoice_id,
+                {"category": cat_name, "passed": child_rec["passed"], "blockingCount": len(child_rec["blocking"])},
+                pass_no=pass_no,
+            )
+        return child_rec
+
+    futures: Dict[str, Future] = {cat: pool.submit(_exec_child, cat) for cat in target_cats}
+    child_results: List[Dict[str, Any]] = []
+    for cat in target_cats:
+        child_results.append(futures[cat].result())
+
+    if truncated and not base_audit.get("truncated"):
+        base_audit["truncated"] = True
+        base_audit["html_complete"] = False
+        if "OCR output was truncated mid-table before end of invoice." not in (base_audit.get("blocking_issues") or []):
+            base_audit.setdefault("blocking_issues", []).append("OCR output was truncated mid-table before end of invoice.")
+        base_audit["fully_balanced"] = False
+
+    base_audit["auditAgentCount"] = len(child_results)
+    base_audit["categoryAgentCount"] = len(target_cats)
+    base_audit["perAgentAudit"] = child_results
+    return base_audit, child_results

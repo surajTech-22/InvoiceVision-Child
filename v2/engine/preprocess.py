@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
 from PIL import Image, ImageOps
+
+_PDX_MODEL_LOCK = threading.Lock()
+_PDX_PREDICT_LOCK = threading.Lock()
+_PDX_MODELS: Dict[str, Tuple[object, object]] = {}
 
 
 def configure_isolated_paddlex(cache_root: Path) -> None:
@@ -140,6 +146,100 @@ def resize_max_side(img_bgr: np.ndarray, max_side: int) -> np.ndarray:
     return cv2.resize(img_bgr, (int(round(w * scale)), int(round(h * scale))), interpolation=cv2.INTER_AREA)
 
 
+def _get_paddlex_models(paddlex_cache_dir: Optional[Path]) -> Tuple[object, object]:
+    """Load PP-LCNet_x1_0_doc_ori and UVDoc once per process so warm daemon skips reload overhead."""
+    cache_key = str(paddlex_cache_dir or os.environ.get("PADDLE_PDX_CACHE_HOME") or "default")
+    with _PDX_MODEL_LOCK:
+        if cache_key in _PDX_MODELS:
+            return _PDX_MODELS[cache_key]
+        if paddlex_cache_dir is not None:
+            paddlex_cache_dir.mkdir(parents=True, exist_ok=True)
+            os.environ["PADDLE_PDX_CACHE_HOME"] = str(paddlex_cache_dir)
+        os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
+        from paddlex import create_model
+
+        ori_model = create_model("PP-LCNet_x1_0_doc_ori")
+        unwarp_model = create_model("UVDoc")
+        _PDX_MODELS[cache_key] = (ori_model, unwarp_model)
+        return ori_model, unwarp_model
+
+
+def crop_footer_strip(p2_img_path: Path, dst_path: Path, top_ratio: float = 0.50) -> Path:
+    """Create a zoomed footer crop for fast Stage-2 targeted footer/total recovery."""
+    img = cv2.imread(str(p2_img_path))
+    if img is None:
+        return p2_img_path
+    h, w = img.shape[:2]
+    y0 = max(0, min(h - 120, int(h * top_ratio)))
+    crop = img[y0:h, 0:w]
+    dst_path.parent.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(dst_path), crop)
+    return dst_path
+
+
+def _preprocess_single_page(
+    idx: int,
+    total: int,
+    page_path: Path,
+    p2_dir: Path,
+    max_side: int,
+    ori_model: object,
+    unwarp_model: object,
+    progress_cb: Optional[Callable[[str], None]] = None,
+) -> Dict[str, object]:
+    rot_map = {
+        "0": None,
+        "90": cv2.ROTATE_90_COUNTERCLOCKWISE,
+        "180": cv2.ROTATE_180,
+        "270": cv2.ROTATE_90_CLOCKWISE,
+    }
+    if progress_cb:
+        progress_cb(f"Preprocessing page {idx}/{total} (orientation, crop, UVDoc dewarp)...")
+    img_p0 = load_exif_bgr(str(page_path))
+
+    with _PDX_PREDICT_LOCK:
+        ori_res = list(ori_model.predict(str(page_path)))
+    ori_label = "0"
+    ori_score = 0.0
+    if ori_res:
+        r0 = ori_res[0]
+        labels = r0.get("label_names") or []
+        scores = r0.get("scores") or []
+        if labels:
+            ori_label = str(labels[0])
+            ori_score = float(scores[0]) if scores else 0.0
+
+    img_rot = img_p0
+    if ori_label in rot_map and rot_map[ori_label] is not None:
+        img_rot = cv2.rotate(img_p0, rot_map[ori_label])
+
+    img_p1, crop_info = safe_sheet_crop(img_rot)
+    img_p1_capped = resize_max_side(img_p1, 2048)
+    p1_path = p2_dir / f"{page_path.stem}_p1.png"
+    cv2.imwrite(str(p1_path), img_p1_capped)
+
+    with _PDX_PREDICT_LOCK:
+        unwarp_res = list(unwarp_model.predict(str(p1_path)))
+    if unwarp_res and "doctr_img" in unwarp_res[0] and isinstance(unwarp_res[0]["doctr_img"], np.ndarray):
+        img_uv_bgr = cv2.cvtColor(unwarp_res[0]["doctr_img"], cv2.COLOR_RGB2BGR)
+    else:
+        img_uv_bgr = img_p1_capped
+
+    img_clean = normalize_lighting_gentle(img_uv_bgr)
+    img_p2 = resize_max_side(img_clean, max_side)
+    p2_path = p2_dir / f"{page_path.stem}_p2.png"
+    cv2.imwrite(str(p2_path), img_p2)
+
+    return {
+        "raw_page": str(page_path),
+        "p2_path": str(p2_path),
+        "ori_label": ori_label,
+        "ori_score": round(ori_score, 4),
+        "crop_info": crop_info,
+        "p2_shape": list(img_p2.shape[:2]),
+    }
+
+
 def preprocess_pages_p2(
     raw_pages: List[Path],
     work_dir: Path,
@@ -147,74 +247,23 @@ def preprocess_pages_p2(
     max_side: int = 1536,
     progress_cb: Optional[Callable[[str], None]] = None,
 ) -> List[Dict[str, object]]:
-    """Run P2 preprocessing (PP-LCNet_x1_0_doc_ori + safe crop + UVDoc dewarp + gentle LAB) per page."""
-    if paddlex_cache_dir is not None:
-        paddlex_cache_dir.mkdir(parents=True, exist_ok=True)
-        os.environ["PADDLE_PDX_CACHE_HOME"] = str(paddlex_cache_dir)
-    os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
-
-    from paddlex import create_model
-
+    """Run P2 preprocessing (singleton PP-LCNet_x1_0_doc_ori + safe crop + UVDoc dewarp + gentle LAB) per page."""
     if progress_cb:
         progress_cb("Loading document orientation & UVDoc dewarping models...")
-    ori_model = create_model("PP-LCNet_x1_0_doc_ori")
-    unwarp_model = create_model("UVDoc")
-
-    rot_map = {
-        "0": None,
-        "90": cv2.ROTATE_90_COUNTERCLOCKWISE,
-        "180": cv2.ROTATE_180,
-        "270": cv2.ROTATE_90_CLOCKWISE,
-    }
+    ori_model, unwarp_model = _get_paddlex_models(paddlex_cache_dir)
 
     p2_dir = work_dir / "preprocessed"
     p2_dir.mkdir(parents=True, exist_ok=True)
+    total = len(raw_pages)
+    if total <= 1:
+        return [
+            _preprocess_single_page(idx, total, pp, p2_dir, max_side, ori_model, unwarp_model, progress_cb)
+            for idx, pp in enumerate(raw_pages, 1)
+        ]
 
-    outputs: List[Dict[str, object]] = []
-    for idx, page_path in enumerate(raw_pages, 1):
-        if progress_cb:
-            progress_cb(f"Preprocessing page {idx}/{len(raw_pages)} (orientation, crop, UVDoc dewarp)...")
-        img_p0 = load_exif_bgr(str(page_path))
-
-        ori_res = list(ori_model.predict(str(page_path)))
-        ori_label = "0"
-        ori_score = 0.0
-        if ori_res:
-            r0 = ori_res[0]
-            labels = r0.get("label_names") or []
-            scores = r0.get("scores") or []
-            if labels:
-                ori_label = str(labels[0])
-                ori_score = float(scores[0]) if scores else 0.0
-
-        img_rot = img_p0
-        if ori_label in rot_map and rot_map[ori_label] is not None:
-            img_rot = cv2.rotate(img_p0, rot_map[ori_label])
-
-        img_p1, crop_info = safe_sheet_crop(img_rot)
-        img_p1_capped = resize_max_side(img_p1, 2048)
-        p1_path = p2_dir / f"{page_path.stem}_p1.png"
-        cv2.imwrite(str(p1_path), img_p1_capped)
-
-        unwarp_res = list(unwarp_model.predict(str(p1_path)))
-        if unwarp_res and "doctr_img" in unwarp_res[0] and isinstance(unwarp_res[0]["doctr_img"], np.ndarray):
-            img_uv_bgr = cv2.cvtColor(unwarp_res[0]["doctr_img"], cv2.COLOR_RGB2BGR)
-        else:
-            img_uv_bgr = img_p1_capped
-
-        img_clean = normalize_lighting_gentle(img_uv_bgr)
-        img_p2 = resize_max_side(img_clean, max_side)
-        p2_path = p2_dir / f"{page_path.stem}_p2.png"
-        cv2.imwrite(str(p2_path), img_p2)
-
-        outputs.append(
-            {
-                "raw_page": str(page_path),
-                "p2_path": str(p2_path),
-                "ori_label": ori_label,
-                "ori_score": round(ori_score, 4),
-                "crop_info": crop_info,
-                "p2_shape": list(img_p2.shape[:2]),
-            }
-        )
-    return outputs
+    with ThreadPoolExecutor(max_workers=min(4, total), thread_name_prefix="PagePrepChild") as pool:
+        futs = [
+            pool.submit(_preprocess_single_page, idx, total, pp, p2_dir, max_side, ori_model, unwarp_model, progress_cb)
+            for idx, pp in enumerate(raw_pages, 1)
+        ]
+        return [f.result() for f in futs]

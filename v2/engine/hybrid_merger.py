@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import ctypes
 import difflib
 import json
 import os
@@ -12,9 +13,67 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+
+def _attach_kill_on_close_job(pid: int) -> Optional[int]:
+    """Attach a Windows Job Object with KILL_ON_JOB_CLOSE so child llama-server dies if parent exits/crashes."""
+    if os.name != "nt" or not pid:
+        return None
+    try:
+        k32 = ctypes.windll.kernel32
+        h_job = k32.CreateJobObjectW(None, None)
+        if not h_job:
+            return None
+
+        class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_int64),
+                ("PerJobUserTimeLimit", ctypes.c_int64),
+                ("LimitFlags", ctypes.c_uint32),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", ctypes.c_uint32),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", ctypes.c_uint32),
+                ("SchedulingClass", ctypes.c_uint32),
+            ]
+
+        class IO_COUNTERS(ctypes.Structure):
+            _fields_ = [
+                ("ReadOperationCount", ctypes.c_uint64),
+                ("WriteOperationCount", ctypes.c_uint64),
+                ("OtherOperationCount", ctypes.c_uint64),
+                ("ReadTransferCount", ctypes.c_uint64),
+                ("WriteTransferCount", ctypes.c_uint64),
+                ("OtherTransferCount", ctypes.c_uint64),
+            ]
+
+        class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
+                ("IoInfo", IO_COUNTERS),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+        info.BasicLimitInformation.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        k32.SetInformationJobObject(h_job, 9, ctypes.byref(info), ctypes.sizeof(info))
+        h_proc = k32.OpenProcess(0x1F0FFF, False, int(pid))
+        if h_proc:
+            k32.AssignProcessToJobObject(h_job, h_proc)
+            k32.CloseHandle(h_proc)
+        return int(h_job)
+    except Exception:
+        return None
+
 import requests
+import cv2
 from gst_math import audit_invoice_math, is_valid_gstin, round2
-from gst_parser import _clean_party_name, normalize_canonical_dict
+from gst_parser import _clean_party_name, normalize_canonical_dict, parse_document_text_to_canonical
+from preprocess import resize_max_side
+from supplier_memory import apply_supplier_memory, build_few_shot_prompt_hint
 
 QWEN_INVOICE_JSON_PROMPT = """Extract all fields from this Indian GST Tax Invoice accurately as a single valid JSON object ONLY (no markdown explanation).
 Use exact numbers printed on the bill (do not guess). If Taxable per line is omitted, capture gross/discount/cgst/sgst/lineTotal accurately.
@@ -142,6 +201,7 @@ class LlamaServerSession:
         log_dir.mkdir(parents=True, exist_ok=True)
         self.log_path = log_dir / f"llama_{Path(model_path).stem}.log"
         self._log_file = None
+        self._job_handle: Optional[int] = None
 
     def __enter__(self):
         cmd = [
@@ -173,6 +233,7 @@ class LlamaServerSession:
             creationflags=creationflags,
             startupinfo=startupinfo,
         )
+        self._job_handle = _attach_kill_on_close_job(self.proc.pid)
 
         deadline = time.time() + 120
         url = f"http://127.0.0.1:{self.port}/health"
@@ -205,6 +266,12 @@ class LlamaServerSession:
                 self._log_file.close()
             except Exception:
                 pass
+        if self._job_handle is not None and os.name == "nt":
+            try:
+                ctypes.windll.kernel32.CloseHandle(self._job_handle)
+            except Exception:
+                pass
+            self._job_handle = None
 
     @staticmethod
     def _detect_repetition_loop(text: str) -> Optional[int]:
@@ -518,3 +585,148 @@ def merge_consensus(
             best["rawTablesHtml"] = c["rawTablesHtml"]
 
     return normalize_canonical_dict(best, qr_einvoice=qr_einv, qr_upi_meta=qr_upi_meta)
+
+
+def escalate_with_qwen(
+    *,
+    llama_server: Path,
+    qwen_model: Path,
+    qwen_mmproj: Path,
+    p2_paths: List[Path],
+    work_dir: Path,
+    qr_info: Dict[str, Any],
+    canon_lighton: Optional[Dict[str, Any]],
+    combined_lighton: str,
+    client_gstin: str = "",
+    direction: str = "Auto",
+    memory_db: str = "",
+    threads: int = 10,
+    progress_cb: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """Run Qwen3-VL-4B escalation ONCE over already-preprocessed images and merge with LightOnOCR canonical."""
+    qr_einv = (qr_info or {}).get("einvoice")
+    qr_upi_meta = (qr_info or {}).get("upi_meta")
+    seller_obj = (canon_lighton or {}).get("seller") or {}
+    few_shot_hint = build_few_shot_prompt_hint(
+        memory_db,
+        str(seller_obj.get("gstin") or ""),
+        str(seller_obj.get("name") or ""),
+    )
+    qwen_prompt = QWEN_INVOICE_JSON_PROMPT + few_shot_hint
+
+    qwen_dir = work_dir / "qwen_scaled"
+    qwen_dir.mkdir(parents=True, exist_ok=True)
+    log_dir = work_dir / "logs"
+    qwen_replies: List[str] = []
+    with LlamaServerSession(str(llama_server), str(qwen_model), str(qwen_mmproj), log_dir, threads=threads) as srv:
+        for idx, p2_img in enumerate(p2_paths, 1):
+            if progress_cb:
+                progress_cb(70 + int(22 * idx / max(1, len(p2_paths))), f"Qwen3-VL-4B verifying page {idx}/{len(p2_paths)}...")
+            bgr = cv2.imread(str(p2_img))
+            q_img = p2_img
+            if bgr is not None and max(bgr.shape[:2]) > 1280:
+                q_img = qwen_dir / p2_img.name
+                cv2.imwrite(str(q_img), resize_max_side(bgr, 1280))
+            reply = srv.chat_image(
+                img_to_data_url(str(q_img)),
+                qwen_prompt,
+                max_tokens=2400,
+                timeout_s=600,
+                json_schema=QWEN_INVOICE_JSON_SCHEMA,
+            )
+            qwen_replies.append(reply)
+
+    page_canons = [
+        parse_document_text_to_canonical(
+            r,
+            qr_einvoice=qr_einv,
+            known_client_gstin=client_gstin,
+            direction_hint=direction,
+            qr_upi_meta=qr_upi_meta,
+        )
+        for r in qwen_replies
+    ]
+    if len(page_canons) == 1:
+        canon_qwen = page_canons[0]
+    else:
+        merged_obj = dict(page_canons[0])
+        all_rows = []
+        for pc in page_canons:
+            all_rows.extend(pc.get("rows") or [])
+        merged_obj["rows"] = all_rows
+        for fld in ("taxableTotal", "discountTotal", "cgstTotal", "sgstTotal", "igstTotal", "cessTotal"):
+            merged_obj[fld] = 0.0
+        for pc in reversed(page_canons):
+            if float(pc.get("invoiceTotal") or 0.0) > 0:
+                merged_obj["invoiceTotal"] = pc["invoiceTotal"]
+                merged_obj["roundOff"] = pc.get("roundOff", 0.0)
+                merged_obj["creditNoteTotal"] = pc.get("creditNoteTotal", 0.0)
+                break
+        canon_qwen = normalize_canonical_dict(merged_obj, "\n\n".join(qwen_replies), qr_einv, qr_upi_meta=qr_upi_meta)
+
+    if canon_lighton is not None:
+        c_lo = dict(canon_lighton)
+        c_lo["_source"] = "lighton"
+        canon_qwen["_source"] = "qwen"
+        final_canon = merge_consensus([c_lo, canon_qwen], qr_einv=qr_einv, qr_upi_meta=qr_upi_meta)
+        engine_used = "Hybrid(LightOnOCR-2-1B+Qwen3-VL-4B)"
+        final_raw = combined_lighton + "\n\n===== QWEN3-VL-4B VERIFICATION =====\n" + "\n\n".join(qwen_replies)
+    else:
+        final_canon = canon_qwen
+        engine_used = "Qwen3-VL-4B-P2"
+        final_raw = "\n\n".join(qwen_replies)
+
+    memory_meta = apply_supplier_memory(final_canon, memory_db)
+    audit = final_canon.pop("_audit", None) or audit_invoice_math(final_canon, raw_text=final_raw, qr_einvoice=qr_einv)
+    return {
+        "canonical": final_canon,
+        "audit": audit,
+        "engineUsed": engine_used,
+        "rawOcrText": final_raw,
+        "supplierMemory": memory_meta,
+    }
+
+
+def apply_qwen_escalation_to_worker_payload(
+    wo: Dict[str, Any],
+    *,
+    llama_server: Path,
+    qwen_model: Path,
+    qwen_mmproj: Path,
+    work_dir: Path,
+    client_gstin: str = "",
+    direction: str = "Auto",
+    memory_db: str = "",
+    threads: int = 10,
+    progress_cb: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """Upgrade an existing worker_output payload via Qwen3-VL-4B without re-running LightOnOCR."""
+    p2_paths = [Path(p) for p in (wo.get("preprocessedImages") or []) if Path(p).is_file()]
+    if not p2_paths:
+        p2_paths = [Path(p) for p in (wo.get("renderedPageImages") or []) if Path(p).is_file()]
+    esc = escalate_with_qwen(
+        llama_server=llama_server,
+        qwen_model=qwen_model,
+        qwen_mmproj=qwen_mmproj,
+        p2_paths=p2_paths,
+        work_dir=work_dir,
+        qr_info=wo.get("qrInfo") or {},
+        canon_lighton=wo.get("canonical"),
+        combined_lighton=str(wo.get("rawOcrText") or ""),
+        client_gstin=client_gstin,
+        direction=direction,
+        memory_db=memory_db,
+        threads=threads,
+        progress_cb=progress_cb,
+    )
+    wo["canonical"] = esc["canonical"]
+    wo["audit"] = esc["audit"]
+    wo["engineUsed"] = esc["engineUsed"]
+    wo["rawOcrText"] = esc["rawOcrText"]
+    wo["supplierMemory"] = esc["supplierMemory"]
+    raw_tbls = esc["canonical"].pop("rawTablesHtml", None) if isinstance(esc["canonical"], dict) else None
+    if raw_tbls:
+        wo["rawTablesHtml"] = list(raw_tbls)
+    if isinstance(wo.get("agentPipelineTrace"), dict):
+        wo["agentPipelineTrace"]["qwenEscalated"] = True
+    return wo

@@ -137,6 +137,8 @@ class InvoiceStageTracker:
                 "activeAgents": [],
                 "completedAgents": [],
                 "dispatchedCategories": [],
+                "stageChildAgents": {},
+                "auditChildAgents": [],
                 "passCount": 1,
                 "cacheHit": False,
                 "startedAt": time.perf_counter(),
@@ -183,6 +185,40 @@ class InvoiceStageTracker:
                     st["activeAgents"].remove(agent_name)
                 if agent_name not in st["completedAgents"]:
                     st["completedAgents"].append(agent_name)
+
+    def record_child_agent(
+        self,
+        invoice_id: str,
+        stage: str,
+        child_name: str,
+        elapsed_ms: float,
+        status: str = "ok",
+        detail: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        with self._lock:
+            st = self._states.get(invoice_id)
+            if not st:
+                return
+            rec = {
+                "agentName": child_name,
+                "elapsedMs": round(float(elapsed_ms), 2),
+                "status": status,
+                "ts": round(time.time(), 3),
+            }
+            if detail:
+                rec["detail"] = dict(detail)
+            st.setdefault("stageChildAgents", {}).setdefault(stage, []).append(rec)
+
+    def record_audit_children(self, invoice_id: str, records: List[Dict[str, Any]]) -> None:
+        with self._lock:
+            st = self._states.get(invoice_id)
+            if not st:
+                return
+            st["auditChildAgents"] = list(records)
+            st.setdefault("stageChildAgents", {})["AUDIT"] = [
+                {"agentName": r.get("agentName"), "category": r.get("category"), "passed": r.get("passed"), "elapsedMs": r.get("elapsedMs")}
+                for r in records
+            ]
 
     def snapshot(self, invoice_id: str) -> Dict[str, Any]:
         with self._lock:

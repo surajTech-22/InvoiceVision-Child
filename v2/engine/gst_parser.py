@@ -4,7 +4,7 @@ import json
 import re
 from typing import Any, Dict, List, Optional, Tuple
 from bs4 import BeautifulSoup
-from gst_math import audit_invoice_math, is_valid_gstin, repair_gstin, round2
+from gst_math import audit_invoice_math, is_supported_gst_rate, is_valid_gstin, repair_gstin, round2
 
 MONTHS = {
     "jan": "01", "feb": "02", "mar": "03", "apr": "04", "may": "05", "jun": "06",
@@ -258,17 +258,28 @@ def normalize_date(raw: Optional[str]) -> str:
 def find_gstins_in_text(text: str, extra_candidates: List[str] | None = None) -> List[str]:
     if not text:
         return []
+    valid_extras = [re.sub(r"[^A-Za-z0-9]", "", x).upper() for x in (extra_candidates or []) if x and is_valid_gstin(x)]
     pan_hints = re.findall(r"\b[A-Z]{5}[0-9]{4}[A-Z]\b", text.upper())
+    for ex in valid_extras:
+        if len(ex) == 15 and ex[2:12] not in pan_hints:
+            pan_hints.append(ex[2:12])
     raw_cands = re.findall(r"\b[0-9OQD]{2}[A-Z0-9]{10}[0-9A-Z][Z2S7][0-9A-Z]\b", text.upper())
-    # Also catch 16-char OCR insertion artifacts near valid PAN hints (e.g. "29AAKPTD6049LJZD" with PAN "AAKPD6049L")
+    # Also catch 16-char OCR insertion artifacts near valid PAN hints (or near known client GSTIN PAN core)
     for c16 in re.findall(r"\b[0-9OQD]{2}[A-Z0-9]{14}\b", text.upper()):
         norm16 = re.sub(r"[^A-Z0-9]", "", c16)
+        matched_c16_extra = False
+        for ex in valid_extras:
+            if norm16[:2] == ex[:2] and (ex[4:11] in norm16 or ex[5:12] in norm16):
+                raw_cands.append(ex)
+                matched_c16_extra = True
+                break
+        if matched_c16_extra:
+            continue
         for drop_idx in range(2, 12):
             c15 = norm16[:drop_idx] + norm16[drop_idx + 1:]
-            if any(sum(1 for a, b in zip(c15[2:12], p) if a == b) >= 9 for p in pan_hints):
+            if any(sum(1 for a, b in zip(c15[2:12], p) if a == b) >= 8 for p in pan_hints):
                 raw_cands.append(c15)
                 break
-    valid_extras = [re.sub(r"[^A-Za-z0-9]", "", x).upper() for x in (extra_candidates or []) if x and is_valid_gstin(x)]
     valid_list: List[str] = []
     seen = set()
     for c in raw_cands:
@@ -330,20 +341,71 @@ def extract_json_object(text: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _expand_br_stacked_row(raw_cells: List[str], has_th: bool) -> Optional[List[List[str]]]:
+    """Expand a single <tr> whose cells stack K items separated by <br>/newlines."""
+    if has_th or len(raw_cells) < 3:
+        return None
+    split_cells: List[List[str]] = [
+        [" ".join(part.split()) for part in c.splitlines() if part.strip()]
+        for c in raw_cells
+    ]
+    num_lengths: List[int] = []
+    for lines in split_cells:
+        if len(lines) >= 2 and sum(1 for ln in lines if re.search(r"\d", ln)) >= 2:
+            num_lengths.append(len(lines))
+    if len(num_lengths) < 2:
+        return None
+    k = max(set(num_lengths), key=num_lengths.count)
+    if k < 2 or k > 60 or num_lengths.count(k) < 2:
+        return None
+
+    out_rows: List[List[str]] = []
+    for idx in range(k):
+        row_i: List[str] = []
+        for c_idx, lines in enumerate(split_cells):
+            if not lines:
+                row_i.append("")
+            elif len(lines) == k:
+                row_i.append(lines[idx])
+            elif len(lines) == 1:
+                row_i.append(lines[0] if idx == 0 else "")
+            elif len(lines) > k:
+                # Extra lines in text/description columns -> keep paired slice and append leftovers on last row
+                if idx < k - 1:
+                    row_i.append(lines[idx])
+                else:
+                    row_i.append(" ".join(lines[idx:]))
+            else:
+                row_i.append(lines[idx] if idx < len(lines) else "")
+        if any(row_i):
+            out_rows.append(row_i)
+    return out_rows if len(out_rows) >= 2 else None
+
+
 def _html_tables_to_matrices(html_text: str) -> List[List[List[str]]]:
     soup = BeautifulSoup(html_text, "lxml")
     tables = []
     for tbl in soup.find_all("table"):
         rows_mat = []
         for tr in tbl.find_all("tr"):
-            cells = []
+            cells: List[str] = []
+            raw_cells: List[str] = []
+            has_th = False
             for cell in tr.find_all(["th", "td"]):
-                txt = " ".join(cell.get_text(" ", strip=True).split())
+                if cell.name == "th":
+                    has_th = True
+                raw_txt = cell.get_text("\n", strip=True)
+                txt = " ".join(raw_txt.split())
                 colspan = int(cell.get("colspan") or 1)
                 cells.append(txt)
+                raw_cells.append(raw_txt)
                 for _ in range(max(0, colspan - 1)):
                     cells.append("")
-            if any(cells):
+                    raw_cells.append("")
+            expanded = _expand_br_stacked_row(raw_cells, has_th)
+            if expanded:
+                rows_mat.extend(expanded)
+            elif any(cells):
                 rows_mat.append(cells)
         if rows_mat:
             tables.append(rows_mat)
@@ -806,7 +868,27 @@ def _parse_item_rows_from_matrix(mat: List[List[str]]) -> Tuple[List[Dict[str, A
                 disc = abs(disc)
         if taxable == 0.0 and gross > 0:
             taxable = round2(gross - disc)
-        gst_rate, _ = pick_first_num("gstrate")
+        gst_rate = 0.0
+        combined_tax_from_rate_cell = 0.0
+        for gr_idx in col_map.get("gstrate", []):
+            if gr_idx < len(r) and re.search(r"\d", r[gr_idx]):
+                gr_cell = r[gr_idx]
+                m_pct = re.search(r"(\d+(?:\.\d+)?)\s*%", gr_cell)
+                if m_pct:
+                    pct_val = clean_num(m_pct.group(1))
+                    if is_supported_gst_rate(pct_val):
+                        gst_rate = pct_val
+                    # Catch combined GST cells like "₹ 17.86 (5%)" where the amount precedes (pct%)
+                    stripped_pct = gr_cell[:m_pct.start()] + " " + gr_cell[m_pct.end():]
+                    extra_nums = parse_nums_in_cell(stripped_pct)
+                    if extra_nums:
+                        combined_tax_from_rate_cell = extra_nums[-1]
+                else:
+                    nums_gr = parse_nums_in_cell(gr_cell)
+                    if nums_gr:
+                        gst_rate = nums_gr[0]
+                if gst_rate > 0 or "%" in gr_cell:
+                    break
         if gst_rate == 0.0 and "half_gstrate" in col_map:
             hr, _ = pick_first_num("half_gstrate")
             if hr in (0, 1.5, 2.5, 6, 9, 14):
@@ -815,6 +897,8 @@ def _parse_item_rows_from_matrix(mat: List[List[str]]) -> Tuple[List[Dict[str, A
         sgst = pick_num("sgst")
         igst = pick_num("igst")
         combined_tax_col = pick_num("tax_amt")
+        if combined_tax_col == 0.0 and combined_tax_from_rate_cell > 0.0:
+            combined_tax_col = combined_tax_from_rate_cell
         tax_from_combined = False
         if cgst == 0.0 and sgst == 0.0 and igst == 0.0 and combined_tax_col > 0:
             half = _equal_local_tax_half(taxable, gst_rate, combined_tax_col)
@@ -1452,6 +1536,7 @@ def parse_document_text_to_canonical(
     if not inv_no:
         for pat in [
             r"\b(?:Tax\s*Invoice\s*No\.?|Bill\s*No\.?|Invoice\s*No\.?|Inv\.?\s*No\.?|Document\s*(?:No\.?|Number)|Voucher\s*No\.?)(?=$|[\s:#\-|\n])(?:\s*[:#\-]+\s*|\s*\n\s*|\s+)([A-Z]{1,6}\s+\d[A-Z0-9\-/]{1,20}|[A-Z0-9][A-Z0-9\-/]{1,28})",
+            r"(?:^|\n)\s*([A-Z0-9\-/]{3,18})\s*\n\s*(?:Bill\s*No\.?|Invoice\s*No\.?|No\.?)\s*(?=$|\n)",
         ]:
             for m in re.finditer(pat, header_scope_text, re.IGNORECASE):
                 cand = m.group(1).strip(" :-|,")
@@ -1720,10 +1805,10 @@ def parse_document_text_to_canonical(
                 summary_igst = round2(sum(d["igst"] for d in summary_slabs_detail))
                 summary_cess = round2(sum(d["cess"] for d in summary_slabs_detail))
 
-    # Parse Tally footer ledger lines with Unicode arrow (e.g. "CGST @ 2.5%: 2.50 % → 550.00")
+    # Parse Tally footer ledger lines (e.g. "CGST @ 2.5%: 2.50 % → 550.00" or "SGST @ 2.5% | | 2.50 % | 550.00")
     footer_ledger_rates: List[Tuple[str, float, float]] = []
     for m_arr in re.finditer(
-        r"\b(CGST|SGST|UTGST|IGST)\s*@\s*(\d+(?:\.\d+)?)\s*%[^\n]{0,40}?(?:→|[:\-])\s*([0-9,]+\.\d{2})(?!\s*%)",
+        r"\b(CGST|SGST|UTGST|IGST)\s*@\s*(\d+(?:\.\d+)?)\s*%[^\n]{0,60}?(?:→|[:\-|]|\s)\s*([0-9,]+\.\d{2})(?!\s*%)",
         rev_plain_clean,
         re.IGNORECASE,
     ):

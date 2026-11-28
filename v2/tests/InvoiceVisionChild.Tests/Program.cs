@@ -499,5 +499,38 @@ internal static class Program
         InvoiceMathVerifier.Verify(conv);
         Check(!conv.Verification.IsBalanced && conv.Status == "ReviewRequired",
             "InvoiceMathVerifier.Verify must preserve WorkerBlockingIssues.");
+
+        // 5. Row where unit rate OCR differs (e.g. Nandi 5.28 vs 8.28) but Taxable+Tax==LineTotal and 5% GST math passes must balance
+        var nandiRateSlip = new InvoiceExtractionResult
+        {
+            InvoiceNumber = "E75422",
+            InvoiceDate = "2026-10-30",
+            Seller = new InvoicePartyInfo { Name = "NANDI MARKETING", Gstin = seller },
+            Buyer = new InvoicePartyInfo { Name = "BALAJI TRADING CO.", Gstin = buyer },
+            TaxableTotal = 491.95m,
+            CgstTotal = 12.30m,
+            SgstTotal = 12.30m,
+            InvoiceTotal = 516.55m,
+            Rows =
+            [
+                new InvoiceLineItem
+                {
+                    Description = "RED LAB LEAF E BLEND",
+                    HsnSac = "09023010",
+                    Quantity = 60m,
+                    Rate = 5.28m,
+                    Discount = 4.97m,
+                    Taxable = 491.95m,
+                    GstRate = 5m,
+                    Cgst = 12.30m,
+                    Sgst = 12.30m,
+                    LineTotal = 516.55m
+                }
+            ]
+        };
+        InvoiceMathVerifier.Verify(nandiRateSlip);
+        Check(nandiRateSlip.Verification.IsBalanced && nandiRateSlip.Status == "Verified",
+            "Line-sum and GST-rate balanced row must not fail on unit-rate slip alone: " +
+            string.Join("; ", nandiRateSlip.Verification.Errors.Concat(nandiRateSlip.Verification.Warnings)));
     }
 }

@@ -4,6 +4,8 @@ import base64
 import json
 import os
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse
 
@@ -104,33 +106,30 @@ def _scan_array(img_bgr: np.ndarray, qr_det: cv2.QRCodeDetector) -> List[str]:
     return found
 
 
-def _prep_variants(crop_bgr: np.ndarray) -> List[tuple]:
+def _prep_variants(crop_bgr: np.ndarray, heavy: bool = False) -> List[tuple]:
     out = [("orig", crop_bgr)]
     h, w = crop_bgr.shape[:2]
     gray = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
-    blur = cv2.GaussianBlur(gray, (0, 0), 1.0)
-    sharp = cv2.addWeighted(gray, 1.8, blur, -0.8, 0)
-    out.append(("sharp", cv2.cvtColor(sharp, cv2.COLOR_GRAY2BGR)))
-    _, otsu = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    out.append(("otsu", cv2.cvtColor(otsu, cv2.COLOR_GRAY2BGR)))
     clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8)).apply(gray)
     out.append(("clahe", cv2.cvtColor(clahe, cv2.COLOR_GRAY2BGR)))
-    if max(h, w) < 1800:
-        up2 = cv2.resize(crop_bgr, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
-        out.append(("up2", up2))
-        up2_gray = cv2.cvtColor(up2, cv2.COLOR_BGR2GRAY)
-        up2_clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8)).apply(up2_gray)
-        out.append(("up2_clahe", cv2.cvtColor(up2_clahe, cv2.COLOR_GRAY2BGR)))
-        thr = cv2.adaptiveThreshold(up2_gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 10)
-        out.append(("up2_adapt", cv2.cvtColor(thr, cv2.COLOR_GRAY2BGR)))
+    if heavy:
+        _, otsu = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        out.append(("otsu", cv2.cvtColor(otsu, cv2.COLOR_GRAY2BGR)))
+        if max(h, w) < 1800:
+            up2 = cv2.resize(crop_bgr, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+            out.append(("up2", up2))
+            up2_gray = cv2.cvtColor(up2, cv2.COLOR_BGR2GRAY)
+            up2_clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8)).apply(up2_gray)
+            out.append(("up2_clahe", cv2.cvtColor(up2_clahe, cv2.COLOR_GRAY2BGR)))
     return out
 
 
 def _decode_single(image_path: str) -> Dict[str, Any]:
     pil_img = ImageOps.exif_transpose(Image.open(image_path)).convert("RGB")
     img_bgr = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
-    qr_det = cv2.QRCodeDetector()
 
+    state_lock = threading.Lock()
+    stop_event = threading.Event()
     raw_codes: List[str] = []
     seen_texts = set()
     einvoice: Optional[Dict[str, Any]] = None
@@ -138,45 +137,67 @@ def _decode_single(image_path: str) -> Dict[str, Any]:
     upi_meta: Optional[Dict[str, Any]] = None
     decode_pass = None
 
-    def try_region(region_name: str, region_bgr: np.ndarray) -> bool:
+    def try_region(region_name: str, region_bgr: np.ndarray, heavy: bool = False) -> bool:
         nonlocal einvoice, upi_meta, decode_pass
-        for vname, var in _prep_variants(region_bgr):
+        if stop_event.is_set():
+            return False
+        qr_det = cv2.QRCodeDetector()
+        for vname, var in _prep_variants(region_bgr, heavy=heavy):
+            if stop_event.is_set():
+                return False
             texts = _scan_array(var, qr_det)
             for t in texts:
-                if t not in seen_texts:
-                    seen_texts.add(t)
-                    raw_codes.append(t)
-                    if t.strip().lower().startswith("upi://"):
-                        upi_codes.append(t)
-                        if upi_meta is None:
-                            upi_meta = parse_upi_invoice_meta(t)
                 parsed = parse_einvoice_jwt(t)
-                if parsed and einvoice is None:
-                    einvoice = parsed
-                    decode_pass = f"{region_name}:{vname}"
-                    return True
+                with state_lock:
+                    if t not in seen_texts:
+                        seen_texts.add(t)
+                        raw_codes.append(t)
+                        if t.strip().lower().startswith("upi://"):
+                            upi_codes.append(t)
+                            if upi_meta is None:
+                                upi_meta = parse_upi_invoice_meta(t)
+                    if parsed and einvoice is None:
+                        einvoice = parsed
+                        decode_pass = f"{region_name}:{vname}"
+                        stop_event.set()
+                        return True
         return False
 
-    for rot_name, k in [("rot0", 0), ("rot90", 1), ("rot270", 3), ("rot180", 2)]:
-        rot_img = img_bgr if k == 0 else np.rot90(img_bgr, k).copy()
-        h, w = rot_img.shape[:2]
-        if rot_name == "rot0":
-            if try_region("full_rot0", rot_img):
-                break
-        regions = [
-            (f"{rot_name}_tr", rot_img[0:int(h * 0.50), int(w * 0.50):w]),
-            (f"{rot_name}_br", rot_img[int(h * 0.50):h, int(w * 0.50):w]),
-            (f"{rot_name}_tl", rot_img[0:int(h * 0.50), 0:int(w * 0.50)]),
-            (f"{rot_name}_bl", rot_img[int(h * 0.50):h, 0:int(w * 0.50)]),
-            (f"{rot_name}_mid_r", rot_img[int(h * 0.15):int(h * 0.65), int(w * 0.45):w]),
+    # Fast path: zxingcpp.read_barcodes(try_rotate=True) natively checks 0/90/180/270 in C++
+    if not try_region("full_rot0", img_bgr, heavy=False):
+        h, w = img_bgr.shape[:2]
+        # Wave 1: lightweight quadrant scan across natural orientation (all 4 angles handled by try_rotate=True)
+        quads = [
+            ("quad_tr", img_bgr[0:int(h * 0.50), int(w * 0.50):w]),
+            ("quad_br", img_bgr[int(h * 0.50):h, int(w * 0.50):w]),
+            ("quad_tl", img_bgr[0:int(h * 0.50), 0:int(w * 0.50)]),
+            ("quad_bl", img_bgr[int(h * 0.50):h, 0:int(w * 0.50)]),
+            ("quad_mid_r", img_bgr[int(h * 0.15):int(h * 0.65), int(w * 0.45):w]),
         ]
-        found_einvoice = False
-        for rname, reg in regions:
-            if try_region(rname, reg):
-                found_einvoice = True
-                break
-        if found_einvoice:
-            break
+        with ThreadPoolExecutor(max_workers=5, thread_name_prefix="QRChild") as pool:
+            for f in [pool.submit(try_region, rn, reg, False) for rn, reg in quads]:
+                f.result()
+            if not stop_event.is_set():
+                # Wave 2: upscaled/otsu pass on natural orientation quadrants
+                for f in [pool.submit(try_region, rn, reg, True) for rn, reg in quads[:4]]:
+                    f.result()
+            if not stop_event.is_set():
+                # Wave 3: 90/270/180 rotated quadrants with heavy upscaling ONLY if e-Invoice QR wasn't found upright
+                rot_tasks: List[tuple] = []
+                for rot_name, k in [("rot90", 1), ("rot270", 3), ("rot180", 2)]:
+                    rot_img = np.rot90(img_bgr, k).copy()
+                    rh, rw = rot_img.shape[:2]
+                    rot_tasks.extend([
+                        (f"{rot_name}_tr", rot_img[0:int(rh * 0.50), int(rw * 0.50):rw]),
+                        (f"{rot_name}_br", rot_img[int(rh * 0.50):rh, int(rw * 0.50):rw]),
+                        (f"{rot_name}_tl", rot_img[0:int(rh * 0.50), 0:int(rw * 0.50)]),
+                        (f"{rot_name}_bl", rot_img[int(rh * 0.50):rh, 0:int(rw * 0.50)]),
+                    ])
+                for b0 in range(0, len(rot_tasks), 4):
+                    if stop_event.is_set():
+                        break
+                    for f in [pool.submit(try_region, rn, reg, True) for rn, reg in rot_tasks[b0:b0 + 4]]:
+                        f.result()
 
     return {
         "raw_codes": raw_codes,
@@ -189,7 +210,11 @@ def _decode_single(image_path: str) -> Dict[str, Any]:
 
 def decode_qr_from_image(image_path: str, extra_paths: Optional[List[str]] = None) -> Dict[str, Any]:
     paths = [image_path] + [p for p in (extra_paths or []) if p and os.path.exists(p)]
-    results = [_decode_single(p) for p in paths]
+    if len(paths) <= 1:
+        results = [_decode_single(p) for p in paths]
+    else:
+        with ThreadPoolExecutor(max_workers=min(4, len(paths)), thread_name_prefix="QRPageChild") as pool:
+            results = list(pool.map(_decode_single, paths))
     all_raw: List[str] = []
     all_upi: List[str] = []
     einvoice: Optional[Dict[str, Any]] = None

@@ -43,24 +43,6 @@ public static class InvoiceMathVerifier
                 warnings.Add($"Row {rowIndex}: HSN/SAC '{row.HsnSac}' is not 4, 6, or 8 digits.");
 
             var rowIssues = new List<string>();
-            if (row.Quantity > 0m && row.Rate > 0m)
-            {
-                var expectedTaxable = Math.Round((row.Quantity * row.Rate) - row.Discount, 2, MidpointRounding.AwayFromZero);
-                if (row.Taxable <= 0m)
-                {
-                    row.Taxable = expectedTaxable;
-                }
-                else
-                {
-                    var diff = Math.Abs(expectedTaxable - row.Taxable);
-                    var tol = Math.Max(1.00m, row.Taxable * 0.005m);
-                    var isInclusiveUnit = row.LineTotal > 0m && row.GstRate > 0m &&
-                        Math.Abs(expectedTaxable - row.LineTotal) <= Math.Max(1.50m, row.LineTotal * 0.01m);
-                    if (diff > tol && !isInclusiveUnit)
-                        rowIssues.Add($"Qty*Rate-Disc ({expectedTaxable:N2}) != Taxable ({row.Taxable:N2})");
-                }
-            }
-
             var taxSum = row.Cgst + row.Sgst + row.Igst;
             if (row.Igst == 0m && (row.Cgst > 0m || row.Sgst > 0m) && Math.Abs(row.Cgst - row.Sgst) > 0.005m)
                 rowIssues.Add($"CGST ({row.Cgst:N2}) != SGST ({row.Sgst:N2})");
@@ -77,6 +59,25 @@ public static class InvoiceMathVerifier
                     var taxTol = Math.Max(1.00m, row.Taxable * 0.005m);
                     if (taxDiff > taxTol)
                         rowIssues.Add($"Tax {taxSum:N2} != {row.GstRate:0.##}% of {row.Taxable:N2} ({expectedTax:N2})");
+                }
+            }
+
+            if (row.Quantity > 0m && row.Rate > 0m)
+            {
+                var expectedTaxable = Math.Round((row.Quantity * row.Rate) - row.Discount, 2, MidpointRounding.AwayFromZero);
+                if (row.Taxable <= 0m)
+                {
+                    row.Taxable = expectedTaxable;
+                }
+                else
+                {
+                    var diff = Math.Abs(expectedTaxable - row.Taxable);
+                    var tol = Math.Max(1.00m, row.Taxable * 0.005m);
+                    var isInclusiveUnit = row.LineTotal > 0m && row.GstRate > 0m &&
+                        Math.Abs(expectedTaxable - row.LineTotal) <= Math.Max(1.50m, row.LineTotal * 0.01m);
+                    var lineSumOk = row.LineTotal > 0m && Math.Abs((row.Taxable + taxSum + row.Cess) - row.LineTotal) <= 0.25m;
+                    if (diff > tol && !isInclusiveUnit && !(lineSumOk && rowIssues.Count == 0))
+                        rowIssues.Add($"Qty*Rate-Disc ({expectedTaxable:N2}) != Taxable ({row.Taxable:N2})");
                 }
             }
 

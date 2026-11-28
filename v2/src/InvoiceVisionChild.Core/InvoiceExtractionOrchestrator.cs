@@ -153,17 +153,21 @@ public static class InvoiceExtractionOrchestrator
         if (!proc.Start())
             throw new IOException("Failed to launch InvoiceVision Python OCR worker.");
 
-        var timeoutMinutes = Math.Clamp(resolvedFiles.Length * 5, 12, 45);
-        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeoutCts.CancelAfter(TimeSpan.FromMinutes(timeoutMinutes));
+        var idleTimeout = TimeSpan.FromMinutes(8);
+        var maxWallMinutes = Math.Clamp(resolvedFiles.Length * 10, 45, 90);
+        using var hardCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        hardCts.CancelAfter(TimeSpan.FromMinutes(maxWallMinutes));
+        using var idleCts = CancellationTokenSource.CreateLinkedTokenSource(hardCts.Token);
+        idleCts.CancelAfter(idleTimeout);
 
         var stdoutLog = new StringBuilder();
-        var stderrTask = proc.StandardError.ReadToEndAsync(timeoutCts.Token);
+        var stderrTask = proc.StandardError.ReadToEndAsync(idleCts.Token);
         var stdoutTask = Task.Run(async () =>
         {
             string? line;
-            while ((line = await proc.StandardOutput.ReadLineAsync(timeoutCts.Token).ConfigureAwait(false)) is not null)
+            while ((line = await proc.StandardOutput.ReadLineAsync(idleCts.Token).ConfigureAwait(false)) is not null)
             {
+                try { idleCts.CancelAfter(idleTimeout); } catch { }
                 stdoutLog.AppendLine(line);
                 if (line.StartsWith("PROGRESS|", StringComparison.Ordinal))
                 {
@@ -172,17 +176,19 @@ public static class InvoiceExtractionOrchestrator
                         onProgress?.Invoke(pct, parts[2]);
                 }
             }
-        }, timeoutCts.Token);
+        }, idleCts.Token);
 
         try
         {
-            await Task.WhenAll(stdoutTask, stderrTask, proc.WaitForExitAsync(timeoutCts.Token)).ConfigureAwait(false);
+            await Task.WhenAll(stdoutTask, stderrTask, proc.WaitForExitAsync(idleCts.Token)).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
             try { if (!proc.HasExited) proc.Kill(entireProcessTree: true); } catch { }
             if (cancellationToken.IsCancellationRequested) throw;
-            throw new TimeoutException($"InvoiceVision OCR extraction timed out after {timeoutMinutes} minutes.");
+            if (hardCts.IsCancellationRequested)
+                throw new TimeoutException($"InvoiceVision OCR extraction exceeded {maxWallMinutes} minutes total.");
+            throw new TimeoutException("InvoiceVision OCR extraction stalled for 8 minutes without progress.");
         }
 
         var stderr = await stderrTask.ConfigureAwait(false);
