@@ -327,7 +327,7 @@ def run_extraction(args: argparse.Namespace) -> Dict[str, Any]:
 
     emit_progress(args.progress, 95, "Finalizing GST math audit & canonical JSON...")
     elapsed = round(time.perf_counter() - t_start, 2)
-    audit = final_canon.pop("_audit", None) or audit_invoice_math(final_canon)
+    audit = final_canon.pop("_audit", None) or audit_invoice_math(final_canon, raw_text=final_raw, qr_einvoice=qr_einv)
 
     payload = {
         "schema": "AAH-INVOICEVISION-WORKER-V1",
@@ -343,7 +343,31 @@ def run_extraction(args: argparse.Namespace) -> Dict[str, Any]:
         "supplierMemory": memory_meta,
         "rawOcrText": final_raw,
         "rawTablesHtml": list(final_canon.pop("rawTablesHtml", []) or []),
+        "agentPipelineTrace": {},
     }
+
+    if not is_partial_continuation and (mode in ("hybrid", "qwen") or bool(audit.get("needs_ai_crosscheck"))):
+        two_stg = (audit.get("two_stage_verification") or {}) if isinstance(audit, dict) else {}
+        if not two_stg.get("stage2AiCrossChecked"):
+            x_model = qwen_text_model if qwen_text_model.is_file() else qwen_model
+            if x_model.is_file() and str(final_raw or "").strip():
+                try:
+                    from hybrid_merger import apply_two_stage_cross_verify_to_worker_payload
+
+                    emit_progress(args.progress, 97, "Stage 2 AI Cross-Check verifying Seller/Buyer/Invoice header...")
+                    apply_two_stage_cross_verify_to_worker_payload(
+                        payload,
+                        llama_server=llama_server,
+                        text_model=x_model,
+                        work_dir=work_dir,
+                        client_gstin=args.client_gstin,
+                        direction=args.direction,
+                        memory_db=memory_db,
+                        threads=args.threads,
+                    )
+                except Exception:
+                    pass
+    payload["elapsedSec"] = round(time.perf_counter() - t_start, 2)
     return payload
 
 
@@ -517,21 +541,22 @@ def main() -> int:
         os.replace(tmp_path, out_path)
         return payload_dict
 
-    def _needs_qwen_escalation(payload_dict: Dict[str, Any]) -> bool:
-        if mode != "hybrid":
-            return False
+    def _is_partial_continuation_payload(payload_dict: Dict[str, Any]) -> bool:
         audit_pl = payload_dict.get("audit") or {}
-        if audit_pl.get("fully_balanced"):
-            return False
         raw_pl = payload_dict.get("rawOcrText") or ""
         canon_pl = payload_dict.get("canonical") or {}
         pages_cnt = len(payload_dict.get("renderedPageImages") or [])
         inv_tot_pl = float(canon_pl.get("invoiceTotal") or 0.0)
-        tx_tax_pl = float(canon_pl.get("taxableTotal") or 0.0) + float(canon_pl.get("cgstTotal") or 0.0) + float(canon_pl.get("sgstTotal") or 0.0) + float(canon_pl.get("igstTotal") or 0.0)
+        tx_tax_pl = (
+            float(canon_pl.get("taxableTotal") or 0.0)
+            + float(canon_pl.get("cgstTotal") or 0.0)
+            + float(canon_pl.get("sgstTotal") or 0.0)
+            + float(canon_pl.get("igstTotal") or 0.0)
+        )
         blk_pl = " ".join(str(b).lower() for b in (audit_pl.get("blocking_issues") or []))
         m_first_row = re.search(r"<tbody>\s*<tr>\s*<td[^>]*>\s*(\d{1,3})\s*\.?\s*</td>", raw_pl, re.IGNORECASE)
         is_cont_by_rowno = bool(m_first_row and int(m_first_row.group(1)) >= 2 and inv_tot_pl > max(100.0, tx_tax_pl * 1.5))
-        is_partial_only = (
+        return (
             pages_cnt <= 1
             and audit_pl.get("row_count", 0) > 0
             and (
@@ -540,7 +565,81 @@ def main() -> int:
                 or (inv_tot_pl > tx_tax_pl + 1.0 and (bool(re.search(r"\bpage\s*[2-9]\s*(?:of|/)\s*[2-9]\b", raw_pl, re.IGNORECASE)) or is_cont_by_rowno))
             )
         )
-        if is_partial_only:
+
+    def _try_two_stage_ai_crosscheck(payload_dict: Dict[str, Any], daemon_port: int = 0) -> bool:
+        if _is_partial_continuation_payload(payload_dict):
+            return False
+        audit_pl = payload_dict.get("audit") or {}
+        if mode not in ("hybrid", "qwen") and not audit_pl.get("needs_ai_crosscheck"):
+            return False
+        two_stg = audit_pl.get("two_stage_verification") or {}
+        if two_stg.get("stage2AiCrossChecked"):
+            return True
+        raw_pl = str(payload_dict.get("rawOcrText") or "").strip()
+        if not raw_pl:
+            return False
+        q_txt = Path(getattr(args, "qwen_text_model", "") or defaults["qwen_text_model"])
+        text_model = q_txt if q_txt.is_file() else Path(args.qwen_model or defaults["qwen_model"])
+        if not text_model.is_file():
+            return False
+        work_p = Path(args.work_dir).resolve() if args.work_dir else out_path.parent
+        emit_progress(args.progress, 88, "Stage 2 AI Cross-Check verifying Seller/Buyer/Invoice header...")
+        if daemon_port > 0:
+            try:
+                import urllib.request
+
+                xv_req = json.dumps(
+                    {
+                        "workerOutput": str(out_path),
+                        "textModel": str(text_model),
+                        "workDir": str(work_p),
+                        "clientGstin": args.client_gstin,
+                        "direction": args.direction,
+                        "memoryDb": args.memory_db,
+                    }
+                ).encode("utf-8")
+                req = urllib.request.Request(
+                    f"http://127.0.0.1:{daemon_port}/cross-verify",
+                    data=xv_req,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=180) as resp:
+                    if resp.status == 200 and out_path.is_file():
+                        updated = json.loads(out_path.read_text(encoding="utf-8"))
+                        payload_dict.update(updated)
+                        return True
+            except Exception:
+                pass
+        try:
+            from hybrid_merger import apply_two_stage_cross_verify_to_worker_payload
+
+            t_xv0 = time.perf_counter()
+            apply_two_stage_cross_verify_to_worker_payload(
+                payload_dict,
+                llama_server=llama_srv,
+                text_model=text_model,
+                work_dir=work_p,
+                client_gstin=args.client_gstin,
+                direction=args.direction,
+                memory_db=args.memory_db,
+                threads=args.threads,
+            )
+            payload_dict["elapsedSec"] = round(float(payload_dict.get("elapsedSec") or 0.0) + (time.perf_counter() - t_xv0), 2)
+            tmp_path = out_path.with_suffix(".json.tmp")
+            tmp_path.write_text(json.dumps(payload_dict, indent=2, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp_path, out_path)
+            return True
+        except Exception:
+            return False
+
+    def _needs_qwen_escalation(payload_dict: Dict[str, Any]) -> bool:
+        if mode != "hybrid":
+            return False
+        audit_pl = payload_dict.get("audit") or {}
+        if audit_pl.get("fully_balanced"):
+            return False
+        if _is_partial_continuation_payload(payload_dict):
             return False
         qwen_txt_m = Path(getattr(args, "qwen_text_model", "") or defaults["qwen_text_model"])
         qwen_m = Path(args.qwen_model or defaults["qwen_model"])
@@ -685,6 +784,7 @@ def main() -> int:
                         d_out = json.loads(out_path.read_text(encoding="utf-8"))
                         if _needs_qwen_escalation(d_out):
                             if _try_stage25_text_ai(d_out):
+                                _try_two_stage_ai_crosscheck(d_out, daemon_port=port)
                                 emit_progress(args.progress, 100, f"Done in {d_out.get('elapsedSec', 0)}s ({d_out.get('engineUsed', 'TextAI')})")
                                 return 0
                             qwen_m = Path(args.qwen_model or defaults["qwen_model"])
@@ -708,11 +808,19 @@ def main() -> int:
                                 with urllib.request.urlopen(qreq, timeout=900) as qresp:
                                     if qresp.status == 200:
                                         qres = json.loads(qresp.read().decode("utf-8"))
-                                        emit_progress(args.progress, 100, f"Done in {round(time.perf_counter()-t_q0,1)}s ({qres.get('engineUsed', 'Hybrid')})")
+                                        if out_path.is_file():
+                                            d_out = json.loads(out_path.read_text(encoding="utf-8"))
+                                            _try_two_stage_ai_crosscheck(d_out, daemon_port=port)
+                                        emit_progress(args.progress, 100, f"Done in {round(time.perf_counter()-t_q0,1)}s ({d_out.get('engineUsed', qres.get('engineUsed', 'Hybrid'))})")
                                         return 0
                             except Exception:
                                 _escalate_payload_locally(d_out)
+                                _try_two_stage_ai_crosscheck(d_out, daemon_port=port)
                                 emit_progress(args.progress, 100, f"Done in {d_out.get('elapsedSec', 0)}s ({d_out.get('engineUsed', 'Hybrid')})")
+                                return 0
+                        if _try_two_stage_ai_crosscheck(d_out, daemon_port=port):
+                            emit_progress(args.progress, 100, f"Done in {d_out.get('elapsedSec', 0)}s ({d_out.get('engineUsed', '2Stage-Verified')})")
+                            return 0
                     return 0
             except Exception:
                 pass
@@ -745,6 +853,7 @@ def main() -> int:
         if _needs_qwen_escalation(res_pl):
             emit_progress(args.progress, 75, "Hybrid Auditor fallback -> escalating unresolved bill to Qwen3-VL-4B (reusing LightOnOCR)...")
             _escalate_payload_locally(res_pl)
+        _try_two_stage_ai_crosscheck(res_pl, daemon_port=0)
         emit_progress(args.progress, 100, f"Done in {res_pl.get('elapsedSec', 0)}s ({res_pl.get('engineUsed', '')})")
         return 0
 

@@ -35,7 +35,12 @@ from category_agents import (
 )
 from gst_math import audit_invoice_math, run_parallel_category_audits
 from gst_parser import clean_num, normalize_canonical_dict, parse_document_text_to_canonical
-from hybrid_merger import LlamaServerSession, apply_qwen_escalation_to_worker_payload, img_to_data_url
+from hybrid_merger import (
+    LlamaServerSession,
+    apply_qwen_escalation_to_worker_payload,
+    apply_two_stage_cross_verify_to_worker_payload,
+    img_to_data_url,
+)
 from preprocess import configure_isolated_paddlex, crop_footer_strip, orient_image_upright, preprocess_pages_p2, render_input_to_images
 from qr_decode import decode_qr_from_image
 from supplier_memory import apply_supplier_memory
@@ -665,18 +670,22 @@ class ManagerAgent:
                             )
 
                 # Pass 2 targeted self-correction via direct PeerBus CorrectionDirectives + selective re-audit
-                if not audit.get("fully_balanced"):
+                cross_meta = audit.get("cross_verification") or {}
+                if not audit.get("fully_balanced") or not cross_meta.get("stage1Passed", True):
                     directives: Dict[str, Dict[str, Any]] = {}
                     issues_blob = " ".join(audit.get("blocking_issues") or []).lower()
-                    if "gstin" in issues_blob or not audit.get("seller_gstin_valid"):
-                        directives["supplier_identity"] = {"reason": "gstin_check"}
-                    if not audit.get("buyer_gstin_valid"):
-                        directives["buyer_direction"] = {"reason": "buyer_gstin_check"}
+                    suspects = set(cross_meta.get("suspectFields") or [])
+                    if "gstin" in issues_blob or not audit.get("seller_gstin_valid") or "seller.name" in suspects or "seller.gstin" in suspects:
+                        directives["supplier_identity"] = {"reason": "gstin_or_seller_cross_check"}
+                    if not audit.get("buyer_gstin_valid") or "buyer.name" in suspects or "buyer.gstin" in suspects:
+                        directives["buyer_direction"] = {"reason": "buyer_cross_check"}
+                    if "invoiceNumber" in suspects and "invoice_header" in categories:
+                        directives["invoice_header"] = {"reason": "invoice_number_cross_check"}
                     if audit.get("bad_rows") or not audit.get("slab_match") or not audit.get("tax_match"):
                         for dc in ("line_items", "hsn_classification", "tax_summary_slab"):
                             if dc in categories:
                                 directives[dc] = {"reason": "row_or_slab_mismatch"}
-                    if not audit.get("grand_balanced") or not audit.get("words_match"):
+                    if not audit.get("grand_balanced") or not audit.get("words_match") or "invoiceTotal" in suspects:
                         if "totals_words" in categories:
                             directives["totals_words"] = {"reason": "grand_total_or_words_mismatch"}
 
@@ -957,6 +966,52 @@ def serve_warm_daemon(
                     tmp_out.write_text(json.dumps(wo, indent=2, ensure_ascii=False), encoding="utf-8")
                     os.replace(tmp_out, out_p)
                     body = json.dumps({"ok": True, "engineUsed": wo["engineUsed"], "balanced": bool((wo["audit"] or {}).get("fully_balanced"))}).encode("utf-8")
+                    self.send_response(200)
+                except Exception as ex:
+                    body = json.dumps({"ok": False, "error": str(ex)}).encode("utf-8")
+                    self.send_response(500)
+                finally:
+                    with activity_lock:
+                        active_escalations[0] = max(0, active_escalations[0] - 1)
+                        last_activity[0] = time.monotonic()
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if self.path == "/cross-verify":
+                with activity_lock:
+                    active_escalations[0] += 1
+                    last_activity[0] = time.monotonic()
+                t_xv0 = time.perf_counter()
+                try:
+                    req = json.loads(raw.decode("utf-8"))
+                    out_p = Path(req["workerOutput"])
+                    wo = json.loads(out_p.read_text(encoding="utf-8"))
+                    with manager.exclusive_qwen_gate():
+                        apply_two_stage_cross_verify_to_worker_payload(
+                            wo,
+                            llama_server=manager.llama_server,
+                            text_model=Path(req["textModel"]),
+                            work_dir=Path(req["workDir"]),
+                            client_gstin=str(req.get("clientGstin") or ""),
+                            direction=str(req.get("direction") or "Auto"),
+                            memory_db=str(req.get("memoryDb") or ""),
+                            threads=manager.threads,
+                        )
+                    wo["elapsedSec"] = round(float(wo.get("elapsedSec") or 0.0) + (time.perf_counter() - t_xv0), 2)
+                    tmp_out = out_p.with_suffix(".json.tmp")
+                    tmp_out.write_text(json.dumps(wo, indent=2, ensure_ascii=False), encoding="utf-8")
+                    os.replace(tmp_out, out_p)
+                    xv_meta = (wo.get("audit") or {}).get("two_stage_verification") or {}
+                    body = json.dumps(
+                        {
+                            "ok": True,
+                            "engineUsed": wo.get("engineUsed", ""),
+                            "balanced": bool((wo.get("audit") or {}).get("fully_balanced")),
+                            "agreed": bool(xv_meta.get("agreed", True)),
+                        }
+                    ).encode("utf-8")
                     self.send_response(200)
                 except Exception as ex:
                     body = json.dumps({"ok": False, "error": str(ex)}).encode("utf-8")

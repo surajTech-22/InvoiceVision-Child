@@ -565,6 +565,139 @@ class EngineRegressionTests(unittest.TestCase):
         self.assertEqual(c7["buyer"]["name"], "BALAJI TRADING CO")
         self.assertEqual(c7["buyer"]["gstin"], CLIENT_GSTIN)
 
+    def test_stage1_audit_agent_independent_cross_verification(self) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+        import gst_math
+
+        raw_html = f"""
+        TAX INVOICE
+        LAKSHMIVENKATESHWARA AGENCIES
+        GSTIN: 29APFPT8050D1ZO
+        Billed to: BALAJI TRADING CO.
+        APMC YARD TUMKUR
+        GSTIN: {CLIENT_GSTIN}
+        Invoice No.: LVA25/00932
+        <table><tbody><tr><td>1</td><td>ITEM</td><td>25010010</td><td>10</td><td>100.00</td><td>1000.00</td></tr></tbody></table>
+        Grand Total 1050.00
+        For LAKSHMIVENKATESHWARA AGENCIES
+        """
+        poisoned = {
+            "seller": {"name": "VEHICLE No.", "gstin": "29APFPT8050D1ZO"},
+            "buyer": {"name": "TUMAKUR", "gstin": CLIENT_GSTIN},
+            "invoiceNumber": "LVA25/00932",
+            "invoiceDate": "2026-11-11",
+            "taxableTotal": 1000.0,
+            "cgstTotal": 25.0,
+            "sgstTotal": 25.0,
+            "igstTotal": 0.0,
+            "invoiceTotal": 1050.0,
+            "rows": [
+                {"slNo": 1, "description": "ITEM", "hsn": "25010010", "quantity": 10.0, "rate": 100.0, "taxable": 1000.0, "gstRate": 5.0, "cgst": 25.0, "sgst": 25.0, "igst": 0.0, "lineTotal": 1050.0}
+            ],
+            "_meta": {"raw_text": raw_html, "printed_total_found": True},
+        }
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            audit, children = gst_math.run_parallel_category_audits(
+                poisoned,
+                ["supplier_identity", "buyer_direction", "invoice_header", "totals_words"],
+                pool=pool,
+            )
+        self.assertFalse(audit["fully_balanced"])
+        self.assertTrue(audit["needs_ai_crosscheck"])
+        xv = audit["cross_verification"]
+        self.assertFalse(xv["stage1Passed"])
+        self.assertIn("seller.name", xv["suspectFields"])
+        self.assertIn("buyer.name", xv["suspectFields"])
+        self.assertEqual(xv["independentSellerName"], "LAKSHMIVENKATESHWARA AGENCIES")
+        self.assertEqual(xv["independentBuyerName"], "BALAJI TRADING CO.")
+        by_cat = {c["category"]: c for c in children}
+        self.assertFalse(by_cat["supplier_identity"]["passed"])
+        self.assertFalse(by_cat["buyer_direction"]["passed"])
+
+    def test_stage2_cross_verify_with_text_ai_repairs_and_verifies(self) -> None:
+        import json
+        import tempfile
+        from unittest import mock
+        import hybrid_merger
+
+        raw_html = f"""
+        TAX INVOICE
+        SLNS DISTRIBUTORS
+        UDAYAM NO KA-25-0070835
+        GSTIN: 29DFMPP8346J1ZJ
+        Bill To: BALAJI TRADING CO
+        TUMAKUR
+        GSTIN: {CLIENT_GSTIN}
+        Invoice No.: 3466/2026-27
+        <table><tbody><tr><td>1</td><td>MUSTARD OIL</td><td>15149920</td><td>10</td><td>100.00</td><td>1000.00</td></tr></tbody></table>
+        Grand Total 1050.00
+        """
+        poisoned_payload = {
+            "schema": "AAH-INVOICEVISION-WORKER-V1",
+            "engineUsed": "LightOnOCR-2-1B-P2",
+            "rawOcrText": raw_html,
+            "qrInfo": {},
+            "canonical": {
+                "seller": {"name": "UDAYAM NO KA-25-0070835", "gstin": "29DFMPP8346J1ZJ"},
+                "buyer": {"name": "TUMAKUR", "gstin": CLIENT_GSTIN},
+                "invoiceNumber": "3466/2026-27",
+                "invoiceDate": "2026-11-04",
+                "taxableTotal": 1000.0,
+                "cgstTotal": 25.0,
+                "sgstTotal": 25.0,
+                "igstTotal": 0.0,
+                "invoiceTotal": 1050.0,
+                "rows": [
+                    {"slNo": 1, "description": "MUSTARD OIL", "hsn": "15149920", "quantity": 10.0, "rate": 100.0, "taxable": 1000.0, "gstRate": 5.0, "cgst": 25.0, "sgst": 25.0, "igst": 0.0, "lineTotal": 1050.0}
+                ],
+            },
+            "audit": {},
+            "agentPipelineTrace": {},
+        }
+
+        class _FakeLlamaSession:
+            def __init__(self, *a, **kw) -> None:
+                pass
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+            def chat_text(self, *a, **kw) -> str:
+                return json.dumps({
+                    "sellerName": "SLNS DISTRIBUTORS",
+                    "sellerGstin": "29DFMPP8346J1ZJ",
+                    "buyerName": "BALAJI TRADING CO",
+                    "buyerGstin": CLIENT_GSTIN,
+                    "invoiceNumber": "3466/2026-27",
+                    "invoiceDate": "2026-11-04",
+                    "invoiceTotal": 1050.0,
+                    "stage3Accurate": False,
+                    "issueNotes": "Repaired Seller UDYAM prefix & Buyer city",
+                })
+
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "mem.db"
+            fake_model = Path(td) / "Qwen3-1.7B-Q4_K_M.gguf"
+            fake_model.write_bytes(b"gguf")
+            with mock.patch.object(hybrid_merger, "LlamaServerSession", _FakeLlamaSession):
+                out = hybrid_merger.apply_two_stage_cross_verify_to_worker_payload(
+                    poisoned_payload,
+                    llama_server=Path(td) / "llama-server.exe",
+                    text_model=fake_model,
+                    work_dir=Path(td),
+                    client_gstin=CLIENT_GSTIN,
+                    memory_db=str(db_path),
+                )
+            self.assertEqual(out["canonical"]["seller"]["name"], "SLNS DISTRIBUTORS")
+            self.assertEqual(out["canonical"]["buyer"]["name"], "BALAJI TRADING CO")
+            self.assertTrue(out["audit"]["fully_balanced"])
+            tsv = out["audit"]["two_stage_verification"]
+            self.assertTrue(tsv["stage1AuditCrossVerified"])
+            self.assertTrue(tsv["stage2AiCrossChecked"])
+            self.assertTrue(tsv["agreed"])
+            self.assertGreaterEqual(len(tsv["correctionsApplied"]), 2)
+            self.assertIn("twoStageVerification", out["agentPipelineTrace"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

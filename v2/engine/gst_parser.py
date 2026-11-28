@@ -4,7 +4,17 @@ import json
 import re
 from typing import Any, Dict, List, Optional, Tuple
 from bs4 import BeautifulSoup
-from gst_math import audit_invoice_math, is_supported_gst_rate, is_valid_gstin, repair_gstin, round2
+from gst_math import (
+    ADDRESS_HINT_RE,
+    BUSINESS_KEYWORD_RE,
+    PARTY_NOISE_PREFIX_RE,
+    audit_invoice_math,
+    clean_party_name_candidate,
+    is_supported_gst_rate,
+    is_valid_gstin,
+    repair_gstin,
+    round2,
+)
 
 MONTHS = {
     "jan": "01", "feb": "02", "mar": "03", "apr": "04", "may": "05", "jun": "06",
@@ -1202,26 +1212,8 @@ def _parse_item_rows_from_matrix(
     return rows, footer_hints
 
 
-_PARTY_NOISE_PREFIX_RE = re.compile(
-    r"^(?:page\s+\d+|print\s+copy|pan(?:\s+no)?|fssai(?:\s+(?:no|lic))?|essai(?:\s+lic)?|gst(?:\s*(?:no|num|number))?|gstin(?:/uin)?|gstn(?:\s+no)?|state(?:\s+name|\s+code)?|"
-    r"phone|ph(?:\s+no)?|mob(?:ile)?|contact|email|e-?mail|tel\.?\s*/\s*email|cin|van|beat|order\s*(?:no|number)|customer\s+order|dse\s+name|"
-    r"salesperson|vehicle(?:\s*(?:no|num|number))?|ud(?:ay|y)?am(?:\s*(?:no|num|number|reg))?|msme(?:\s*(?:no|num|number))?|khatha\s+(?:no|number)|pid|mkt|eway|e-?way|irn|tkn|ack\.?\s*(?:no|date)|e-?inv|from|to|buyer(?:\s*\(bill\s*to\))?|"
-    r"sn\.?|sl\.?\s*no|sr\.?\s*no|product(?:\s+name)?|particulars|description\s+of\s+goods|item\s+name|hsn(?:/sac)?|qty|quantity|mrp|amount|"
-    r"bill\s*to(?:\s+gstin)?|billed\s*to|ship\s*to(?:\s+gstin)?|shipping\s+(?:address|date)|supplier\s+address|registered\s+address|customer\s+(?:address|details)|"
-    r"cust\.?\s*code|party\s+(?:mobile|gstin)|branch\s+name|channel|tax\s+type|place\s+of\s+(?:sale|supply)|mode\s+of\s+payment|"
-    r"cn\s+(?:number|date)|sdp\s+id|number\s+of\s+totes|ids?\s+of\s+totes|scan\s+this\s+qr|"
-    r"date|dated|inv(?:oice)?\s*(?:no|number|date|dt)|bill\s*(?:no|number|date|dt)|doc(?:ument)?\s*(?:no|number|date)|voucher\s*(?:no|number)|sm\s+name|rt\s+name|all\s+taxes\s+are|"
-    r"gst\s+invoice(?:/cash)?|tax\s+invoice(?:\s*\(credit\))?|bill\s+of\s+supply|original(?:\s+for\s+recipient)?|"
-    r"duplicate|triplicate|reverse\s+charge|for)(?:$|\b|[:.\s])",
-    re.IGNORECASE,
-)
-
-_ADDRESS_HINT_RE = re.compile(
-    r"\b(?:main\b|cross|road|rd\b|street|st\b|yard|apmc|a\s*p\s*m\s*c|ayard|nagar|puram|phase|plot|industrial|layout|extension|ddpi|d\.?d\.?p\.?i|circle|enclave|survey|"
-    r"ward\s+no|pin\s*code|near|beside|opp\.?|bengaluru|bangalore|tumkur|thumkur|tumakur|tumakuru|mysuru|mysore|karnataka|india|"
-    r"k(?:ha|at|ath)a\s+no|bata?wadi|balawadi|mandipet|belagumba)\b",
-    re.IGNORECASE,
-)
+_PARTY_NOISE_PREFIX_RE = PARTY_NOISE_PREFIX_RE
+_ADDRESS_HINT_RE = ADDRESS_HINT_RE
 
 
 def _strip_md(s: str) -> str:
@@ -1229,37 +1221,11 @@ def _strip_md(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
-_BUSINESS_KEYWORD_RE = re.compile(
-    r"\b(?:enterprises|traders|trading|marketing|distributors|agencies|agro|foods|pvt\s+ltd|private\s+limited|llp|limited|ltd\.?|inc\.?|corp\.?|company|wholesale|retail|cash\s+and\s+carry|stores|industries)\b",
-    re.IGNORECASE,
-)
+_BUSINESS_KEYWORD_RE = BUSINESS_KEYWORD_RE
 
 
 def _clean_party_name(s: str) -> str:
-    s = _strip_md(s)
-    # Strip wrapper parentheses like "(Registered as Metro Cash and Carry India Limited)"
-    s = re.sub(r"^\(\s*(?:registered\s+as\s+)?(.+?)\s*\)$", r"\1", s, flags=re.IGNORECASE)
-    # Strip explicit label prefixes ("Party Name : BALAJI...", "Company known as ...", "M/s. ...")
-    s = re.sub(r"^(?:party\s*name|customer\s*name|buyer\s*name|supplier\s*name|seller\s*name|company\s+known\s+as|formerly\s+known\s+as|registered\s+as|m/s\.?)\s*[:\-]?\s+", "", s, flags=re.IGNORECASE)
-    m_to = re.match(r"^(?:to|from)\.?\s*[:\-]?\s+(.{3,})$", s, re.IGNORECASE)
-    if m_to:
-        s = m_to.group(1)
-    # Remove trailing phone number / single marker letter (e.g. "BALAJI TRADING CO. 9731329698 D")
-    s = re.sub(r"\s+\d{10}(?:\s+[A-Z])?\s*$", "", s)
-    # Remove trailing FY ranges ("2026-2027 (from 1-Apr-26)")
-    s = re.sub(r"\s+20\d{2}-20\d{2}\s*(?:\([^)]*\))?\s*$", "", s)
-    s = s.strip(" :-|,")
-    if len(s) < 3 or s.startswith("&") or s.lower() in ("address", "name & address"):
-        return ""
-    if _PARTY_NOISE_PREFIX_RE.match(s):
-        return ""
-    if _ADDRESS_HINT_RE.search(s) and not _BUSINESS_KEYWORD_RE.search(s):
-        return ""
-    if re.fullmatch(r"[\d\W]+", s) or re.match(r"^[0-9]{6,}", s):
-        return ""
-    if len(re.findall(r"[A-Za-z]", s)) < 3:
-        return ""
-    return s[:120]
+    return clean_party_name_candidate(s)
 
 
 def _extract_party_name_near(lines: List[str], target_gstin: str, role_keywords: Tuple[str, ...], fallback_top: bool, sig_hint: str = "") -> str:

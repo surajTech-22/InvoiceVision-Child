@@ -70,7 +70,15 @@ def _attach_kill_on_close_job(pid: int) -> Optional[int]:
 
 import requests
 import cv2
-from gst_math import audit_invoice_math, is_valid_gstin, round2
+from gst_math import (
+    audit_invoice_math,
+    clean_party_name_candidate,
+    independent_cross_verify_invoice,
+    is_suspicious_party_name,
+    is_valid_gstin,
+    repair_gstin,
+    round2,
+)
 from gst_parser import _clean_party_name, normalize_canonical_dict, parse_document_text_to_canonical
 from preprocess import resize_max_side
 from supplier_memory import apply_supplier_memory, build_few_shot_prompt_hint
@@ -851,6 +859,19 @@ def analyze_html_with_text_ai(
     memory_meta = apply_supplier_memory(merged_canon, memory_db, client_gstin=client_gstin)
     merged_audit = merged_canon.pop("_audit", None) or audit_invoice_math(merged_canon, raw_text=raw_html, qr_einvoice=qr_einv)
 
+    cross_info = merged_audit.get("cross_verification") or {}
+    merged_audit["two_stage_verification"] = {
+        "enabled": True,
+        "stage1AuditCrossVerified": True,
+        "stage1Passed": bool(cross_info.get("stage1Passed", True)),
+        "stage2AiCrossChecked": True,
+        "stage2Model": text_model.name,
+        "stage2Method": "full_text_ai_repair",
+        "agreed": not bool(merged_audit.get("needs_ai_crosscheck")),
+        "correctionsApplied": [],
+        "suspectFieldsRemaining": list(cross_info.get("suspectFields") or []),
+    }
+
     base_audit = audit if (isinstance(audit, dict) and "fully_balanced" in audit) else audit_invoice_math(base_canon or {}, raw_text=raw_html, qr_einvoice=qr_einv)
     improved = math_fitness({**merged_canon, "_audit": merged_audit}) > math_fitness({**(base_canon or {}), "_audit": base_audit})
     rule_saved: Dict[str, Any] = {"saved": False}
@@ -879,3 +900,345 @@ def analyze_html_with_text_ai(
         "supplierMemory": memory_meta,
         "ruleSaved": rule_saved,
     }
+
+
+CROSS_VERIFY_SYSTEM_PROMPT = (
+    "You are Stage-2 Offline AI Cross-Verifier for Indian GST tax invoices. "
+    "Independently read ONLY the OCR header, Bill-To/Buyer block, and footer totals/signature below. "
+    "Verify Seller Name, Seller GSTIN, Buyer Name, Buyer GSTIN, Invoice Number, Invoice Date, and Grand Total. "
+    "NEVER return field labels, vehicle numbers, UDYAM/MSME/PAN/FSSAI numbers, GST prefixes, table column names, "
+    "or city/address fragments (like TUMAKUR, APMC YARD) as a Seller or Buyer Name. "
+    "Return exact legal firm names visible on the invoice and return strict valid JSON matching the schema. /no_think"
+)
+
+QWEN_CROSS_VERIFY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "sellerName": {"type": "string"},
+        "sellerGstin": {"type": "string"},
+        "buyerName": {"type": "string"},
+        "buyerGstin": {"type": "string"},
+        "invoiceNumber": {"type": "string"},
+        "invoiceDate": {"type": "string"},
+        "invoiceTotal": {"type": "number"},
+        "stage3Accurate": {"type": "boolean"},
+        "issueNotes": {"type": "string"},
+    },
+    "required": [
+        "sellerName",
+        "sellerGstin",
+        "buyerName",
+        "buyerGstin",
+        "invoiceNumber",
+        "invoiceDate",
+        "invoiceTotal",
+        "stage3Accurate",
+        "issueNotes",
+    ],
+}
+
+
+def _compact_ocr_for_cross_verify(raw_text: str, head_limit: int = 2800, tail_limit: int = 1400) -> str:
+    txt = str(raw_text or "").strip()
+    if len(txt) <= head_limit + tail_limit + 64:
+        return txt
+    return txt[:head_limit] + "\n\n... [LINE ITEMS TRIMMED FOR HEADER/FOOTER CROSS-CHECK] ...\n\n" + txt[-tail_limit:]
+
+
+def _norm_tokens(s: str) -> set:
+    clean = re.sub(r"\b(?:m/s|pvt|private|ltd|limited|co|llp|and)\b", " ", (s or "").lower())
+    return {t for t in re.findall(r"[a-z0-9]+", clean) if len(t) >= 2}
+
+
+def _token_sim(a: str, b: str) -> float:
+    ta, tb = _norm_tokens(a), _norm_tokens(b)
+    if not ta or not tb:
+        return 0.0
+    return len(ta & tb) / max(1, min(len(ta), len(tb)))
+
+
+def _pick_verified_party_name(
+    current_name: str,
+    independent_name: str,
+    ai_name: str,
+    suspect_flag: bool,
+    raw_flat_lower: str,
+    role_label: str,
+    corrections: List[str],
+) -> str:
+    """Reconcile Stage-3 extracted party name against Stage-1 Audit & Stage-2 AI consensus."""
+    cur = str(current_name or "").strip()
+    ind_clean = clean_party_name_candidate(independent_name)
+    ai_clean = clean_party_name_candidate(ai_name)
+    cur_bad, _ = is_suspicious_party_name(cur) if cur else (True, "empty")
+
+    def _is_grounded(cand: str) -> bool:
+        toks = _norm_tokens(cand)
+        return bool(toks and sum(1 for t in toks if t in raw_flat_lower) >= max(1, len(toks) // 2))
+
+    # 1. If current value is empty or suspicious noise/city/prefix, pick grounded clean AI or Audit name
+    if cur_bad:
+        for cand, src in ((ai_clean, "Qwen3-1.7B AI"), (ind_clean, "Audit Agent")):
+            if cand and (not raw_flat_lower or _is_grounded(cand) or src == "Audit Agent"):
+                if cand.lower() != cur.lower():
+                    corrections.append(f"{role_label}: '{cur or '<empty>'}' -> '{cand}' ({src})")
+                return cand
+        return cur
+
+    # 2. If Stage-1 Audit flagged current name as suspect AND AI agrees closely with Stage-1 Audit (2-of-3 consensus)
+    if suspect_flag and ai_clean and ind_clean:
+        if _token_sim(ai_clean, ind_clean) >= 0.45 and _token_sim(ai_clean, cur) < 0.45:
+            corrections.append(f"{role_label}: '{cur}' -> '{ai_clean}' (2-of-3 Audit+AI consensus)")
+            return ai_clean
+
+    # 3. If Stage-3 name is not grounded in raw OCR while AI found a cleanly grounded legal name
+    if raw_flat_lower and not _is_grounded(cur) and ai_clean and _is_grounded(ai_clean):
+        corrections.append(f"{role_label}: '{cur}' -> '{ai_clean}' (grounded AI verification)")
+        return ai_clean
+
+    return cur
+
+
+def cross_verify_with_text_ai(
+    *,
+    llama_server: Path,
+    text_model: Path,
+    raw_html: str,
+    canonical: Dict[str, Any],
+    audit: Optional[Dict[str, Any]],
+    work_dir: Path,
+    qr_info: Optional[Dict[str, Any]] = None,
+    client_gstin: str = "",
+    direction: str = "Auto",
+    memory_db: str = "",
+    threads: int = 10,
+) -> Dict[str, Any]:
+    """
+    Stage-2 Verification Pass: Run compact Qwen3-1.7B header/party/totals cross-check
+    and reconcile Stage-3 extraction, Stage-1 Audit independent extraction, and Stage-2 AI.
+    """
+    t0 = time.perf_counter()
+    qr_einv = (qr_info or {}).get("einvoice")
+    qr_upi_meta = (qr_info or {}).get("upi_meta")
+    canon = json.loads(json.dumps(canonical or {}))
+    seller_obj = dict(canon.get("seller") or {})
+    buyer_obj = dict(canon.get("buyer") or {})
+
+    cross_s1 = (audit or {}).get("cross_verification") if isinstance(audit, dict) else None
+    if not cross_s1:
+        cross_s1 = independent_cross_verify_invoice(canon, raw_text=raw_html, qr_einvoice=qr_einv)
+
+    few_shot_hint = ""
+    if memory_db:
+        try:
+            few_shot_hint = build_few_shot_prompt_hint(
+                memory_db,
+                str(seller_obj.get("gstin") or ""),
+                str(seller_obj.get("name") or ""),
+                client_gstin=client_gstin,
+                raw_text=raw_html,
+            )
+        except Exception:
+            few_shot_hint = ""
+
+    stage3_snap = {
+        "sellerName": seller_obj.get("name", ""),
+        "sellerGstin": seller_obj.get("gstin", ""),
+        "buyerName": buyer_obj.get("name", ""),
+        "buyerGstin": buyer_obj.get("gstin", ""),
+        "invoiceNumber": canon.get("invoiceNumber", ""),
+        "invoiceDate": canon.get("invoiceDate", ""),
+        "invoiceTotal": canon.get("invoiceTotal", 0.0),
+    }
+    stage1_snap = {
+        "stage1Passed": bool(cross_s1.get("stage1Passed", True)),
+        "independentSellerName": cross_s1.get("independentSellerName", ""),
+        "independentBuyerName": cross_s1.get("independentBuyerName", ""),
+        "independentInvoiceNumber": cross_s1.get("independentInvoiceNumber", ""),
+        "independentInvoiceTotal": cross_s1.get("independentInvoiceTotal", 0.0),
+        "suspectFields": list(cross_s1.get("suspectFields") or []),
+        "mismatches": list(cross_s1.get("mismatches") or []),
+    }
+
+    user_prompt = (
+        f"Known client GSTIN (our firm): {client_gstin or 'Unknown'} | Direction hint: {direction}\n"
+        f"Stage-3 Extraction: {json.dumps(stage3_snap, ensure_ascii=False)}\n"
+        f"Stage-1 Audit Agent Independent Findings: {json.dumps(stage1_snap, ensure_ascii=False)}\n"
+        f"{few_shot_hint}\n\n"
+        f"OCR Header & Footer Excerpt:\n{_compact_ocr_for_cross_verify(raw_html)}\n/no_think"
+    )
+
+    log_dir = work_dir / "logs"
+    with LlamaServerSession(str(llama_server), str(text_model), None, log_dir, threads=threads, ctx=4096) as srv:
+        reply = srv.chat_text(
+            CROSS_VERIFY_SYSTEM_PROMPT,
+            user_prompt,
+            max_tokens=260,
+            timeout_s=90,
+            json_schema=QWEN_CROSS_VERIFY_SCHEMA,
+        )
+
+    m_json = re.search(r"\{.*\}", reply, re.DOTALL)
+    ai_obj = json.loads(m_json.group(0) if m_json else reply)
+    if not isinstance(ai_obj, dict):
+        ai_obj = {}
+
+    raw_flat_lower = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", raw_html or "")).lower()
+    suspect_set = set(cross_s1.get("suspectFields") or [])
+    corrections: List[str] = []
+
+    new_seller_name = _pick_verified_party_name(
+        str(seller_obj.get("name") or ""),
+        str(cross_s1.get("independentSellerName") or ""),
+        str(ai_obj.get("sellerName") or ""),
+        "seller.name" in suspect_set,
+        raw_flat_lower,
+        "seller.name",
+        corrections,
+    )
+    new_buyer_name = _pick_verified_party_name(
+        str(buyer_obj.get("name") or ""),
+        str(cross_s1.get("independentBuyerName") or ""),
+        str(ai_obj.get("buyerName") or ""),
+        "buyer.name" in suspect_set,
+        raw_flat_lower,
+        "buyer.name",
+        corrections,
+    )
+
+    if new_seller_name and new_seller_name != seller_obj.get("name"):
+        seller_obj["name"] = new_seller_name
+    if new_buyer_name and (not new_buyer_name.lower() == (seller_obj.get("name") or "").lower()):
+        if new_buyer_name != buyer_obj.get("name"):
+            buyer_obj["name"] = new_buyer_name
+
+    # Repair invalid/missing GSTINs from AI only if Mod-36 checksum validates cleanly
+    ai_s_gst = re.sub(r"[^A-Za-z0-9]", "", str(ai_obj.get("sellerGstin") or "").upper())
+    cur_s_gst = str(seller_obj.get("gstin") or "").upper()
+    if not is_valid_gstin(cur_s_gst) and len(ai_s_gst) >= 14:
+        rep_s, ok_s, _ = repair_gstin(ai_s_gst)
+        if ok_s and rep_s in raw_flat_lower.upper():
+            corrections.append(f"seller.gstin: '{cur_s_gst or '<empty>'}' -> '{rep_s}' (Qwen3-1.7B AI)")
+            seller_obj["gstin"] = rep_s
+
+    ai_b_gst = re.sub(r"[^A-Za-z0-9]", "", str(ai_obj.get("buyerGstin") or "").upper())
+    cur_b_gst = str(buyer_obj.get("gstin") or "").upper()
+    if not is_valid_gstin(cur_b_gst) and len(ai_b_gst) >= 14:
+        rep_b, ok_b, _ = repair_gstin(ai_b_gst)
+        if ok_b and rep_b != seller_obj.get("gstin") and rep_b in raw_flat_lower.upper():
+            corrections.append(f"buyer.gstin: '{cur_b_gst or '<empty>'}' -> '{rep_b}' (Qwen3-1.7B AI)")
+            buyer_obj["gstin"] = rep_b
+
+    canon["seller"] = seller_obj
+    canon["buyer"] = buyer_obj
+
+    ai_inv_no = str(ai_obj.get("invoiceNumber") or "").strip()
+    cur_inv_no = str(canon.get("invoiceNumber") or "").strip()
+    if ai_inv_no and (not cur_inv_no or ("invoiceNumber" in suspect_set and str(cross_s1.get("independentInvoiceNumber") or "").upper() == ai_inv_no.upper())):
+        if len(ai_inv_no) >= 2 and ai_inv_no != cur_inv_no:
+            corrections.append(f"invoiceNumber: '{cur_inv_no or '<empty>'}' -> '{ai_inv_no}' (AI cross-check)")
+            canon["invoiceNumber"] = ai_inv_no
+
+    ai_inv_dt = str(ai_obj.get("invoiceDate") or "").strip()
+    if ai_inv_dt and not str(canon.get("invoiceDate") or "").strip():
+        canon["invoiceDate"] = ai_inv_dt
+
+    canon = normalize_canonical_dict(canon, raw_html, qr_einv, qr_upi_meta=qr_upi_meta)
+    memory_meta = apply_supplier_memory(canon, memory_db, client_gstin=client_gstin) if memory_db else {
+        "profileFound": False,
+        "gstin": str((canon.get("seller") or {}).get("gstin") or ""),
+        "canonicalName": str((canon.get("seller") or {}).get("name") or ""),
+        "confirmedCount": 0,
+        "preferredDirection": "",
+        "preferredRecognitionMode": "",
+        "appliedRules": [],
+    }
+    updated_audit = canon.pop("_audit", None) or audit_invoice_math(canon, raw_text=raw_html, qr_einvoice=qr_einv)
+    post_cross = updated_audit.get("cross_verification") or {}
+
+    rule_saved: Dict[str, Any] = {"saved": False}
+    if updated_audit.get("fully_balanced") and memory_db:
+        try:
+            from ai_self_learning import synthesize_and_save_layout_rule
+
+            rule_saved = synthesize_and_save_layout_rule(
+                memory_db,
+                raw_html,
+                canonical,
+                {**canon, "_audit": updated_audit},
+                source="ai_two_stage_verified",
+                client_gstin=client_gstin,
+            )
+        except Exception:
+            pass
+
+    stage2_meta = {
+        "enabled": True,
+        "stage1AuditCrossVerified": True,
+        "stage1Passed": bool(cross_s1.get("stage1Passed", True)),
+        "stage2AiCrossChecked": True,
+        "stage2Model": text_model.name,
+        "stage2Method": "compact_header_footer_crosscheck",
+        "agreed": bool(post_cross.get("stage1Passed", True)) and bool(ai_obj.get("stage3Accurate", True) or corrections),
+        "correctionsApplied": corrections,
+        "aiNotes": str(ai_obj.get("issueNotes") or "").strip()[:240],
+        "suspectFieldsRemaining": list(post_cross.get("suspectFields") or []),
+        "elapsedSec": round(time.perf_counter() - t0, 2),
+    }
+    updated_audit["two_stage_verification"] = stage2_meta
+    if not post_cross.get("suspectFields"):
+        updated_audit["needs_ai_crosscheck"] = not bool(updated_audit.get("fully_balanced"))
+
+    return {
+        "verified": bool(updated_audit.get("fully_balanced")),
+        "agreed": stage2_meta["agreed"],
+        "correctionsApplied": corrections,
+        "stage1Passed": stage2_meta["stage1Passed"],
+        "canonical": canon,
+        "audit": updated_audit,
+        "engineUsed": "Hybrid(LightOnOCR-2-1B+2Stage-Audit+Qwen3-1.7B)",
+        "supplierMemory": memory_meta,
+        "ruleSaved": rule_saved,
+        "twoStageVerification": stage2_meta,
+    }
+
+
+def apply_two_stage_cross_verify_to_worker_payload(
+    wo: Dict[str, Any],
+    *,
+    llama_server: Path,
+    text_model: Path,
+    work_dir: Path,
+    client_gstin: str = "",
+    direction: str = "Auto",
+    memory_db: str = "",
+    threads: int = 10,
+) -> Dict[str, Any]:
+    """Run compact Stage-2 Qwen3-1.7B AI cross-check on a worker output payload in-place."""
+    xv = cross_verify_with_text_ai(
+        llama_server=llama_server,
+        text_model=text_model,
+        raw_html=str(wo.get("rawOcrText") or ""),
+        canonical=wo.get("canonical") or {},
+        audit=wo.get("audit") or {},
+        work_dir=work_dir,
+        qr_info=wo.get("qrInfo") or {},
+        client_gstin=client_gstin,
+        direction=direction,
+        memory_db=memory_db,
+        threads=threads,
+    )
+    wo["canonical"] = xv["canonical"]
+    wo["audit"] = xv["audit"]
+    wo["supplierMemory"] = xv["supplierMemory"]
+    cur_eng = str(wo.get("engineUsed") or "")
+    if xv["correctionsApplied"] or "2Stage-Audit" not in cur_eng:
+        wo["engineUsed"] = xv["engineUsed"]
+    raw_tbls = xv["canonical"].pop("rawTablesHtml", None) if isinstance(xv["canonical"], dict) else None
+    if raw_tbls:
+        wo["rawTablesHtml"] = list(raw_tbls)
+    trace = wo.get("agentPipelineTrace")
+    if isinstance(trace, dict):
+        trace["twoStageVerification"] = xv["twoStageVerification"]
+        trace["selfLearnedRuleSaved"] = bool((xv.get("ruleSaved") or {}).get("saved")) or bool(trace.get("selfLearnedRuleSaved"))
+    return wo
