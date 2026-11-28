@@ -51,6 +51,184 @@ def parse_nums_in_cell(text: str) -> List[float]:
     return [float(x) for x in re.findall(r"[-+]?\d+(?:\.\d+)?", s)]
 
 
+_WORD_ONES = {
+    "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+    "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
+    "thirteen": 13, "fourteen": 14, "fifteen": 15, "sixteen": 16, "seventeen": 17,
+    "eighteen": 18, "nineteen": 19,
+}
+_WORD_TENS = {
+    "twenty": 20, "thirty": 30, "forty": 40, "fourty": 40, "fifty": 50,
+    "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90,
+}
+_WORD_SCALES = {"hundred": 100, "thousand": 1000, "lakh": 100000, "lakhs": 100000, "lac": 100000, "lacs": 100000, "crore": 10000000, "crores": 10000000}
+
+
+def _words_to_int(phrase: str) -> Optional[int]:
+    toks = re.findall(r"[a-z]+", (phrase or "").lower().replace("-", " "))
+    if not toks:
+        return None
+    total = 0
+    cur = 0
+    seen = False
+    for tok in toks:
+        if tok in ("and", "rs", "rupee", "rupees", "inr", "only", "paise", "paisa"):
+            continue
+        if tok in _WORD_ONES:
+            cur += _WORD_ONES[tok]
+            seen = True
+        elif tok in _WORD_TENS:
+            cur += _WORD_TENS[tok]
+            seen = True
+        elif tok == "hundred":
+            cur = (cur or 1) * 100
+            seen = True
+        elif tok in _WORD_SCALES:
+            total += (cur or 1) * _WORD_SCALES[tok]
+            cur = 0
+            seen = True
+        else:
+            # Unknown noise word breaks cleanly if we already parsed something
+            if seen:
+                continue
+    return (total + cur) if seen else None
+
+
+def extract_amount_in_words(plain_text: str) -> Optional[float]:
+    """Extract grand total from printed Indian Amount-in-Words, skipping Tax-Amount-in-Words lines."""
+    if not plain_text:
+        return None
+    lines = [_strip_md(re.sub(r"\|+", " ", ln)) for ln in plain_text.splitlines()]
+    lines = [ln for ln in lines if ln]
+    candidates: List[Tuple[int, float]] = []
+    for idx, ln in enumerate(lines):
+        low = ln.lower()
+        prev_low = lines[idx - 1].lower() if idx > 0 else ""
+        if "tax amount" in low or ("tax" in low and "in words" in low) or ("tax amount" in prev_low and "in words" in prev_low):
+            continue
+        phrase = ""
+        priority = 0
+        if re.search(r"\b(?:rupees|inr|rs\.?)\b", low) and re.search(r"\b(?:only|paise|paisa|hundred|thousand|lakh|lac|crore)\b", low):
+            phrase = ln
+            if "chargeable" in prev_low or "charged" in prev_low or "chargeable" in low or "charged" in low:
+                priority = 2
+            elif "rupees" in low or "inr" in low or "rs." in low:
+                priority = 1
+        elif re.search(r"(?:amount\s+(?:chargeable|charged|in\s+words)|total\s+amount\s+in\s+words)", low) and idx + 1 < len(lines):
+            nxt = lines[idx + 1]
+            if "tax amount" not in low:
+                phrase = nxt
+                priority = 2
+        if not phrase:
+            continue
+        m_split = re.split(r"\band\b(?=[^a-z]*(?:[a-z]+\s+){1,2}(?:paise|paisa)\b)", phrase, maxsplit=1, flags=re.IGNORECASE)
+        if len(m_split) == 2:
+            main_val = _words_to_int(m_split[0])
+            paise_val = _words_to_int(m_split[1])
+            if main_val is not None:
+                p_num = float(paise_val) if (paise_val is not None and 0 <= paise_val < 100) else 0.0
+                val = round2(main_val + p_num / 100.0)
+                if val > 0:
+                    candidates.append((priority, val))
+                    continue
+        m_paise = re.search(r"(.+?)\band\s+([a-z\-\s]+?)\s*(?:paise|paisa)\b", phrase, re.IGNORECASE)
+        if m_paise:
+            main_val = _words_to_int(m_paise.group(1))
+            paise_val = _words_to_int(m_paise.group(2))
+            if main_val is not None:
+                p_num = float(paise_val) if (paise_val is not None and 0 <= paise_val < 100) else 0.0
+                val = round2(main_val + p_num / 100.0)
+                if val > 0:
+                    candidates.append((priority, val))
+                    continue
+        main_val = _words_to_int(phrase)
+        if main_val is not None and main_val > 0:
+            candidates.append((priority, round2(float(main_val))))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    return candidates[0][1]
+
+
+def _subset_match_indices(values: List[float], target: float, tol: float = 1.00, available: Optional[List[int]] = None) -> Optional[List[int]]:
+    """Find subset of indices whose values sum to target within tolerance."""
+    pool = list(available) if available is not None else list(range(len(values)))
+    if not pool or target <= 0.0:
+        return None
+    if len(pool) <= 20:
+        best_subset: Optional[List[int]] = None
+        best_diff = tol + 1.0
+
+        def dfs(pos: int, cur_sum: float, chosen: List[int]) -> None:
+            nonlocal best_subset, best_diff
+            diff = abs(cur_sum - target)
+            if chosen and diff <= tol and diff < best_diff:
+                best_diff = diff
+                best_subset = list(chosen)
+                if diff <= 0.01:
+                    return
+            if pos >= len(pool) or cur_sum > target + tol or best_diff <= 0.01:
+                return
+            idx = pool[pos]
+            v = values[idx]
+            if cur_sum + v <= target + tol:
+                chosen.append(idx)
+                dfs(pos + 1, cur_sum + v, chosen)
+                chosen.pop()
+            dfs(pos + 1, cur_sum, chosen)
+
+        dfs(0, 0.0, [])
+        return best_subset
+    # Greedy fallback for large invoices (>20 rows)
+    pool_sorted = sorted(pool, key=lambda idx: values[idx], reverse=True)
+    chosen: List[int] = []
+    cur = 0.0
+    for idx in pool_sorted:
+        if cur + values[idx] <= target + tol:
+            chosen.append(idx)
+            cur += values[idx]
+            if abs(cur - target) <= tol:
+                return sorted(chosen)
+    return None
+
+
+def _partition_rows_to_inclusive_slabs(row_totals: List[float], rate_targets: Dict[float, float], tol: float = 1.00) -> Optional[Dict[int, float]]:
+    """Partition row indices cleanly into {row_idx: gst_rate} so each slab matches its inclusive target."""
+    if not row_totals or not rate_targets:
+        return None
+    rates_ordered = sorted(rate_targets.keys(), key=lambda r: (0 if r == 0.0 else 1, rate_targets[r]))
+    if len(row_totals) <= 18 and len(rates_ordered) <= 5:
+        assignment: Dict[int, float] = {}
+        remaining = list(range(len(row_totals)))
+
+        def solve(step: int, rem: List[int]) -> bool:
+            if step == len(rates_ordered) - 1:
+                last_rate = rates_ordered[step]
+                s = sum(row_totals[i] for i in rem)
+                if abs(s - rate_targets[last_rate]) <= tol:
+                    for i in rem:
+                        assignment[i] = last_rate
+                    return True
+                return False
+            r_cur = rates_ordered[step]
+            tgt = rate_targets[r_cur]
+            cand = _subset_match_indices(row_totals, tgt, tol=tol, available=rem)
+            if not cand:
+                return False
+            for i in cand:
+                assignment[i] = r_cur
+            next_rem = [i for i in rem if i not in cand]
+            if solve(step + 1, next_rem):
+                return True
+            for i in cand:
+                assignment.pop(i, None)
+            return False
+
+        if solve(0, remaining):
+            return assignment
+    return None
+
+
 def normalize_date(raw: Optional[str]) -> str:
     if not raw:
         return ""
@@ -246,13 +424,14 @@ def _otsl_tables_to_matrices(text: str) -> List[List[List[str]]]:
 def _is_item_table_header(header_row: List[str]) -> bool:
     joined = " ".join(header_row).lower()
     has_desc = any(k in joined for k in ("product", "item", "description", "particulars", "goods", "service"))
-    has_hsn = "hsn" in joined or "sac" in joined
-    has_qty_or_rate = any(k in joined for k in ("qty", "units", "pcs", "rate", "quantity", "shipped", "taxable", "amount"))
+    has_hsn = "hsn" in joined or "sac" in joined or bool(re.search(r"(?:^|\s)hs[n\\/|]?(?:\s|$)", joined))
+    has_qty_or_rate = any(k in joined for k in ("qty", "units", "pcs", "box", "rate", "quantity", "shipped", "taxable", "amount"))
     is_tax_summary = (
         "cgst 2.5" in joined
         or ("taxable value" in joined and "central gst" in joined)
         or (has_hsn and "taxable" in joined and not has_desc and not any(k in joined for k in ("qty", "quantity", "units", "pcs", "rate", "mrp", "sku", "pack")))
         or ("cgst %" in joined and "cgst amount" in joined and not any(k in joined for k in ("qty", "quantity", "rate", "product", "item", "particulars", "description")))
+        or ("class" in joined and "total gst" in joined)
     )
     is_scheme_table = ("initiative name" in joined or "credit note number" in joined)
     if is_scheme_table or is_tax_summary:
@@ -274,10 +453,13 @@ def _is_tax_summary_table(rows_mat: List[List[str]]) -> bool:
         return True
     if "particulars" in joined and ("cgst 2.5" in joined or "cgst 0." in joined or "net payable" in joined):
         return True
-    if ("gst%" in joined and ("taxable rs" in joined or "sale val" in joined)) or ("class" in joined and "taxable" in joined and "total gst" in joined):
+    if ("gst%" in joined and ("taxable rs" in joined or "sale val" in joined)) or ("class" in joined and "total gst" in joined and ("taxable" in joined or "sgst" in joined or "cgst" in joined)):
         return True
     if ("taxable" in joined and ("cgst/ igst" in joined or "cgst/igst" in joined or "tot cgst" in joined)
             and not any(k in joined for k in ("product", "item", "qty", "quantity", "pcs", "hsn"))):
+        return True
+    if ("taxable" in joined_hdr and any(k in joined_hdr for k in ("cgst", "sgst", "utgst", "igst", "total tax"))
+            and not any(k in joined_hdr for k in ("product", "item", "description", "particulars", "goods", "service", "qty", "quantity", "pcs", "units", "mrp", "sku", "pack"))):
         return True
     return False
 
@@ -411,10 +593,12 @@ def _parse_item_rows_from_matrix(mat: List[List[str]]) -> Tuple[List[Dict[str, A
         t1 = hdr1_filled[c] if c < len(hdr1_filled) else ""
         t2 = hdr2[c] if c < len(hdr2) else ""
         t = (t1 + " " + t2).strip()
-        if "hsn" in t or "sac" in t:
+        if "hsn" in t or "sac" in t or bool(re.fullmatch(r"hs[n\\/|]?", t.strip())):
             col_map.setdefault("hsn", []).append(c)
         elif any(k in t for k in ("product", "description", "particulars", "item", "goods", "service")):
             col_map.setdefault("desc", []).append(c)
+        elif "alt" in t and ("qty" in t or "quantity" in t or "unit" in t):
+            col_map.setdefault("alt_qty", []).append(c)
         elif "total unit" in t or ("qty" in t and "free" not in t) or "quantity" in t or "billed" in t:
             col_map.setdefault("qty", []).append(c)
         elif t in ("unit", "uom", "per"):
@@ -443,7 +627,9 @@ def _parse_item_rows_from_matrix(mat: List[List[str]]) -> Tuple[List[Dict[str, A
             col_map.setdefault("igst", []).append(c)
         elif "gross amt" in t or "gross amount" in t or "gross value" in t:
             col_map.setdefault("gross", []).append(c)
-        elif "disc" in t or "sch amt" in t:
+        elif ("disc" in t or "dis" == t.strip()) and ("%" in t or "pct" in t):
+            col_map.setdefault("disc_pct", []).append(c)
+        elif "disc" in t or "sch amt" in t or t.strip() in ("dis", "dis."):
             col_map.setdefault("disc", []).append(c)
         elif "net amt" in t or "net amount" in t or "net value" in t or "total value" in t or "amount" in t or t in ("total", "total amt", "total amount", "line total", "net total", "bill amt", "value"):
             col_map.setdefault("total", []).append(c)
@@ -456,10 +642,12 @@ def _parse_item_rows_from_matrix(mat: List[List[str]]) -> Tuple[List[Dict[str, A
         col_map["rate"] = col_map["incl_rate"]
 
     if "qty" not in col_map:
-        for c in range(ncols):
-            t1 = hdr1_filled[c] if c < len(hdr1_filled) else ""
-            if "pcs" in t1 and "sch" not in t1:
-                col_map.setdefault("qty", []).append(c)
+        pcs_cols = [c for c in range(ncols) if "pcs" in hdr1_filled[c] and "sch" not in hdr1_filled[c]]
+        box_cols = [c for c in range(ncols) if hdr1_filled[c].strip() in ("box", "boxes", "cs", "case", "cases")]
+        if pcs_cols or box_cols:
+            col_map["qty"] = pcs_cols + box_cols
+        elif "alt_qty" in col_map:
+            col_map["qty"] = col_map["alt_qty"]
 
     rows: List[Dict[str, Any]] = []
     footer_hints: Dict[str, float] = {}
@@ -490,17 +678,25 @@ def _parse_item_rows_from_matrix(mat: List[List[str]]) -> Tuple[List[Dict[str, A
                 if nums:
                     footer_hints["table_total_last"] = nums[-1]
             continue
-        if "output cgst" in low or (len(r) > 1 and "cgst" == r[1].strip().lower()):
+        non_num_cells = [c.strip() for c in r if c.strip() and not re.fullmatch(r"[\d,().+\-%₹RsINR\s]+", c.strip())]
+        label_joined = " ".join(non_num_cells).lower().strip()
+        if not non_num_cells and len(rows) > 0:
+            nums = [clean_num(c) for c in r if re.search(r"\d", c)]
+            running_tot = round2(sum(x["lineTotal"] for x in rows))
+            if nums and abs(nums[-1] - running_tot) <= 1.50:
+                footer_hints["subtotal"] = nums[-1]
+                continue
+        if "output cgst" in low or bool(re.fullmatch(r"(?:(?:output|input)\s+)?c[\s\-]?gst(?:\s*@.*)?", label_joined)):
             nums = [clean_num(c) for c in r if re.search(r"\d", c)]
             if nums:
                 footer_hints["cgstTotal"] = footer_hints.get("cgstTotal", 0.0) + nums[-1]
             continue
-        if "output sgst" in low or (len(r) > 1 and "sgst" == r[1].strip().lower()):
+        if "output sgst" in low or bool(re.fullmatch(r"(?:(?:output|input)\s+)?s[\s\-]?gst(?:\s*/\s*utgst)?(?:\s*@.*)?", label_joined)):
             nums = [clean_num(c) for c in r if re.search(r"\d", c)]
             if nums:
                 footer_hints["sgstTotal"] = footer_hints.get("sgstTotal", 0.0) + nums[-1]
             continue
-        if "output igst" in low or (len(r) > 1 and "igst" == r[1].strip().lower()):
+        if "output igst" in low or bool(re.fullmatch(r"(?:(?:output|input)\s+)?i[\s\-]?gst(?:\s*@.*)?", label_joined)):
             nums = [clean_num(c) for c in r if re.search(r"\d", c)]
             if nums:
                 footer_hints["igstTotal"] = footer_hints.get("igstTotal", 0.0) + nums[-1]
@@ -517,7 +713,8 @@ def _parse_item_rows_from_matrix(mat: List[List[str]]) -> Tuple[List[Dict[str, A
         hsn = ""
         for idx in col_map.get("hsn", []):
             if idx < len(r):
-                m = re.search(r"\b(\d{4,8})\b", r[idx])
+                h_cell = re.sub(r"\.0+\b", "", r[idx].strip())
+                m = re.search(r"\b(\d{4,8})\b", h_cell)
                 if m:
                     hsn = m.group(1)
                     break
@@ -569,6 +766,10 @@ def _parse_item_rows_from_matrix(mat: List[List[str]]) -> Tuple[List[Dict[str, A
                             if first_zero is None:
                                 first_zero = (val, u_txt)
                             continue
+                        if key == "qty" and not u_txt and idx < len(hdr1_filled):
+                            h_u = hdr1_filled[idx].strip().upper()
+                            if h_u in ("BOX", "PCS", "CS"):
+                                u_txt = h_u
                         return val, u_txt
             return first_zero if first_zero is not None else (0.0, "")
 
@@ -583,11 +784,21 @@ def _parse_item_rows_from_matrix(mat: List[List[str]]) -> Tuple[List[Dict[str, A
         rate_price = pick_num("rate")
         gross = pick_num("gross")
         disc_parts = []
+        disc_pct_vals = []
         for d_idx in col_map.get("disc", []):
-            if d_idx < len(r) and "%" not in r[d_idx] and re.search(r"\d", r[d_idx]):
+            if d_idx < len(r) and re.search(r"\d", r[d_idx]):
                 nums = parse_nums_in_cell(r[d_idx])
-                if nums:
+                if not nums:
+                    continue
+                if "%" in r[d_idx]:
+                    disc_pct_vals.append(nums[-1])
+                else:
                     disc_parts.append(nums[-1])
+        for dp_idx in col_map.get("disc_pct", []):
+            if dp_idx < len(r) and re.search(r"\d", r[dp_idx]):
+                nums = parse_nums_in_cell(r[dp_idx])
+                if nums:
+                    disc_pct_vals.append(nums[-1])
         disc = round2(sum(disc_parts))
         taxable = pick_num("taxable")
         if disc < 0 and gross > 0:
@@ -611,6 +822,13 @@ def _parse_item_rows_from_matrix(mat: List[List[str]]) -> Tuple[List[Dict[str, A
             sgst = half
             tax_from_combined = True
         line_total = pick_num("total")
+        if disc == 0.0 and disc_pct_vals and qty > 0 and rate_price > 0:
+            dpct = disc_pct_vals[0]
+            if 0.0 < dpct < 100.0:
+                cand_disc = round2(qty * rate_price * dpct / 100.0)
+                target_tx = taxable if taxable > 0 else line_total
+                if target_tx > 0 and abs((qty * rate_price - cand_disc) - target_tx) <= max(1.50, target_tx * 0.01):
+                    disc = cand_disc
 
         # Handle Tally <br>-merged trailing tax/round-off ledger lines inside the last item row
         tot_indices = col_map.get("total", [])
@@ -718,24 +936,54 @@ def _parse_item_rows_from_matrix(mat: List[List[str]]) -> Tuple[List[Dict[str, A
             "_tax_from_combined": tax_from_combined,
         })
 
+    # Detect MARG ERP half-rate SGST/CGST columns (e.g. 2.50 / 9.00 in SGST/CGST columns on tax-inclusive items)
+    if rows and "taxable" not in col_map and "cgst" in col_map and "sgst" in col_map:
+        half_rate_hits = 0
+        rate_eligible = 0
+        for rw in rows:
+            cg_v, sg_v, lt_v = rw["cgst"], rw["sgst"], rw["lineTotal"]
+            if (cg_v > 0 or sg_v > 0) and lt_v > 0:
+                rate_eligible += 1
+                comb = round2(cg_v + sg_v)
+                if abs(cg_v - sg_v) <= 0.01 and any(abs(comb - s) <= 0.05 for s in (0, 3, 5, 12, 18, 28, 40)):
+                    q_v, r_v, d_v = rw["quantity"], rw["rate"], rw["discount"]
+                    if q_v > 0 and r_v > 0:
+                        incl_est = round2((q_v * r_v - d_v) * (1.0 + comb / 100.0))
+                        excl_diff = abs(((q_v * r_v - d_v) + cg_v + sg_v) - lt_v)
+                        if abs(incl_est - lt_v) <= max(2.0, lt_v * 0.015) and excl_diff > 2.0:
+                            half_rate_hits += 1
+        if rate_eligible > 0 and half_rate_hits * 2 >= rate_eligible:
+            for rw in rows:
+                comb = round2(rw["cgst"] + rw["sgst"])
+                lt_v = rw["lineTotal"]
+                if lt_v > 0 and comb > 0:
+                    rw["gstRate"] = comb
+                    tx_v = round2(lt_v / (1.0 + comb / 100.0))
+                    half = _equal_local_tax_half(tx_v, comb, round2(lt_v - tx_v))
+                    if abs((tx_v + 2.0 * half) - lt_v) <= 0.02:
+                        tx_v = round2(lt_v - 2.0 * half)
+                    rw["taxable"] = tx_v
+                    rw["cgst"] = half
+                    rw["sgst"] = half
+
     return rows, footer_hints
 
 
 _PARTY_NOISE_PREFIX_RE = re.compile(
-    r"^(?:page\s+\d+|print\s+copy|pan(?:\s+no)?|fssai(?:\s+(?:no|lic))?|essai(?:\s+lic)?|gstin(?:/uin)?|gstn(?:\s+no)?|state(?:\s+name|\s+code)?|"
+    r"^(?:page\s+\d+|print\s+copy|pan(?:\s+no)?|fssai(?:\s+(?:no|lic))?|essai(?:\s+lic)?|gst(?:\s*(?:no|num|number))?\s*:|gstin(?:/uin)?|gstn(?:\s+no)?|state(?:\s+name|\s+code)?|"
     r"phone|ph(?:\s+no)?|mob(?:ile)?|contact|email|e-?mail|cin|van|beat|order\s*(?:no|number)|customer\s+order|dse\s+name|"
     r"salesperson|eway|e-?way|irn\b|tkn\b|ack\.?\s*(?:no|date)|e-?inv|from|to|buyer(?:\s*\(bill\s*to\))?|"
     r"bill\s*to(?:\s+gstin)?|billed\s*to|ship\s*to(?:\s+gstin)?|shipping\s+(?:address|date)|supplier\s+address|registered\s+address|customer\s+(?:address|details)|"
     r"cust\.?\s*code|party\s+(?:mobile|gstin)|branch\s+name|channel|tax\s+type|place\s+of\s+(?:sale|supply)|mode\s+of\s+payment|"
     r"cn\s+(?:number|date)|sdp\s+id|number\s+of\s+totes|ids?\s+of\s+totes|scan\s+this\s+qr|"
-    r"date\b|dated\b|inv(?:oice)?\s*(?:no|number)|bill\s*(?:no|number)|doc(?:ument)?\s*(?:no|number)|voucher\s*(?:no|number)|sm\s+name|rt\s+name|all\s+taxes\s+are|"
+    r"date\b|dated\b|inv(?:oice)?\s*(?:no|number|date|dt)|bill\s*(?:no|number|date|dt)|doc(?:ument)?\s*(?:no|number|date)|voucher\s*(?:no|number)|sm\s+name|rt\s+name|all\s+taxes\s+are|"
     r"gst\s+invoice(?:/cash)?|tax\s+invoice(?:\s*\(credit\))?|bill\s+of\s+supply|original(?:\s+for\s+recipient)?|"
     r"duplicate|triplicate|reverse\s+charge|for\s+)\b",
     re.IGNORECASE,
 )
 
 _ADDRESS_HINT_RE = re.compile(
-    r"\b(?:cross|road|rd\b|street|st\b|yard|apmc|a\s*p\s*m\s*c|ayard|nagar|circle|enclave|survey|plot\s+no|"
+    r"\b(?:main\b|cross|road|rd\b|street|st\b|yard|apmc|a\s*p\s*m\s*c|ayard|nagar|puram|phase|plot|industrial|layout|extension|ddpi|d\.?d\.?p\.?i|circle|enclave|survey|"
     r"ward\s+no|pin\s*code|near|beside|opp\.?|bengaluru|tumkur|thumkur|tumakuru|karnataka|india|"
     r"k(?:ha|at|ath)a\s+no|bata?wadi|balawadi|mandipet|belagumba)\b",
     re.IGNORECASE,
@@ -743,16 +991,22 @@ _ADDRESS_HINT_RE = re.compile(
 
 
 def _strip_md(s: str) -> str:
-    s = re.sub(r"[*#`]+", "", s or "")
+    s = re.sub(r"[*#`\\]+", "", s or "")
     return re.sub(r"\s+", " ", s).strip()
+
+
+_BUSINESS_KEYWORD_RE = re.compile(
+    r"\b(?:enterprises|traders|trading|marketing|distributors|agencies|agro|foods|pvt\s+ltd|private\s+limited|llp|limited|ltd\.?|inc\.?|corp\.?|company|wholesale|retail|cash\s+and\s+carry|stores|industries)\b",
+    re.IGNORECASE,
+)
 
 
 def _clean_party_name(s: str) -> str:
     s = _strip_md(s)
     # Strip wrapper parentheses like "(Registered as Metro Cash and Carry India Limited)"
     s = re.sub(r"^\(\s*(?:registered\s+as\s+)?(.+?)\s*\)$", r"\1", s, flags=re.IGNORECASE)
-    # Strip explicit label prefixes ("Party Name : BALAJI...", "To BALAJI...", "M/s. ...")
-    s = re.sub(r"^(?:party\s*name|customer\s*name|buyer\s*name|supplier\s*name|seller\s*name|m/s\.?)\s*[:\-]?\s+", "", s, flags=re.IGNORECASE)
+    # Strip explicit label prefixes ("Party Name : BALAJI...", "Company known as ...", "M/s. ...")
+    s = re.sub(r"^(?:party\s*name|customer\s*name|buyer\s*name|supplier\s*name|seller\s*name|company\s+known\s+as|formerly\s+known\s+as|registered\s+as|m/s\.?)\s*[:\-]?\s+", "", s, flags=re.IGNORECASE)
     m_to = re.match(r"^(?:to|from)\s*[:\-]?\s+(.{3,})$", s, re.IGNORECASE)
     if m_to:
         s = m_to.group(1)
@@ -765,11 +1019,7 @@ def _clean_party_name(s: str) -> str:
         return ""
     if _PARTY_NOISE_PREFIX_RE.match(s):
         return ""
-    if _ADDRESS_HINT_RE.search(s) and not re.search(
-        r"\b(?:enterprises|traders|marketing|distributors|trading|agencies|pvt\s+ltd|llp|limited|ltd\.?|inc\.?|corp\.?|company|wholesale|cash\s+and\s+carry)\b",
-        s,
-        re.IGNORECASE,
-    ):
+    if _ADDRESS_HINT_RE.search(s) and not _BUSINESS_KEYWORD_RE.search(s):
         return ""
     if re.fullmatch(r"[\d\W]+", s) or re.match(r"^[0-9]{6,}", s):
         return ""
@@ -778,7 +1028,7 @@ def _clean_party_name(s: str) -> str:
     return s[:120]
 
 
-def _extract_party_name_near(lines: List[str], target_gstin: str, role_keywords: Tuple[str, ...], fallback_top: bool) -> str:
+def _extract_party_name_near(lines: List[str], target_gstin: str, role_keywords: Tuple[str, ...], fallback_top: bool, sig_hint: str = "") -> str:
     clean_lines = [_strip_md(ln) for ln in lines[:65]]
     clean_lines = [ln for ln in clean_lines if ln]
 
@@ -818,8 +1068,9 @@ def _extract_party_name_near(lines: List[str], target_gstin: str, role_keywords:
                     if cand:
                         return _with_top_brand_prefix(cand)
 
-    # 2. Walk near target GSTIN line (upwards first, then downwards 1..3 lines if seller GSTIN is above heading)
+    # 2. Walk near target GSTIN line (scoring seller candidates so business names beat closer street/locality lines)
     if target_gstin:
+        sig_norm = re.sub(r"[^A-Z0-9]", "", (sig_hint or "").upper())
         for i, ln in enumerate(clean_lines[:60]):
             if target_gstin in re.sub(r"[^A-Za-z0-9]", "", ln).upper():
                 if not fallback_top:
@@ -829,8 +1080,8 @@ def _extract_party_name_near(lines: List[str], target_gstin: str, role_keywords:
                             if cand:
                                 return cand
                 else:
-                    # For seller, do not accidentally walk into a "M/s :" / "Billed To" buyer block right above the seller GSTIN
-                    for back in range(1, 9):
+                    seller_cands: List[Tuple[int, str]] = []
+                    for back in range(1, 10):
                         if i - back < 0:
                             break
                         prev_low = clean_lines[i - back].lower()
@@ -838,7 +1089,19 @@ def _extract_party_name_near(lines: List[str], target_gstin: str, role_keywords:
                             break
                         cand = _clean_party_name(clean_lines[i - back])
                         if cand and not any(re.match(r"^(?:m/s|bill(?:ed)?\s*to|buyer)\b", clean_lines[k].lower()) for k in range(max(0, i - back - 2), i - back)):
-                            return _with_top_brand_prefix(cand)
+                            sc = 0
+                            cand_norm = re.sub(r"[^A-Z0-9]", "", cand.upper())
+                            if _BUSINESS_KEYWORD_RE.search(cand):
+                                sc += 10
+                            if sig_norm and (sig_norm in cand_norm or cand_norm in sig_norm):
+                                sc += 20
+                            if re.fullmatch(r"[A-Z][A-Z0-9&.\-]{2,15}", cand):
+                                sc -= 2
+                            sc -= back  # prefer closer only as tie-breaker when no stronger keyword/signature
+                            seller_cands.append((sc, cand))
+                    if seller_cands:
+                        seller_cands.sort(key=lambda x: x[0], reverse=True)
+                        return _with_top_brand_prefix(seller_cands[0][1])
                 for fwd in range(1, 4):
                     if i + fwd < len(clean_lines):
                         cand = _clean_party_name(clean_lines[i + fwd])
@@ -1023,6 +1286,12 @@ def _split_tables_for_text(txt: str) -> List[List[List[str]]]:
 
 def _to_plain_text(txt: str) -> str:
     cleaned = re.sub(r"<(?:fcel|ecel|lcel|ucel|xcel)>", " ", txt).replace("<nl>", "\n")
+    cleaned = (
+        cleaned.replace("\u00e2\u0086\u0092", "\u2192")
+        .replace("\u00e2\u2020\u2019", "\u2192")
+        .replace("\u00e2\u0082\u00b9", "\u20b9")
+        .replace("\u00e2\u201a\u00b9", "\u20b9")
+    )
     soup = BeautifulSoup(cleaned, "lxml") if "<table" in cleaned or "<td" in cleaned else None
     return soup.get_text("\n") if soup else cleaned
 
@@ -1153,8 +1422,14 @@ def parse_document_text_to_canonical(
     gstins = find_gstins_in_text(header_scope_text, extra_candidates=extra_gstin_hints or None)
     if not gstins and len(page_texts) > 1:
         gstins = find_gstins_in_text(plain_joined, extra_candidates=extra_gstin_hints or None)
+    sig_hint = ""
+    for ln in reversed(plain_lines_clean):
+        m_for = re.search(r"\bfor\s+([A-Z][A-Z0-9 &.,'-]{3,})$", ln, re.IGNORECASE)
+        if m_for:
+            sig_hint = m_for.group(1).strip(" .,")
+            break
     seller_gstin, buyer_gstin = resolve_seller_buyer(first_page_plain if len(page_texts) > 1 else plain, gstins, known_client_gstin, direction_hint)
-    seller_name = _extract_party_name_near(header_scope_lines, seller_gstin, ("registered name", "supplier", "seller", "from:"), fallback_top=True)
+    seller_name = _extract_party_name_near(header_scope_lines, seller_gstin, ("registered name", "supplier", "seller", "from:"), fallback_top=True, sig_hint=sig_hint)
     buyer_name = _extract_party_name_near(header_scope_lines, buyer_gstin, ("buyer (bill to)", "customer name", "party name", "buyer", "bill to", "billed to", "recipient", "customer", "consignee", "to:"), fallback_top=False)
     if len(page_texts) > 1 and not buyer_name:
         buyer_name = _extract_party_name_near(plain_lines, buyer_gstin, ("buyer (bill to)", "customer name", "party name", "buyer", "bill to", "billed to", "recipient", "customer", "consignee", "to:"), fallback_top=False)
@@ -1209,6 +1484,7 @@ def parse_document_text_to_canonical(
             for pp in plain_pages
         ])
     )
+    amount_in_words = extract_amount_in_words(rev_plain_clean)
     inv_total = 0.0
     for pat in [
         r"Net\s*(?:Amount\s*)?(?:Payable|Receivable)(?:\s*Amt)?\s*[:\-]?\s*(?:INR|Rs\.?)?\s*([0-9,]+[.,]\d{2}|[0-9,]{3,})",
@@ -1216,7 +1492,8 @@ def parse_document_text_to_canonical(
         r"Net\s*Amount(?:\s*after\s*TAX)?\s*[:\-]?\s*(?:INR|Rs\.?)?\s*([0-9,]+[.,]\d{2}|[0-9,]{3,})",
         r"Bill\s*Amount\s*[:\-]?\s*(?:INR|Rs\.?)?\s*([0-9,]+[.,]\d{2}|[0-9,]{3,})",
         r"(?:Grand\s*Total|Invoice\s*Total|Total\s*Invoice\s*Value|Total\s*Payable)\s*[:\-]?\s*(?:INR|Rs\.?)?\s*([0-9,]+[.,]\d{2})",
-        r"(?:^|\n)Total\b[^\n]{0,60}(?:₹|INR|Rs\.?)\s*([0-9,]+\.\d{2})",
+        r"(?:^|\n)Total\b[^\n]{0,60}(?:→|₹|INR|Rs\.?)\s*([0-9,]+\.\d{2})",
+        r"(?:^|\n)₹\s*([0-9,]+\.\d{2})\s*(?:\n|$)",
     ]:
         for m in re.finditer(pat, rev_plain_clean, re.IGNORECASE):
             cand_val = clean_num(m.group(1))
@@ -1234,9 +1511,11 @@ def parse_document_text_to_canonical(
         credit_note = clean_num(m_cn.group(1))
 
     round_off = footer_hints.get("roundOff", 0.0)
-    m_ro = re.search(r"Round\s*Off(?:\s*Amt)?\s*[:\-]?\s*(\(?-\)?\s*\d+\.\d{2}-?|[-+]?\d+\.\d{2}-?)", rev_plain_clean, re.IGNORECASE)
+    m_ro = re.search(r"(?:Less\s*:\s*)?Round\s*Off(?:\s*Amt)?\s*[:\-]?\s*(\(?-\)?\s*\d+\.\d{2}-?|[-+]?\d+\.\d{2}-?)", rev_plain_clean, re.IGNORECASE)
     if m_ro:
         round_off = clean_num(m_ro.group(1))
+        if m_ro.group(0).lower().startswith("less") and round_off > 0:
+            round_off = -round_off
 
     if inv_total == 0.0 and footer_hints.get("table_total_last", 0.0) > 0:
         inv_total = round2(footer_hints["table_total_last"])
@@ -1245,41 +1524,106 @@ def parse_document_text_to_canonical(
     summary_cgst = 0.0
     summary_sgst = 0.0
     summary_igst = 0.0
+    summary_cess = 0.0
     summary_credit_note = 0.0
     summary_net_payable = 0.0
     summary_slabs: Dict[float, float] = {}
+    summary_slabs_detail: List[Dict[str, Any]] = []
     hsn_rate_map: Dict[str, float] = {}
 
     for mat in reversed(tables):
         if _is_tax_summary_table(mat):
-            hdr_cells = [c.lower() for c in mat[0]]
-            taxable_col_idx = next((idx for idx, h in enumerate(hdr_cells) if "taxable" in h), -1)
-            hsn_col_idx = next((idx for idx, h in enumerate(hdr_cells) if "hsn" in h or "sac" in h), -1)
-            for tr in mat:
-                joined_tr = " ".join(tr).lower()
-                # Extract per-slab taxable amounts from lines like "CGST 9 + SGST 9" or "CGST 2.5 + SGST 2.5"
-                cg_m = re.search(r"\bcgst\s*(\d+(?:\.\d+)?)", joined_tr)
-                sg_m = re.search(r"\bsgst\s*(\d+(?:\.\d+)?)", joined_tr)
-                ig_m = re.search(r"\bigst\s*(\d+(?:\.\d+)?)", joined_tr)
-                slab_rate = 0.0
-                if cg_m and sg_m:
-                    slab_rate = round2(float(cg_m.group(1)) + float(sg_m.group(1)))
-                elif ig_m:
-                    slab_rate = round2(float(ig_m.group(1)))
-                if slab_rate == 0.0:
-                    pcts = [float(x) for x in re.findall(r"(\d+(?:\.\d+)?)\s*%", joined_tr)]
-                    if len(pcts) >= 2 and abs(pcts[0] - pcts[1]) <= 0.1 and (pcts[0] + pcts[1]) in (0, 3, 5, 12, 18, 28):
-                        slab_rate = round2(pcts[0] + pcts[1])
-                    elif len(pcts) == 1 and pcts[0] in (0, 3, 5, 12, 18, 28):
-                        slab_rate = round2(pcts[0])
-                if slab_rate > 0 and taxable_col_idx != -1 and taxable_col_idx < len(tr) and re.search(r"\d", tr[taxable_col_idx]):
-                    summary_slabs[slab_rate] = round2(summary_slabs.get(slab_rate, 0.0) + clean_num(tr[taxable_col_idx]))
-                if slab_rate > 0 and hsn_col_idx != -1 and hsn_col_idx < len(tr):
-                    h_digits = re.sub(r"[^0-9]", "", tr[hsn_col_idx])
-                    if 4 <= len(h_digits) <= 8:
-                        hsn_rate_map[h_digits] = slab_rate
+            h0 = [c.lower() for c in mat[0]]
+            has_h1 = len(mat) > 1 and any(any(k in c.lower() for k in ("rate", "amt", "amount")) for c in mat[1]) and not any("total" in c.lower() for c in mat[1])
+            h1 = [c.lower() for c in mat[1]] if has_h1 else [""] * len(h0)
+            h0_filled = list(h0)
+            for ci in range(1, len(h0_filled)):
+                if not h0_filled[ci].strip() and any(k in h0_filled[ci - 1] for k in ("cgst", "central", "sgst", "utgst", "state", "igst", "integrated", "cess")):
+                    h0_filled[ci] = h0_filled[ci - 1]
+            ncols_ts = max(len(h0_filled), len(h1))
+            taxable_col_idx = -1
+            hsn_col_idx = -1
+            cg_rate_idx = cg_amt_idx = sg_rate_idx = sg_amt_idx = ig_rate_idx = ig_amt_idx = cs_amt_idx = -1
 
-                if "total" in joined_tr:
+            # Detect OCR-flattened colspan multi-column tax summary headers (e.g. METRO:
+            # row 0 has [HSN, Taxable, CGST, SGST, IGST, Cess, Total Tax, '', '', '', '']
+            # while row 1 has ['', '', Rate (%), Amt, Rate (%), Amt, Rate (%), Amt, Rate (%), Amt, ''])
+            h1_rate_cols = [ci for ci, c1 in enumerate(h1) if "rate" in c1] if has_h1 else []
+            ordered_tax_groups: List[str] = []
+            for c0 in h0:
+                cl = c0.strip().lower()
+                if ("cgst" in cl or "central" in cl) and "cgst" not in ordered_tax_groups:
+                    ordered_tax_groups.append("cgst")
+                elif ("sgst" in cl or "utgst" in cl or "state gst" in cl) and "sgst" not in ordered_tax_groups:
+                    ordered_tax_groups.append("sgst")
+                elif ("igst" in cl or "integrated" in cl) and "igst" not in ordered_tax_groups:
+                    ordered_tax_groups.append("igst")
+                elif "cess" in cl and "cess" not in ordered_tax_groups:
+                    ordered_tax_groups.append("cess")
+
+            if has_h1 and len(h1_rate_cols) >= 2 and len(ordered_tax_groups) >= 2:
+                # Bind HSN / Taxable from row 0 before the first Rate column, and pair each Rate+Amt with ordered_tax_groups
+                for ci in range(ncols_ts):
+                    c0 = h0[ci] if ci < len(h0) else ""
+                    if hsn_col_idx == -1 and ("hsn" in c0 or "sac" in c0):
+                        hsn_col_idx = ci
+                    if taxable_col_idx == -1 and ("taxable" in c0 or ("class" in h0 and c0.strip() == "total")):
+                        taxable_col_idx = ci
+                for grp, r_ci in zip(ordered_tax_groups, h1_rate_cols):
+                    a_ci = r_ci + 1 if (r_ci + 1 < ncols_ts and any(k in h1[r_ci + 1] for k in ("amt", "amount", "val"))) else -1
+                    if grp == "cgst":
+                        cg_rate_idx, cg_amt_idx = r_ci, a_ci
+                    elif grp == "sgst":
+                        sg_rate_idx, sg_amt_idx = r_ci, a_ci
+                    elif grp == "igst":
+                        ig_rate_idx, ig_amt_idx = r_ci, a_ci
+                    elif grp == "cess" and cs_amt_idx == -1:
+                        cs_amt_idx = a_ci
+            else:
+                for ci in range(ncols_ts):
+                    c0 = h0_filled[ci] if ci < len(h0_filled) else ""
+                    c1 = h1[ci] if ci < len(h1) else ""
+                    ch = (c0 + " " + c1).strip()
+                    if taxable_col_idx == -1 and ("taxable" in ch or ("class" in h0 and c0.strip() == "total")):
+                        taxable_col_idx = ci
+                    if hsn_col_idx == -1 and ("hsn" in ch or "sac" in ch):
+                        hsn_col_idx = ci
+                    if ("cgst" in ch or "central" in ch or (c0.strip() == "cost" and "sgst" in " ".join(h0_filled))):
+                        if "rate" in c1 or "%" in ch:
+                            cg_rate_idx = ci
+                        elif cg_amt_idx == -1:
+                            cg_amt_idx = ci
+                    elif "sgst" in ch or "utgst" in ch or "state gst" in ch:
+                        if "rate" in c1 or "%" in ch:
+                            sg_rate_idx = ci
+                        elif sg_amt_idx == -1:
+                            sg_amt_idx = ci
+                    elif "igst" in ch or "integrated" in ch:
+                        if "rate" in c1 or "%" in ch:
+                            ig_rate_idx = ci
+                        elif ig_amt_idx == -1:
+                            ig_amt_idx = ci
+                    elif "cess" in ch and "rate" not in c1 and "%" not in ch and cs_amt_idx == -1:
+                        cs_amt_idx = ci
+
+            hdr_cells = h0
+            data_row_start = 2 if has_h1 else 1
+            for tr in mat[data_row_start:]:
+                joined_tr = " ".join(tr).lower()
+                # Check rightmost 2 cells on MARG Tax Summary for SUB TOTAL / CGST PAYBLE / SGST PAYBLE / GRAND TOTAL
+                if len(tr) >= 2:
+                    lbl_r = tr[-2].strip().lower()
+                    val_r = clean_num(tr[-1])
+                    if "grand total" in lbl_r and val_r > 0:
+                        summary_net_payable = val_r
+                    elif ("sgst pay" in lbl_r) and val_r > 0:
+                        summary_sgst = val_r
+                    elif ("cgst pay" in lbl_r) and val_r > 0:
+                        summary_cgst = val_r
+                    elif "sub total" in lbl_r and val_r > 0:
+                        summary_taxable = val_r
+
+                if "total" in (tr[0].lower() if tr else "") or joined_tr.startswith("total"):
                     if len(tr) == len(hdr_cells) and any("net payable" in h or "credit note" in h or "taxable" in h for h in hdr_cells):
                         for h, val in zip(hdr_cells, tr):
                             if not re.search(r"\d", val):
@@ -1291,11 +1635,109 @@ def parse_document_text_to_canonical(
                                 summary_net_payable = v
                             elif "taxable" in h and v > 0:
                                 summary_taxable = v
-                    nums = [clean_num(c) for c in tr if re.search(r"\d", c)]
-                    if len(nums) >= 4 and abs((nums[1] + nums[2]) - nums[3]) <= 0.2:
-                        summary_taxable, summary_cgst, summary_sgst = nums[0], nums[1], nums[2]
-                    elif len(nums) >= 3 and abs(nums[1] - nums[2]) <= 0.2:
-                        summary_taxable, summary_cgst, summary_sgst = nums[0], nums[1], nums[2]
+                    if taxable_col_idx != -1 and taxable_col_idx < len(tr) and re.search(r"\d", tr[taxable_col_idx]):
+                        summary_taxable = clean_num(tr[taxable_col_idx])
+                    if cg_amt_idx != -1 and cg_amt_idx < len(tr) and re.search(r"\d", tr[cg_amt_idx]):
+                        summary_cgst = clean_num(tr[cg_amt_idx])
+                    if sg_amt_idx != -1 and sg_amt_idx < len(tr) and re.search(r"\d", tr[sg_amt_idx]):
+                        summary_sgst = clean_num(tr[sg_amt_idx])
+                    if ig_amt_idx != -1 and ig_amt_idx < len(tr) and re.search(r"\d", tr[ig_amt_idx]):
+                        summary_igst = clean_num(tr[ig_amt_idx])
+                    if cs_amt_idx != -1 and cs_amt_idx < len(tr) and re.search(r"\d", tr[cs_amt_idx]):
+                        summary_cess = clean_num(tr[cs_amt_idx])
+                    if summary_cgst == 0.0 and summary_sgst == 0.0:
+                        nums = [clean_num(c) for c in tr if re.search(r"\d", c)]
+                        if len(nums) >= 4 and abs((nums[1] + nums[2]) - nums[3]) <= 0.2:
+                            summary_taxable, summary_cgst, summary_sgst = nums[0], nums[1], nums[2]
+                        elif len(nums) >= 3 and abs(nums[1] - nums[2]) <= 0.2:
+                            summary_taxable, summary_cgst, summary_sgst = nums[0], nums[1], nums[2]
+                    continue
+
+                cg_m = re.search(r"\bcgst\s*(\d+(?:\.\d+)?)", joined_tr)
+                sg_m = re.search(r"\bsgst\s*(\d+(?:\.\d+)?)", joined_tr)
+                ig_m = re.search(r"\bigst\s*(\d+(?:\.\d+)?)", joined_tr)
+                gst_m = re.search(r"\bgst\s*(\d+(?:\.\d+)?)", joined_tr)
+                slab_rate = 0.0
+                has_explicit_zero = False
+                if cg_m and sg_m:
+                    slab_rate = round2(float(cg_m.group(1)) + float(sg_m.group(1)))
+                elif ig_m:
+                    slab_rate = round2(float(ig_m.group(1)))
+                elif gst_m:
+                    slab_rate = round2(float(gst_m.group(1)))
+                elif cg_rate_idx != -1 or sg_rate_idx != -1 or ig_rate_idx != -1:
+                    cgr = clean_num(tr[cg_rate_idx]) if 0 <= cg_rate_idx < len(tr) else 0.0
+                    sgr = clean_num(tr[sg_rate_idx]) if 0 <= sg_rate_idx < len(tr) else 0.0
+                    igr = clean_num(tr[ig_rate_idx]) if 0 <= ig_rate_idx < len(tr) else 0.0
+                    if igr > 0:
+                        slab_rate = round2(igr)
+                    elif (cgr + sgr) > 0:
+                        slab_rate = round2(cgr + sgr)
+                    else:
+                        has_explicit_zero = True
+                if slab_rate == 0.0 and not has_explicit_zero:
+                    pcts = [float(x) for x in re.findall(r"(\d+(?:\.\d+)?)\s*%", joined_tr)]
+                    if len(pcts) >= 2 and abs(pcts[0] - pcts[1]) <= 0.1 and (pcts[0] + pcts[1]) in (0, 3, 5, 12, 18, 28):
+                        slab_rate = round2(pcts[0] + pcts[1])
+                        if slab_rate == 0.0:
+                            has_explicit_zero = True
+                    elif len(pcts) == 1 and pcts[0] in (0, 3, 5, 12, 18, 28):
+                        slab_rate = round2(pcts[0])
+                        if slab_rate == 0.0:
+                            has_explicit_zero = True
+
+                row_tx_val = clean_num(tr[taxable_col_idx]) if (0 <= taxable_col_idx < len(tr) and re.search(r"\d", tr[taxable_col_idx])) else 0.0
+                row_cg_val = clean_num(tr[cg_amt_idx]) if (0 <= cg_amt_idx < len(tr) and re.search(r"\d", tr[cg_amt_idx])) else 0.0
+                row_sg_val = clean_num(tr[sg_amt_idx]) if (0 <= sg_amt_idx < len(tr) and re.search(r"\d", tr[sg_amt_idx])) else 0.0
+                row_ig_val = clean_num(tr[ig_amt_idx]) if (0 <= ig_amt_idx < len(tr) and re.search(r"\d", tr[ig_amt_idx])) else 0.0
+                row_cs_val = clean_num(tr[cs_amt_idx]) if (0 <= cs_amt_idx < len(tr) and re.search(r"\d", tr[cs_amt_idx])) else 0.0
+                if slab_rate == 0.0 and row_tx_val > 0 and (row_cg_val + row_sg_val + row_ig_val) > 0:
+                    est = ((row_cg_val + row_sg_val + row_ig_val) / row_tx_val) * 100.0
+                    for std in (3, 5, 12, 18, 28):
+                        if abs(est - std) <= 0.6:
+                            slab_rate = float(std)
+                            break
+                if row_tx_val > 0 and (slab_rate > 0 or has_explicit_zero or (row_cg_val + row_sg_val + row_ig_val) == 0.0):
+                    summary_slabs[slab_rate] = round2(summary_slabs.get(slab_rate, 0.0) + row_tx_val)
+                    h_digits = ""
+                    if 0 <= hsn_col_idx < len(tr):
+                        h_digits = re.sub(r"[^0-9]", "", re.sub(r"\.0+\b", "", tr[hsn_col_idx]))
+                        if 4 <= len(h_digits) <= 8 and slab_rate > 0:
+                            hsn_rate_map[h_digits] = slab_rate
+                    summary_slabs_detail.append({
+                        "hsn": h_digits,
+                        "rate": slab_rate,
+                        "taxable": round2(row_tx_val),
+                        "cgst": round2(row_cg_val),
+                        "sgst": round2(row_sg_val),
+                        "igst": round2(row_ig_val),
+                        "cess": round2(row_cs_val),
+                    })
+            if summary_taxable == 0.0 and summary_slabs_detail:
+                summary_taxable = round2(sum(d["taxable"] for d in summary_slabs_detail))
+                summary_cgst = round2(sum(d["cgst"] for d in summary_slabs_detail))
+                summary_sgst = round2(sum(d["sgst"] for d in summary_slabs_detail))
+                summary_igst = round2(sum(d["igst"] for d in summary_slabs_detail))
+                summary_cess = round2(sum(d["cess"] for d in summary_slabs_detail))
+
+    # Parse Tally footer ledger lines with Unicode arrow (e.g. "CGST @ 2.5%: 2.50 % → 550.00")
+    footer_ledger_rates: List[Tuple[str, float, float]] = []
+    for m_arr in re.finditer(
+        r"\b(CGST|SGST|UTGST|IGST)\s*@\s*(\d+(?:\.\d+)?)\s*%[^\n]{0,40}?(?:→|[:\-])\s*([0-9,]+\.\d{2})(?!\s*%)",
+        rev_plain_clean,
+        re.IGNORECASE,
+    ):
+        kind = m_arr.group(1).upper()
+        lrate = float(m_arr.group(2))
+        lamt = clean_num(m_arr.group(3))
+        if lamt > 0:
+            footer_ledger_rates.append((kind, lrate, lamt))
+            if kind == "CGST" and summary_cgst == 0.0:
+                summary_cgst = lamt
+            elif kind in ("SGST", "UTGST") and summary_sgst == 0.0:
+                summary_sgst = lamt
+            elif kind == "IGST" and summary_igst == 0.0:
+                summary_igst = lamt
 
     # Parse inline text tax summary line (e.g. "Tax Per 5% Taxable 2477.14 SGST 61.93 CGST 61.93 IGST 0")
     for m_in in re.finditer(
@@ -1335,14 +1777,21 @@ def parse_document_text_to_canonical(
     if raw_only_rows and len(raw_only_rows) == len(rows):
         sum_raw_only = round2(sum(r["_raw_amt_only"] for r in rows))
         has_tax_payble_hint = bool(re.search(r"\b(?:cgst|sgst|igst)\s*pay(?:a)?ble\b", plain, re.IGNORECASE))
+        footer_tax_sum = round2(
+            footer_hints.get("cgstTotal", 0.0)
+            + footer_hints.get("sgstTotal", 0.0)
+            + footer_hints.get("igstTotal", 0.0)
+        )
         is_tax_excl = (
             (summary_taxable > 0 and abs(sum_raw_only - summary_taxable) <= 1.0)
+            or (footer_hints.get("subtotal", 0.0) > 0 and abs(sum_raw_only - footer_hints["subtotal"]) <= 1.0 and (summary_cgst + summary_sgst + summary_igst + footer_tax_sum) > 0)
             or (inv_total > sum_raw_only + 1.0 and (
                 "output cgst" in plain.lower()
                 or "output sgst" in plain.lower()
                 or has_tax_payble_hint
-                or (summary_cgst + summary_sgst + summary_igst) > 0
+                or (summary_cgst + summary_sgst + summary_igst + footer_tax_sum) > 0
             ))
+            or (amount_in_words is not None and amount_in_words > sum_raw_only + 1.0 and footer_tax_sum > 0)
         )
         if is_tax_excl:
             for r in rows:
@@ -1385,17 +1834,128 @@ def parse_document_text_to_canonical(
                         snapped = slab_res
                 r["taxable"] = round2(snapped)
 
+    # 1) Tax-inclusive multi-slab subset allocation (e.g. METRO 0% + 5% sharing same HSN)
+    inclusive_slab_partitioned = False
+    summary_total_tax = round2(summary_cgst + summary_sgst + summary_igst + summary_cess)
+    row_lt_sum = round2(sum(r["lineTotal"] for r in rows))
+    row_tax_cur = round2(sum(r["cgst"] + r["sgst"] + r["igst"] for r in rows))
+    if (
+        rows
+        and summary_slabs_detail
+        and summary_taxable > 0
+        and summary_total_tax > 0
+        and row_tax_cur == 0.0
+        and abs((summary_taxable + summary_total_tax) - row_lt_sum) <= max(1.50, 0.002 * len(rows))
+    ):
+        rate_incl_targets: Dict[float, float] = {}
+        rate_tx_targets: Dict[float, float] = {}
+        for sd in summary_slabs_detail:
+            rt = float(sd["rate"])
+            incl = round2(sd["taxable"] + sd["cgst"] + sd["sgst"] + sd["igst"] + sd["cess"])
+            rate_incl_targets[rt] = round2(rate_incl_targets.get(rt, 0.0) + incl)
+            rate_tx_targets[rt] = round2(rate_tx_targets.get(rt, 0.0) + sd["taxable"])
+        part = _partition_rows_to_inclusive_slabs([float(r["lineTotal"]) for r in rows], rate_incl_targets, tol=1.00)
+        if part is not None:
+            inclusive_slab_partitioned = True
+            is_igst_doc = summary_igst > 0 and summary_cgst == 0 and summary_sgst == 0
+            by_rate_idx: Dict[float, List[int]] = {}
+            for ridx, rrate in part.items():
+                rw = rows[ridx]
+                lt_v = float(rw["lineTotal"])
+                rw["gstRate"] = round2(rrate)
+                if rrate == 0.0:
+                    rw["taxable"] = round2(lt_v)
+                    rw["cgst"] = 0.0
+                    rw["sgst"] = 0.0
+                    rw["igst"] = 0.0
+                elif is_igst_doc:
+                    tx_v = round2(lt_v / (1.0 + rrate / 100.0))
+                    ig_v = round2(lt_v - tx_v)
+                    rw["taxable"] = tx_v
+                    rw["igst"] = ig_v
+                    rw["cgst"] = 0.0
+                    rw["sgst"] = 0.0
+                else:
+                    tx_v = round2(lt_v / (1.0 + rrate / 100.0))
+                    half = _equal_local_tax_half(tx_v, rrate, round2(lt_v - tx_v))
+                    rw["taxable"] = tx_v
+                    rw["cgst"] = half
+                    rw["sgst"] = half
+                    rw["igst"] = 0.0
+                by_rate_idx.setdefault(rrate, []).append(ridx)
+            # Reconcile exact 1-2 paisa rounding against summary slab taxable target
+            for rrate, idxs in by_rate_idx.items():
+                if not idxs:
+                    continue
+                tgt_tx = rate_tx_targets.get(rrate, 0.0)
+                cur_tx = round2(sum(rows[i]["taxable"] for i in idxs))
+                delta = round2(tgt_tx - cur_tx)
+                if 0.0 < abs(delta) <= 0.15:
+                    rows[idxs[-1]]["taxable"] = round2(rows[idxs[-1]]["taxable"] + delta)
+
+    # 2) Tax-exclusive mixed-rate footer-implied slab allocation (e.g. Sri Rajalakshmi CGST @ 2.5% = 550.00 -> 22,000 @ 5%)
+    if (
+        rows
+        and round2(sum(r["cgst"] + r["sgst"] + r["igst"] for r in rows)) == 0.0
+        and not summary_slabs_detail
+        and footer_ledger_rates
+    ):
+        rate_amts: Dict[float, float] = {}
+        is_igst_ledger = any(k == "IGST" for k, _, _ in footer_ledger_rates)
+        for kind, lrate, lamt in footer_ledger_rates:
+            if kind == "CGST" and lrate > 0:
+                full_rate = round2(lrate * 2.0)
+                rate_amts[full_rate] = lamt
+            elif kind == "IGST" and lrate > 0:
+                rate_amts[round2(lrate)] = lamt
+        used_indices: set[int] = set()
+        for full_rate, cmp_amt in rate_amts.items():
+            div = (full_rate / 100.0) if is_igst_ledger else (full_rate / 200.0)
+            if div <= 0:
+                continue
+            implied_tx = round2(cmp_amt / div)
+            avail = [i for i in range(len(rows)) if i not in used_indices]
+            matched = _subset_match_indices([float(r["taxable"]) for r in rows], implied_tx, tol=1.50, available=avail)
+            if matched:
+                for i in matched:
+                    used_indices.add(i)
+                    rw = rows[i]
+                    rw["gstRate"] = full_rate
+                    tx_v = float(rw["taxable"])
+                    if is_igst_ledger:
+                        ig_v = round2(tx_v * full_rate / 100.0)
+                        rw["igst"] = ig_v
+                        rw["lineTotal"] = round2(tx_v + ig_v)
+                    else:
+                        half = round2(tx_v * full_rate / 200.0)
+                        rw["cgst"] = half
+                        rw["sgst"] = half
+                        rw["lineTotal"] = round2(tx_v + 2.0 * half)
+
+    # 3) Snap MARG/Tax-Summary per-slab 1-2 paisa rounding differences when rows already carry tax
+    if rows and summary_slabs_detail and round2(sum(r["cgst"] + r["sgst"] + r["igst"] for r in rows)) > 0.0:
+        for sd in summary_slabs_detail:
+            rt = float(sd["rate"])
+            slab_rows = [r for r in rows if abs(r["gstRate"] - rt) <= 0.05]
+            if not slab_rows:
+                continue
+            diff_tx = round2(sd["taxable"] - sum(r["taxable"] for r in slab_rows))
+            if 0.0 < abs(diff_tx) <= 0.15:
+                slab_rows[-1]["taxable"] = round2(slab_rows[-1]["taxable"] + diff_tx)
+
     taxable_total = round2(sum(r["taxable"] for r in rows)) if rows else round2(summary_taxable)
     discount_total = round2(sum(r.get("discount", 0.0) for r in rows)) if rows else 0.0
-    cgst_total = round2(sum(r["cgst"] for r in rows)) if (rows and sum(r["cgst"] for r in rows) > 0) else round2(summary_cgst or footer_hints.get("cgstTotal", 0.0))
-    sgst_total = round2(sum(r["sgst"] for r in rows)) if (rows and sum(r["sgst"] for r in rows) > 0) else round2(summary_sgst or footer_hints.get("sgstTotal", 0.0))
-    igst_total = round2(sum(r["igst"] for r in rows)) if (rows and sum(r["igst"] for r in rows) > 0) else round2(summary_igst or footer_hints.get("igstTotal", 0.0))
+    cgst_total = round2(summary_cgst or footer_hints.get("cgstTotal", 0.0) or (sum(r["cgst"] for r in rows) if rows else 0.0))
+    sgst_total = round2(summary_sgst or footer_hints.get("sgstTotal", 0.0) or (sum(r["sgst"] for r in rows) if rows else 0.0))
+    igst_total = round2(summary_igst or footer_hints.get("igstTotal", 0.0) or (sum(r["igst"] for r in rows) if rows else 0.0))
+    cess_total = round2(summary_cess or (sum(r["cess"] for r in rows) if rows else 0.0))
 
     for row_item in rows:
-        if row_item["gstRate"] == 0.0 and row_item.get("hsnSac") in hsn_rate_map:
-            row_item["gstRate"] = hsn_rate_map[row_item["hsnSac"]]
-        elif row_item["gstRate"] == 0.0 and len(summary_slabs) == 1:
-            row_item["gstRate"] = next(iter(summary_slabs.keys()))
+        if not inclusive_slab_partitioned:
+            if row_item["gstRate"] == 0.0 and row_item.get("hsnSac") in hsn_rate_map:
+                row_item["gstRate"] = hsn_rate_map[row_item["hsnSac"]]
+            elif row_item["gstRate"] == 0.0 and len(summary_slabs) == 1:
+                row_item["gstRate"] = next(iter(summary_slabs.keys()))
         if row_item["taxable"] > 0 and row_item["gstRate"] > 0 and (row_item["cgst"] + row_item["sgst"] + row_item["igst"]) == 0.0:
             if igst_total > 0 and cgst_total == 0 and sgst_total == 0:
                 tax_amt = round2(row_item["taxable"] * row_item["gstRate"] / 100.0)
@@ -1407,7 +1967,8 @@ def parse_document_text_to_canonical(
                 row_item["sgst"] = half
                 row_item["lineTotal"] = round2(row_item["taxable"] + 2.0 * half)
 
-    expected_grand = round2(taxable_total + cgst_total + sgst_total + igst_total - credit_note) if taxable_total > 0 else 0.0
+    printed_total_found = inv_total > 0.0 or summary_net_payable > 0.0 or (qr_einvoice is not None and clean_num((qr_einvoice or {}).get("TotInvVal")) > 0.0)
+    expected_grand = round2(taxable_total + cgst_total + sgst_total + igst_total + cess_total - credit_note) if taxable_total > 0 else 0.0
     if expected_grand > 10.0 and (inv_total == 0.0 or inv_total < expected_grand * 0.25):
         if summary_net_payable > 0 and abs(summary_net_payable - expected_grand) <= 2.0:
             inv_total = round2(summary_net_payable)
@@ -1415,9 +1976,9 @@ def parse_document_text_to_canonical(
             inv_total = round2(footer_hints["table_total_last"])
 
     if inv_total == 0.0 and taxable_total > 0:
-        inv_total = round2(taxable_total + cgst_total + sgst_total + igst_total - credit_note + round_off)
+        inv_total = round2(taxable_total + cgst_total + sgst_total + igst_total + cess_total - credit_note + round_off)
     elif inv_total > 0 and taxable_total > 0:
-        computed_no_ro = round2(taxable_total + cgst_total + sgst_total + igst_total - credit_note)
+        computed_no_ro = round2(taxable_total + cgst_total + sgst_total + igst_total + cess_total - credit_note)
         if round_off == 0.0:
             residual = round2(inv_total - computed_no_ro)
             if 0.0 < abs(residual) <= 1.00:
@@ -1438,12 +1999,18 @@ def parse_document_text_to_canonical(
         "cgstTotal": cgst_total,
         "sgstTotal": sgst_total,
         "igstTotal": igst_total,
-        "cessTotal": 0.0,
+        "cessTotal": cess_total,
         "creditNoteTotal": credit_note,
         "roundOff": round_off,
         "invoiceTotal": inv_total,
         "rows": rows,
         "rawTablesHtml": extract_html_tables(raw_text),
+        "_meta": {
+            "raw_text": raw_text,
+            "amount_in_words": amount_in_words,
+            "printed_total_found": printed_total_found,
+            "summary_slabs_detail": summary_slabs_detail,
+        },
     }
     return normalize_canonical_dict(raw_dict, raw_text, qr_einvoice, qr_upi_meta=qr_upi_meta)
 
@@ -1600,6 +2167,7 @@ def normalize_canonical_dict(
             if upi_payee:
                 seller_name_val = upi_payee
 
+    raw_meta = obj.get("_meta") if isinstance(obj.get("_meta"), dict) else {}
     canon = {
         "seller": {"name": seller_name_val, "gstin": s_gstin},
         "buyer": {"name": str(buyer_obj.get("name") or obj.get("buyerName") or "").strip(), "gstin": b_gstin},
@@ -1621,5 +2189,13 @@ def normalize_canonical_dict(
         "gstSlabs": build_gst_slabs(norm_rows),
         "rawTablesHtml": list(obj.get("rawTablesHtml") or []),
     }
-    canon["_audit"] = audit_invoice_math(canon)
+    if raw_meta:
+        canon["_meta"] = raw_meta
+    canon["_audit"] = audit_invoice_math(
+        canon,
+        raw_text=raw_text or str(raw_meta.get("raw_text") or ""),
+        amount_in_words=raw_meta.get("amount_in_words"),
+        qr_einvoice=qr_einvoice,
+        printed_total_found=raw_meta.get("printed_total_found"),
+    )
     return canon

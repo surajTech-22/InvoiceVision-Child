@@ -18,7 +18,8 @@ internal static class Program
             ("InvoiceMathVerifier verifies 0%-GST exempt and case-rate invoices", TestExemptAndCaseRateInvoices),
             ("App ParseArgs handles --extract, --analyze and --source --result CLI options", TestCliParsing),
             ("SupplierMemory & Request contracts round-trip cleanly", TestSupplierMemoryAndAnalysisContracts),
-            ("InvoiceMathVerifier requires exact CGST == SGST on intra-state invoices", TestCgstSgstEqualityGate)
+            ("InvoiceMathVerifier requires exact CGST == SGST on intra-state invoices", TestCgstSgstEqualityGate),
+            ("InvoiceMathVerifier & Orchestrator enforce 0%-tax, row-vs-header tax, inclusive units, and worker blocking issues", TestStrictAuditAndWorkerBlockingGates)
         };
 
         var passed = 0;
@@ -401,5 +402,102 @@ internal static class Program
         InvoiceMathVerifier.Verify(unequal);
         Check(unequal.Verification.IsBalanced && unequal.Status == "Verified",
             "Expected equal CGST (65.48) == SGST (65.48) to verify cleanly.");
+    }
+
+    private static void TestStrictAuditAndWorkerBlockingGates()
+    {
+        var seller = "29ABCDE1234F1Z" + GstChecksumValidator.ComputeCheckDigit("29ABCDE1234F1Z");
+        var buyer = "29KLMNO9876P1Z" + GstChecksumValidator.ComputeCheckDigit("29KLMNO9876P1Z");
+
+        // 1. Inclusive Qty*Rate-Disc == LineTotal (e.g. Metro 0% + 5%) must balance cleanly
+        var metroLike = new InvoiceExtractionResult
+        {
+            InvoiceNumber = "29M3100003173160",
+            InvoiceDate = "2026-11-03",
+            Seller = new InvoicePartyInfo { Name = "Metro Cash and Carry India Limited", Gstin = seller },
+            Buyer = new InvoicePartyInfo { Name = "BALAJI TRADING CO.", Gstin = buyer },
+            TaxableTotal = 13393.80m,
+            CgstTotal = 236.52m,
+            SgstTotal = 236.52m,
+            InvoiceTotal = 13866.84m,
+            Rows =
+            [
+                new InvoiceLineItem { Description = "Atta 1kg", HsnSac = "11010000", Quantity = 30m, Rate = 75m, Discount = 341.70m, Taxable = 1817.42m, GstRate = 5m, Cgst = 45.44m, Sgst = 45.44m, LineTotal = 1908.30m },
+                new InvoiceLineItem { Description = "Atta 10kg", HsnSac = "11010000", Quantity = 15m, Rate = 666m, Discount = 1964.55m, Taxable = 7643.29m, GstRate = 5m, Cgst = 191.08m, Sgst = 191.08m, LineTotal = 8025.45m },
+                new InvoiceLineItem { Description = "Maida 30kg", HsnSac = "11010000", Quantity = 3m, Rate = 1620m, Discount = 926.91m, Taxable = 3933.09m, GstRate = 0m, Cgst = 0m, Sgst = 0m, LineTotal = 3933.09m }
+            ]
+        };
+        InvoiceMathVerifier.Verify(metroLike);
+        Check(metroLike.Verification.IsBalanced && !metroLike.Rows.Any(r => r.MathStatus == "Mismatch"),
+            "Tax-inclusive Metro-like rows must balance cleanly: " + string.Join("; ", metroLike.Verification.Errors.Concat(metroLike.Verification.Warnings)));
+
+        // 2. Non-zero tax on 0% GST rate must fail
+        var zeroRateWithTax = new InvoiceExtractionResult
+        {
+            InvoiceNumber = "BAD-01",
+            InvoiceDate = "2026-11-03",
+            Seller = new InvoicePartyInfo { Name = "Bad Supplier", Gstin = seller },
+            Buyer = new InvoicePartyInfo { Name = "Buyer", Gstin = buyer },
+            TaxableTotal = 100m,
+            CgstTotal = 2.50m,
+            SgstTotal = 2.50m,
+            InvoiceTotal = 105.00m,
+            Rows = [new InvoiceLineItem { Description = "Item", Quantity = 1m, Rate = 100m, Taxable = 100m, GstRate = 0m, Cgst = 2.50m, Sgst = 2.50m, LineTotal = 105m }]
+        };
+        InvoiceMathVerifier.Verify(zeroRateWithTax);
+        Check(!zeroRateWithTax.Verification.IsBalanced && zeroRateWithTax.Status == "ReviewRequired",
+            "0% GST rate carrying non-zero tax must fail strict verification.");
+
+        // 3. Row tax sum mismatching header tax total must fail
+        var rowHeaderMismatch = new InvoiceExtractionResult
+        {
+            InvoiceNumber = "BAD-02",
+            InvoiceDate = "2026-11-03",
+            Seller = new InvoicePartyInfo { Name = "Bad Supplier", Gstin = seller },
+            Buyer = new InvoicePartyInfo { Name = "Buyer", Gstin = buyer },
+            TaxableTotal = 100m,
+            CgstTotal = 9.00m,
+            SgstTotal = 9.00m,
+            InvoiceTotal = 118.00m,
+            Rows = [new InvoiceLineItem { Description = "Item", Quantity = 1m, Rate = 100m, Taxable = 100m, GstRate = 5m, Cgst = 2.50m, Sgst = 2.50m, LineTotal = 105m }]
+        };
+        InvoiceMathVerifier.Verify(rowHeaderMismatch);
+        Check(!rowHeaderMismatch.Verification.IsBalanced && rowHeaderMismatch.Status == "ReviewRequired",
+            "Row CGST/SGST sum mismatch against header totals must fail strict verification.");
+
+        // 4. Worker audit.blocking_issues must block even if numeric fields look internally consistent
+        var blockingPayload = JsonSerializer.Serialize(new
+        {
+            schema = "AAH-INVOICEVISION-WORKER-V1",
+            engineUsed = "LightOnOCR-2-1B-P2",
+            elapsedSec = 10.0,
+            canonical = new
+            {
+                seller = new { name = "Truncated Seller", gstin = seller },
+                buyer = new { name = "Buyer", gstin = buyer },
+                invoiceNumber = "TR-01",
+                invoiceDate = "2026-11-03",
+                documentType = "Tax Invoice",
+                taxableTotal = 100.0,
+                cgstTotal = 9.0,
+                sgstTotal = 9.0,
+                invoiceTotal = 118.0,
+                rows = new[] { new { description = "Item", hsnSac = "19053100", quantity = 1.0, unit = "PCS", rate = 100.0, discount = 0.0, taxable = 100.0, gstRate = 18.0, cgst = 9.0, sgst = 9.0, igst = 0.0, cess = 0.0, lineTotal = 118.0 } }
+            },
+            audit = new
+            {
+                fully_balanced = false,
+                blocking_issues = new[] { "OCR output was truncated mid-table before end of invoice." }
+            }
+        });
+        var conv = InvoiceExtractionOrchestrator.ConvertWorkerPayloadToResult(
+            blockingPayload,
+            new InvoiceExtractionRequest { ClientId = 18, ClientGstin = buyer, FinancialYear = "2026-27" },
+            []);
+        Check(!conv.Verification.IsBalanced && conv.Status == "ReviewRequired",
+            "Worker audit.blocking_issues must force Status=ReviewRequired and IsBalanced=false.");
+        InvoiceMathVerifier.Verify(conv);
+        Check(!conv.Verification.IsBalanced && conv.Status == "ReviewRequired",
+            "InvoiceMathVerifier.Verify must preserve WorkerBlockingIssues.");
     }
 }

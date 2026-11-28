@@ -4,6 +4,7 @@ import base64
 import difflib
 import json
 import os
+import re
 import socket
 import subprocess
 import time
@@ -125,8 +126,9 @@ class LlamaServerSession:
         mmproj_path: Optional[str],
         log_dir: Path,
         threads: int = 10,
-        ctx: int = 8192,
+        ctx: int = 16384,
         repeat_penalty: float = 1.05,
+        parallel: int = 1,
     ):
         self.llama_server_exe = llama_server_exe
         self.model_path = model_path
@@ -134,6 +136,7 @@ class LlamaServerSession:
         self.threads = max(2, min(threads, os.cpu_count() or 8))
         self.ctx = ctx
         self.repeat_penalty = repeat_penalty
+        self.parallel = max(1, int(parallel))
         self.port = free_port()
         self.proc: Optional[subprocess.Popen] = None
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -147,6 +150,7 @@ class LlamaServerSession:
             "--host", "127.0.0.1",
             "--port", str(self.port),
             "-t", str(self.threads),
+            "-np", str(self.parallel),
             "-c", str(self.ctx),
             "--temp", "0",
             "--repeat-penalty", str(self.repeat_penalty),
@@ -195,21 +199,156 @@ class LlamaServerSession:
             except Exception:
                 pass
 
-    def chat_image(
+    @staticmethod
+    def _detect_repetition_loop(text: str) -> Optional[int]:
+        """Detect stuck decoding loops: trailing identical blocks (16..200 chars), repeated lines, or runaway blank lines."""
+        n = len(text)
+        if n < 800:
+            return None
+        # Catch runaway blank/whitespace-only loops (e.g. 60+ trailing whitespace chars or 15+ blank lines)
+        m_ws = re.search(r"([ \t]*\n){15,}$", text)
+        if m_ws and len(m_ws.group(0)) >= 40:
+            return m_ws.start() + 2
+        for win, reps in ((16, 10), (24, 8), (32, 7), (40, 6), (64, 6), (96, 6), (140, 5), (200, 5)):
+            need = win * reps
+            if n < need:
+                continue
+            unit = text[n - win:]
+            if not unit.strip():
+                continue
+            matched = True
+            for k in range(2, reps + 1):
+                if text[n - k * win:n - (k - 1) * win] != unit:
+                    matched = False
+                    break
+            if matched:
+                return n - ((reps - 1) * win)
+        # Catch 8+ repeated trailing lines (e.g. "<td></td>" or similar short variations)
+        tail_lines = [ln.strip() for ln in text[-2000:].splitlines() if ln.strip()]
+        if len(tail_lines) >= 10 and len(set(tail_lines[-8:])) == 1 and len(tail_lines[-1]) >= 4:
+            marker = tail_lines[-1]
+            idx = text.rfind(marker)
+            for _ in range(6):
+                prev = text.rfind(marker, 0, idx)
+                if prev == -1:
+                    break
+                idx = prev
+            return idx
+        return None
+
+    def chat_image_stream(
         self,
         data_url: str,
         prompt: str,
-        max_tokens: int = 3200,
-        timeout_s: int = 240,
+        timeout_s: int = 600,
+        max_tokens: Optional[int] = None,
         json_schema: Optional[Dict[str, Any]] = None,
-    ) -> str:
+    ) -> Dict[str, Any]:
+        """Stream vision-language output to natural EOS without arbitrary token cutoffs, with repetition-loop guard."""
         content: List[Dict[str, Any]] = [{"type": "image_url", "image_url": {"url": data_url}}]
         if prompt:
             content.append({"type": "text", "text": prompt})
         payload: Dict[str, Any] = {
             "model": "local",
             "temperature": 0.0,
-            "max_tokens": max_tokens,
+            "stream": True,
+            "messages": [{"role": "user", "content": content}],
+        }
+        if max_tokens is not None and int(max_tokens) > 0:
+            payload["max_tokens"] = int(max_tokens)
+        if json_schema is not None:
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {"name": "gst_invoice", "strict": True, "schema": json_schema},
+            }
+
+        def _do_post(pl: Dict[str, Any]):
+            return requests.post(
+                f"http://127.0.0.1:{self.port}/v1/chat/completions",
+                json=pl,
+                timeout=(15, timeout_s),
+                stream=True,
+            )
+
+        r = _do_post(payload)
+        if r.status_code in (400, 422) and "response_format" in payload:
+            r.close()
+            payload.pop("response_format", None)
+            r = _do_post(payload)
+        r.raise_for_status()
+        r.encoding = "utf-8"
+
+        chunks: List[str] = []
+        total_len = 0
+        next_loop_check = 800
+        finish_reason = ""
+        truncated_by_loop = False
+        timed_out = False
+        stream_start = time.monotonic()
+        try:
+            for raw_bytes in r.iter_lines(decode_unicode=False):
+                if time.monotonic() - stream_start > timeout_s:
+                    timed_out = True
+                    break
+                if not raw_bytes:
+                    continue
+                line = (raw_bytes.decode("utf-8", errors="replace") if isinstance(raw_bytes, bytes) else str(raw_bytes)).strip()
+                if not line.startswith("data:"):
+                    continue
+                data_str = line[5:].strip()
+                if data_str == "[DONE]":
+                    break
+                try:
+                    ev = json.loads(data_str)
+                except Exception:
+                    continue
+                choices = ev.get("choices") or []
+                if not choices:
+                    continue
+                c0 = choices[0]
+                if c0.get("finish_reason"):
+                    finish_reason = str(c0["finish_reason"])
+                delta = (c0.get("delta") or {}).get("content") or ""
+                if delta:
+                    chunks.append(delta)
+                    total_len += len(delta)
+                    if total_len >= next_loop_check:
+                        next_loop_check = total_len + 150
+                        joined_so_far = "".join(chunks)
+                        trim_at = self._detect_repetition_loop(joined_so_far)
+                        if trim_at is not None:
+                            truncated_by_loop = True
+                            chunks = [joined_so_far[:trim_at]]
+                            break
+        finally:
+            r.close()
+
+        full_text = "".join(chunks)
+        eff_reason = finish_reason or ("repetition_loop" if truncated_by_loop else ("wall_timeout" if timed_out else "stop"))
+        return {
+            "text": full_text,
+            "finish_reason": eff_reason,
+            "truncated": (finish_reason == "length") or truncated_by_loop or timed_out,
+            "truncated_by_loop": truncated_by_loop,
+        }
+
+    def chat_image(
+        self,
+        data_url: str,
+        prompt: str,
+        max_tokens: Optional[int] = None,
+        timeout_s: int = 600,
+        json_schema: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        if max_tokens is None or int(max_tokens) <= 0:
+            return str(self.chat_image_stream(data_url, prompt, timeout_s=timeout_s, max_tokens=None, json_schema=json_schema)["text"])
+        content: List[Dict[str, Any]] = [{"type": "image_url", "image_url": {"url": data_url}}]
+        if prompt:
+            content.append({"type": "text", "text": prompt})
+        payload: Dict[str, Any] = {
+            "model": "local",
+            "temperature": 0.0,
+            "max_tokens": int(max_tokens),
             "messages": [{"role": "user", "content": content}],
         }
         if json_schema is not None:

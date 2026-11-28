@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 GSTIN_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
@@ -116,8 +116,25 @@ def is_supported_gst_rate(rate: float) -> bool:
     return any(abs(rate - r) <= 0.05 for r in SUPPORTED_GST_RATES)
 
 
-def audit_invoice_math(inv: Dict[str, Any]) -> Dict[str, Any]:
+def audit_invoice_math(
+    inv: Dict[str, Any],
+    raw_text: str = "",
+    truncated: bool = False,
+    amount_in_words: Optional[float] = None,
+    qr_einvoice: Optional[Dict[str, Any]] = None,
+    printed_total_found: Optional[bool] = None,
+) -> Dict[str, Any]:
     rows: List[Dict[str, Any]] = inv.get("rows") or []
+    meta = inv.get("_meta") if isinstance(inv.get("_meta"), dict) else {}
+    if not raw_text and isinstance(meta.get("raw_text"), str):
+        raw_text = meta["raw_text"]
+    if not truncated and meta.get("truncated"):
+        truncated = True
+    if amount_in_words is None and meta.get("amount_in_words"):
+        amount_in_words = float(meta["amount_in_words"])
+    if printed_total_found is None and "printed_total_found" in meta:
+        printed_total_found = bool(meta["printed_total_found"])
+
     taxable_total = float(inv.get("taxableTotal") or 0.0)
     cgst_total = float(inv.get("cgstTotal") or 0.0)
     sgst_total = float(inv.get("sgstTotal") or 0.0)
@@ -151,8 +168,11 @@ def audit_invoice_math(inv: Dict[str, Any]) -> Dict[str, Any]:
         disc = float(r.get("discount") or 0.0)
         if qty > 0 and unit_rate > 0 and tx > 0:
             exp_tx = round2((qty * unit_rate) - disc)
-            if abs(exp_tx - tx) > max(1.50, tx * 0.01):
+            is_inclusive_unit = (lt > 0 and rate > 0 and abs(exp_tx - lt) <= max(1.50, lt * 0.01))
+            if abs(exp_tx - tx) > max(1.50, tx * 0.01) and not is_inclusive_unit:
                 issues.append(f"qty_rate_disc_mismatch(exp={exp_tx:.2f},got={tx:.2f})")
+        if rate == 0 and (cg + sg + ig) > 0.05:
+            issues.append(f"tax_on_zero_rate(tax={cg+sg+ig:.2f})")
         if rate > 0 and tx > 0:
             if not is_supported_gst_rate(rate):
                 issues.append(f"non_standard_gst_rate({rate})")
@@ -177,7 +197,21 @@ def audit_invoice_math(inv: Dict[str, Any]) -> Dict[str, Any]:
     eff_cess = cess_total if cess_total > 0 else row_cess_sum
 
     taxable_match = len(rows) > 0 and eff_tx > 0 and abs(row_taxable_sum - eff_tx) <= max(0.50, 0.001 * eff_tx)
-    tax_match = len(rows) > 0 and abs(row_tax_sum - eff_tax) <= max(0.50, 0.002 * max(eff_tax, 1.0))
+    cgst_match = len(rows) > 0 and abs(row_cgst_sum - cgst_total) <= max(0.50, 0.002 * max(cgst_total, 1.0)) if cgst_total > 0 or row_cgst_sum > 0 else True
+    sgst_match = len(rows) > 0 and abs(row_sgst_sum - sgst_total) <= max(0.50, 0.002 * max(sgst_total, 1.0)) if sgst_total > 0 or row_sgst_sum > 0 else True
+    igst_match = len(rows) > 0 and abs(row_igst_sum - igst_total) <= max(0.50, 0.002 * max(igst_total, 1.0)) if igst_total > 0 or row_igst_sum > 0 else True
+    tax_match = len(rows) > 0 and abs(row_tax_sum - eff_tax) <= max(0.50, 0.002 * max(eff_tax, 1.0)) and cgst_match and sgst_match and igst_match
+
+    slabs = inv.get("gstSlabs") or []
+    slab_match = True
+    if slabs and taxable_total > 0:
+        slab_tx_sum = sum(float(s.get("taxable") or 0.0) for s in slabs)
+        slab_tax_sum = sum(float(s.get("cgst") or 0.0) + float(s.get("sgst") or 0.0) + float(s.get("igst") or 0.0) for s in slabs)
+        if abs(slab_tx_sum - taxable_total) > max(0.50, 0.001 * taxable_total):
+            slab_match = False
+        if abs(slab_tax_sum - tax_sum) > max(0.50, 0.002 * max(tax_sum, 1.0)):
+            slab_match = False
+
     header_taxable_ok = (invoice_total <= 0) or (taxable_total > 0)
     header_cgst_sgst_ok = (igst_total > 0) or (abs(cgst_total - sgst_total) <= 0.005)
 
@@ -187,21 +221,55 @@ def audit_invoice_math(inv: Dict[str, Any]) -> Dict[str, Any]:
         grand_diff <= 1.05 or abs((eff_tx + eff_tax + eff_cess - credit_note) - invoice_total) <= 1.05
     )
 
+    blocking_issues: List[str] = []
+    if truncated or (raw_text and (raw_text.lower().count("<table") > raw_text.lower().count("</table>") or raw_text.rstrip().endswith("<"))):
+        blocking_issues.append("OCR output was truncated mid-table before end of invoice.")
+    if not taxable_match and rows:
+        blocking_issues.append(f"Row taxable sum ({row_taxable_sum:.2f}) mismatches header taxable total ({eff_tx:.2f}).")
+    if not tax_match and rows:
+        blocking_issues.append(f"Row tax sum ({row_tax_sum:.2f}) mismatches header tax total ({eff_tax:.2f}).")
+    if not slab_match:
+        blocking_issues.append("GST slab totals do not reconcile to invoice header taxable/tax totals.")
+    if not grand_balanced:
+        blocking_issues.append(f"Taxable + Tax - CreditNote + RoundOff ({expected_grand:.2f}) != Invoice Total ({invoice_total:.2f}).")
+    if amount_in_words and amount_in_words > 0 and invoice_total > 0 and abs(amount_in_words - invoice_total) > 1.05:
+        blocking_issues.append(f"Printed Amount-in-Words ({amount_in_words:.2f}) mismatches extracted Invoice Total ({invoice_total:.2f}).")
+    if printed_total_found is False and invoice_total > 0 and not amount_in_words and not (qr_einvoice and qr_einvoice.get("TotInvVal")):
+        blocking_issues.append("Printed grand total was not found directly; total was inferred only.")
+    if qr_einvoice:
+        qtot = float(qr_einvoice.get("TotInvVal") or 0.0)
+        if qtot > 0 and invoice_total > 0 and abs(qtot - invoice_total) > 1.05:
+            blocking_issues.append(f"e-Invoice QR total ({qtot:.2f}) mismatches Invoice Total ({invoice_total:.2f}).")
+
     seller_gstin = (inv.get("seller") or {}).get("gstin")
     buyer_gstin = (inv.get("buyer") or {}).get("gstin")
     seller_ok = is_valid_gstin(seller_gstin)
     buyer_ok = is_valid_gstin(buyer_gstin)
+    if not seller_ok:
+        blocking_issues.append("Seller GSTIN checksum invalid or missing.")
+
+    html_complete = not (truncated or (raw_text and (raw_text.lower().count("<table") > raw_text.lower().count("</table>") or raw_text.rstrip().endswith("<"))))
+    words_match = True if not (amount_in_words and amount_in_words > 0 and invoice_total > 0) else abs(amount_in_words - invoice_total) <= 1.05
 
     return {
         "row_count": len(rows),
         "bad_rows": bad_rows,
         "row_taxable_sum": round2(row_taxable_sum),
+        "row_cgst_sum": round2(row_cgst_sum),
+        "row_sgst_sum": round2(row_sgst_sum),
+        "row_igst_sum": round2(row_igst_sum),
         "row_tax_sum": round2(row_tax_sum),
         "row_total_sum": round2(row_total_sum),
         "taxable_match": taxable_match,
         "tax_match": tax_match,
+        "slab_match": slab_match,
         "grand_balanced": grand_balanced,
         "grand_diff": round2(grand_diff),
+        "words_match": words_match,
+        "amount_in_words": round2(amount_in_words) if amount_in_words else 0.0,
+        "html_complete": html_complete,
+        "truncated": not html_complete,
+        "blocking_issues": blocking_issues,
         "seller_gstin_valid": seller_ok,
         "buyer_gstin_valid": buyer_ok,
         "fully_balanced": (
@@ -209,7 +277,11 @@ def audit_invoice_math(inv: Dict[str, Any]) -> Dict[str, Any]:
             and len(bad_rows) == 0
             and taxable_match
             and tax_match
+            and slab_match
             and grand_balanced
+            and words_match
+            and html_complete
+            and len(blocking_issues) == 0
             and header_taxable_ok
             and header_cgst_sgst_ok
             and seller_ok

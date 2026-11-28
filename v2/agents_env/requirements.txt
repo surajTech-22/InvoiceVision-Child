@@ -1,0 +1,6 @@
+# Isolated lightweight dependencies for InvoiceVisionChild agent_venv
+# Keeps Runtime/venv untouched while enabling dedicated visual/multi-agent extensions.
+pillow>=10.0.0
+numpy>=1.26.0
+requests>=2.31.0
+jsonschema>=4.20.0

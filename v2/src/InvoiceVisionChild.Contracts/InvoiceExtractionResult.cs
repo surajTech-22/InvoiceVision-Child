@@ -130,6 +130,9 @@ public sealed class InvoiceExtractionResult
 
     [JsonPropertyName("supplierMemory")]
     public SupplierMemorySummary? SupplierMemory { get; set; }
+
+    [JsonPropertyName("workerBlockingIssues")]
+    public List<string> WorkerBlockingIssues { get; set; } = [];
 }
 
 public sealed class SupplierMemorySummary

@@ -14,6 +14,11 @@ public static class InvoiceMathVerifier
         var passed = new List<string>();
         var warnings = new List<string>();
         var errors = new List<string>();
+        foreach (var wb in result.WorkerBlockingIssues)
+        {
+            if (!string.IsNullOrWhiteSpace(wb) && !errors.Contains(wb, StringComparer.OrdinalIgnoreCase))
+                errors.Add(wb);
+        }
 
         UpdatePartyStateAndValidity(result.Seller, "Seller", passed, warnings, errors);
         UpdatePartyStateAndValidity(result.Buyer, "Buyer", passed, warnings, errors);
@@ -49,7 +54,9 @@ public static class InvoiceMathVerifier
                 {
                     var diff = Math.Abs(expectedTaxable - row.Taxable);
                     var tol = Math.Max(1.00m, row.Taxable * 0.005m);
-                    if (diff > tol)
+                    var isInclusiveUnit = row.LineTotal > 0m && row.GstRate > 0m &&
+                        Math.Abs(expectedTaxable - row.LineTotal) <= Math.Max(1.50m, row.LineTotal * 0.01m);
+                    if (diff > tol && !isInclusiveUnit)
                         rowIssues.Add($"Qty*Rate-Disc ({expectedTaxable:N2}) != Taxable ({row.Taxable:N2})");
                 }
             }
@@ -57,6 +64,9 @@ public static class InvoiceMathVerifier
             var taxSum = row.Cgst + row.Sgst + row.Igst;
             if (row.Igst == 0m && (row.Cgst > 0m || row.Sgst > 0m) && Math.Abs(row.Cgst - row.Sgst) > 0.005m)
                 rowIssues.Add($"CGST ({row.Cgst:N2}) != SGST ({row.Sgst:N2})");
+
+            if (row.GstRate <= 0m && taxSum > 0.05m)
+                rowIssues.Add($"Tax {taxSum:N2} present on 0% GST rate");
 
             if (row.GstRate > 0m && row.Taxable > 0m)
             {
@@ -115,6 +125,20 @@ public static class InvoiceMathVerifier
 
             if (result.TaxableTotal > 0m && sumTaxable > 0m && Math.Abs(result.TaxableTotal - sumTaxable) > 1.00m)
                 warnings.Add($"Row taxable sum ({sumTaxable:N2}) differs from invoice taxable total ({result.TaxableTotal:N2}).");
+
+            var rowTaxSum = sumCgst + sumSgst + sumIgst;
+            var hdrTaxSum = result.CgstTotal + result.SgstTotal + result.IgstTotal;
+            if (rowTaxSum > 0m && hdrTaxSum > 0m &&
+                (Math.Abs(sumCgst - result.CgstTotal) > 1.00m ||
+                 Math.Abs(sumSgst - result.SgstTotal) > 1.00m ||
+                 Math.Abs(sumIgst - result.IgstTotal) > 1.00m))
+            {
+                errors.Add($"Row tax sum (CGST {sumCgst:N2}, SGST {sumSgst:N2}, IGST {sumIgst:N2}) mismatches header totals (CGST {result.CgstTotal:N2}, SGST {result.SgstTotal:N2}, IGST {result.IgstTotal:N2}).");
+            }
+            if (result.Rows.Any(r => r.GstRate <= 0m && (r.Cgst + r.Sgst + r.Igst) > 0.05m))
+            {
+                errors.Add("One or more rows carry non-zero GST tax on a 0% GST rate.");
+            }
 
             RebuildGstSlabs(result);
         }

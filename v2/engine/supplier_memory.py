@@ -105,8 +105,97 @@ def ensure_memory_db(db_path: str) -> None:
                 field_diffs_json TEXT NOT NULL DEFAULT '{}',
                 learned_utc TEXT NOT NULL DEFAULT ''
             );
+            CREATE TABLE IF NOT EXISTS agent_memory (
+                agent_name TEXT NOT NULL,
+                gstin TEXT NOT NULL,
+                rules_json TEXT NOT NULL DEFAULT '{}',
+                hit_count INTEGER NOT NULL DEFAULT 1,
+                updated_utc TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY (agent_name, gstin)
+            );
             """
         )
+
+
+def load_agent_memory(db_path: str, agent_name: str, gstin: str) -> Dict[str, Any]:
+    g = normalize_gstin(gstin)
+    if not db_path or not agent_name or not g or not Path(db_path).is_file():
+        return {}
+    ensure_memory_db(db_path)
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT rules_json FROM agent_memory WHERE agent_name = ? AND gstin = ?",
+            (agent_name, g),
+        ).fetchone()
+    if row is None:
+        return {}
+    try:
+        obj = json.loads(row["rules_json"] or "{}")
+        return obj if isinstance(obj, dict) else {}
+    except Exception:
+        return {}
+
+
+def load_all_agent_memories(db_path: str, gstin: str) -> Dict[str, Dict[str, Any]]:
+    g = normalize_gstin(gstin)
+    if not db_path or not g or not Path(db_path).is_file():
+        return {}
+    ensure_memory_db(db_path)
+    out: Dict[str, Dict[str, Any]] = {}
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT agent_name, rules_json, hit_count FROM agent_memory WHERE gstin = ?",
+            (g,),
+        ).fetchall()
+    for r in rows:
+        try:
+            obj = json.loads(r["rules_json"] or "{}")
+            if isinstance(obj, dict):
+                obj["_hitCount"] = int(r["hit_count"] or 1)
+                out[str(r["agent_name"])] = obj
+        except Exception:
+            pass
+    return out
+
+
+def save_agent_memory(db_path: str, agent_name: str, gstin: str, rules: Dict[str, Any]) -> bool:
+    g = normalize_gstin(gstin)
+    if not db_path or not agent_name or not is_valid_gstin(g) or not rules:
+        return False
+    ensure_memory_db(db_path)
+    now = _utc_now()
+    clean_rules = {k: v for k, v in rules.items() if not str(k).startswith("_") and v is not None}
+    if not clean_rules:
+        return False
+    with _connect(db_path) as conn:
+        existing = conn.execute(
+            "SELECT rules_json, hit_count FROM agent_memory WHERE agent_name = ? AND gstin = ?",
+            (agent_name, g),
+        ).fetchone()
+        merged: Dict[str, Any] = {}
+        hits = 1
+        if existing is not None:
+            try:
+                old = json.loads(existing["rules_json"] or "{}")
+                if isinstance(old, dict):
+                    merged.update(old)
+            except Exception:
+                pass
+            hits = int(existing["hit_count"] or 1) + 1
+        merged.update(clean_rules)
+        conn.execute(
+            """
+            INSERT INTO agent_memory (agent_name, gstin, rules_json, hit_count, updated_utc)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(agent_name, gstin) DO UPDATE SET
+                rules_json = excluded.rules_json,
+                hit_count = excluded.hit_count,
+                updated_utc = excluded.updated_utc
+            """,
+            (agent_name, g, json.dumps(merged, ensure_ascii=False), hits, now),
+        )
+        conn.commit()
+    return True
 
 
 def _load_hsn_map(conn: sqlite3.Connection, gstin: str) -> Dict[str, float]:

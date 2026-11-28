@@ -347,9 +347,11 @@ def run_extraction(args: argparse.Namespace) -> Dict[str, Any]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="InvoiceVisionChild v2 OCR worker")
-    parser.add_argument("--input", action="append", required=True, help="Source image or PDF (repeatable)")
-    parser.add_argument("--output", required=True, help="Output worker JSON path")
+    parser.add_argument("--input", action="append", help="Source image or PDF (repeatable)")
+    parser.add_argument("--output", help="Output worker JSON path")
+    parser.add_argument("--batch-json", help="Optional JSON file listing batch invoice jobs to pipeline continuously")
     parser.add_argument("--work-dir", help="Scratch directory for intermediate rendered/preprocessed pages")
+    parser.add_argument("--cache-dir", help="Optional shared directory for SHA-256 OCR cache and warm daemon socket")
     parser.add_argument("--mode", default="auto", choices=["auto", "fast", "hybrid", "qwen"])
     parser.add_argument("--client-gstin", default="")
     parser.add_argument("--direction", default="Auto")
@@ -362,11 +364,237 @@ def main() -> int:
     parser.add_argument("--threads", type=int, default=10)
     parser.add_argument("--memory-db", default="", help="Optional path to SQLite supplier_memory.db")
     parser.add_argument("--cached-ocr-json", help="Optional JSON array of per-page cached LightOnOCR strings for instant multi-page stitching")
+    parser.add_argument("--no-daemon", action="store_true", help="Run in-process and exit immediately after batch/job completes")
+    parser.add_argument("--daemon", action="store_true", help="Serve warm ManagerAgent HTTP endpoint until idle timeout")
+    parser.add_argument("--idle-timeout", type=float, default=45.0, help="Daemon idle auto-exit timeout in seconds")
     parser.add_argument("--progress", action="store_true")
     args = parser.parse_args()
 
+    defaults = resolve_default_paths()
+    cache_dir = Path(args.cache_dir) if args.cache_dir else (Path(tempfile.gettempdir()) / "aah_ivc_cache")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    llama_srv = Path(args.llama_server or defaults["llama_server"])
+    lo_model = Path(args.lighton_model or defaults["lighton_model"])
+    lo_mmproj = Path(args.lighton_mmproj or defaults["lighton_mmproj"])
+    pdx_cache = Path(args.paddlex_cache or defaults["paddlex_cache"])
+
+    from batch_manager import BatchJob, ManagerAgent, run_batch_jobs, serve_warm_daemon
+
+    if args.daemon:
+        mgr = ManagerAgent(
+            llama_server=llama_srv,
+            lighton_model=lo_model,
+            lighton_mmproj=lo_mmproj,
+            paddlex_cache=pdx_cache,
+            cache_dir=cache_dir,
+            threads=args.threads,
+        )
+        return serve_warm_daemon(mgr, cache_dir / "warm_daemon.json", idle_timeout_s=args.idle_timeout)
+
+    if args.batch_json:
+        raw_jobs = json.loads(Path(args.batch_json).read_text(encoding="utf-8"))
+        jobs: List[BatchJob] = []
+        for idx, item in enumerate(raw_jobs, 1):
+            jobs.append(
+                BatchJob(
+                    invoice_id=str(item.get("invoiceId") or f"INV-{idx}"),
+                    input_paths=[Path(p) for p in item["inputs"]],
+                    output_path=Path(item["output"]),
+                    work_dir=Path(item.get("workDir") or (cache_dir / f"work_{idx}")),
+                    mode=str(item.get("mode") or args.mode or "auto"),
+                    client_gstin=str(item.get("clientGstin") or args.client_gstin or ""),
+                    direction=str(item.get("direction") or args.direction or "Auto"),
+                    memory_db=Path(item["memoryDb"]) if item.get("memoryDb") else (Path(args.memory_db) if args.memory_db else None),
+                    cached_ocr_json=Path(item["cachedOcrJson"]) if item.get("cachedOcrJson") else None,
+                )
+            )
+        summary = run_batch_jobs(
+            jobs,
+            llama_server=llama_srv,
+            lighton_model=lo_model,
+            lighton_mmproj=lo_mmproj,
+            paddlex_cache=pdx_cache,
+            cache_dir=cache_dir,
+            threads=args.threads,
+            progress_cb=(
+                (lambda iid, st, snap: emit_progress(True, 50, f"[{iid}] {st} active={snap.get('activeAgents')}"))
+                if args.progress
+                else None
+            ),
+        )
+        if args.output:
+            out_p = Path(args.output).resolve()
+            out_p.parent.mkdir(parents=True, exist_ok=True)
+            tmp_p = out_p.with_suffix(".json.tmp")
+            tmp_p.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp_p, out_p)
+        emit_progress(args.progress, 100, f"Batch complete ({len(jobs)} bills) in {summary['totalElapsedSec']}s (llamaBoots={summary['llamaBootCount']})")
+        return 0 if all(j.error is None for j in jobs) else 2
+
+    if not args.input or not args.output:
+        parser.error("--input and --output are required unless --batch-json or --daemon is specified")
+
+    mode = (args.mode or "auto").strip().lower()
     out_path = Path(args.output).resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    if args.cache_dir is None:
+        local_app = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
+        cache_dir = Path(local_app) / "InvoiceVisionChild" / "Cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
+    # Reuse warm local daemon (or spawn one safely under lock so parallel bursts share 1 LightOnOCR-2-1B instance)
+    daemon_info_file = cache_dir / "warm_daemon.json"
+    use_pipeline = mode in ("auto", "fast", "hybrid") and not args.cached_ocr_json
+
+    if use_pipeline and not args.no_daemon and os.environ.get("AAH_IVC_NO_DAEMON") != "1":
+        import subprocess
+        import urllib.request
+
+        def _try_submit_daemon(port_num: int) -> bool:
+            req_body = json.dumps(
+                {
+                    "invoiceId": out_path.stem,
+                    "inputs": [str(Path(p).resolve()) for p in args.input],
+                    "output": str(out_path),
+                    "workDir": str(Path(args.work_dir).resolve() if args.work_dir else Path(tempfile.mkdtemp(prefix="aah_ivc2_"))),
+                    "mode": mode,
+                    "clientGstin": args.client_gstin,
+                    "direction": args.direction,
+                    "memoryDb": args.memory_db,
+                    "cachedOcrJson": args.cached_ocr_json,
+                }
+            ).encode("utf-8")
+            req = urllib.request.Request(f"http://127.0.0.1:{port_num}/extract", data=req_body, headers={"Content-Type": "application/json"}, method="POST")
+            with urllib.request.urlopen(req, timeout=1800) as resp:
+                if resp.status == 200:
+                    dres = json.loads(resp.read().decode("utf-8"))
+                    emit_progress(args.progress, 100, f"Done via warm daemon in {dres.get('elapsedSec', 0)}s ({dres.get('engineUsed', '')})")
+                    return True
+            return False
+
+        def _read_live_port() -> int:
+            if not daemon_info_file.is_file():
+                return 0
+            try:
+                info = json.loads(daemon_info_file.read_text(encoding="utf-8"))
+                p = int(info.get("port") or 0)
+                if p > 0:
+                    with urllib.request.urlopen(f"http://127.0.0.1:{p}/health", timeout=2) as h:
+                        if h.status == 200:
+                            return p
+            except Exception:
+                return 0
+            return 0
+
+        port = _read_live_port()
+        if port <= 0:
+            lock_path = cache_dir / "daemon_spawn.lock"
+            try:
+                fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR)
+                try:
+                    if os.name == "nt":
+                        import msvcrt
+                        msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+                    port = _read_live_port()
+                    if port <= 0:
+                        dcmd = [
+                            sys.executable, str(Path(__file__).resolve()),
+                            "--daemon", "--idle-timeout", str(args.idle_timeout),
+                            "--cache-dir", str(cache_dir),
+                            "--threads", str(args.threads),
+                            "--llama-server", str(llama_srv),
+                            "--lighton-model", str(lo_model),
+                            "--lighton-mmproj", str(lo_mmproj),
+                            "--paddlex-cache", str(pdx_cache),
+                        ]
+                        cflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
+                        subprocess.Popen(dcmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=cflags, close_fds=True)
+                        for _ in range(30):
+                            time.sleep(0.25)
+                            port = _read_live_port()
+                            if port > 0:
+                                break
+                finally:
+                    if os.name == "nt":
+                        import msvcrt
+                        try:
+                            os.lseek(fd, 0, os.SEEK_SET)
+                            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                        except Exception:
+                            pass
+                    os.close(fd)
+            except Exception:
+                port = _read_live_port()
+
+        if port > 0:
+            try:
+                if _try_submit_daemon(port):
+                    if mode == "hybrid" and out_path.is_file():
+                        d_out = json.loads(out_path.read_text(encoding="utf-8"))
+                        if not (d_out.get("audit") or {}).get("fully_balanced"):
+                            qwen_m = Path(args.qwen_model or defaults["qwen_model"])
+                            qwen_mm = Path(args.qwen_mmproj or defaults["qwen_mmproj"])
+                            is_partial_only = (
+                                (d_out.get("audit") or {}).get("row_count", 0) > 0
+                                and float((d_out.get("canonical") or {}).get("invoiceTotal") or 0.0) <= 0.0
+                                and bool(re.search(r"\b(?:cont\.?\s*page\s*\d+|page\s*1\s*(?:of|/)\s*[2-9]|carry\s*forward|to\s+be\s+continued)\b", d_out.get("rawOcrText") or "", re.IGNORECASE))
+                            )
+                            if not is_partial_only and qwen_m.is_file() and qwen_mm.is_file():
+                                emit_progress(args.progress, 75, "Hybrid Auditor fallback -> escalating unresolved bill to Qwen3-VL-4B...")
+                                tmp_path = out_path.with_suffix(".json.tmp")
+                                result = run_extraction(args)
+                                tmp_path.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
+                                os.replace(tmp_path, out_path)
+                                emit_progress(args.progress, 100, f"Done in {result['elapsedSec']}s ({result['engineUsed']})")
+                    return 0
+            except Exception:
+                pass
+
+    if mode in ("auto", "fast", "hybrid"):
+        job = BatchJob(
+            invoice_id=out_path.stem,
+            input_paths=[Path(p).resolve() for p in args.input],
+            output_path=out_path,
+            work_dir=Path(args.work_dir).resolve() if args.work_dir else Path(tempfile.mkdtemp(prefix="aah_ivc2_")),
+            mode=mode,
+            client_gstin=args.client_gstin,
+            direction=args.direction,
+            memory_db=Path(args.memory_db) if args.memory_db else None,
+            cached_ocr_json=Path(args.cached_ocr_json) if args.cached_ocr_json else None,
+        )
+        run_batch_jobs(
+            [job],
+            llama_server=llama_srv,
+            lighton_model=lo_model,
+            lighton_mmproj=lo_mmproj,
+            paddlex_cache=pdx_cache,
+            cache_dir=cache_dir,
+            threads=args.threads,
+            progress_cb=((lambda iid, st, snap: emit_progress(True, 60, f"[{iid}] {st}")) if args.progress else None),
+        )
+        if job.error:
+            raise RuntimeError(job.error)
+        res_pl = job.result_payload or {}
+        audit_pl = res_pl.get("audit") or {}
+        qwen_m = Path(args.qwen_model or defaults["qwen_model"])
+        qwen_mm = Path(args.qwen_mmproj or defaults["qwen_mmproj"])
+        # In hybrid mode, only invoke Qwen3-VL-4B when Pass-2 Auditor still blocks and bill isn't a partial continuation page
+        is_partial_only = (
+            audit_pl.get("row_count", 0) > 0
+            and float((res_pl.get("canonical") or {}).get("invoiceTotal") or 0.0) <= 0.0
+            and bool(re.search(r"\b(?:cont\.?\s*page\s*\d+|page\s*1\s*(?:of|/)\s*[2-9]|carry\s*forward|to\s+be\s+continued)\b", res_pl.get("rawOcrText") or "", re.IGNORECASE))
+        )
+        if mode == "hybrid" and not audit_pl.get("fully_balanced") and not is_partial_only and qwen_m.is_file() and qwen_mm.is_file():
+            emit_progress(args.progress, 75, "Hybrid Auditor fallback -> escalating unresolved bill to Qwen3-VL-4B...")
+            tmp_path = out_path.with_suffix(".json.tmp")
+            result = run_extraction(args)
+            tmp_path.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp_path, out_path)
+            emit_progress(args.progress, 100, f"Done in {result['elapsedSec']}s ({result['engineUsed']})")
+            return 0
+        emit_progress(args.progress, 100, f"Done in {res_pl.get('elapsedSec', 0)}s ({res_pl.get('engineUsed', '')})")
+        return 0
+
     tmp_path = out_path.with_suffix(".json.tmp")
     result = run_extraction(args)
     tmp_path.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")

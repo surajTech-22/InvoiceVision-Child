@@ -95,6 +95,13 @@ public static class InvoiceExtractionOrchestrator
         psi.ArgumentList.Add(workerOutput);
         psi.ArgumentList.Add("--work-dir");
         psi.ArgumentList.Add(workDir);
+        var sharedCacheDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "InvoiceVisionChild",
+            "Cache");
+        Directory.CreateDirectory(sharedCacheDir);
+        psi.ArgumentList.Add("--cache-dir");
+        psi.ArgumentList.Add(sharedCacheDir);
         psi.ArgumentList.Add("--mode");
         psi.ArgumentList.Add(modeArg);
         if (!string.IsNullOrWhiteSpace(request.ClientGstin))
@@ -342,6 +349,28 @@ public static class InvoiceExtractionOrchestrator
                 result.Buyer.Name = request.ClientName.Trim();
             else if (clientIsSeller && string.IsNullOrWhiteSpace(result.Seller.Name))
                 result.Seller.Name = request.ClientName.Trim();
+        }
+
+        if (root.TryGetProperty("audit", out var auditEl) && auditEl.ValueKind == JsonValueKind.Object)
+        {
+            var blocking = ReadStrArray(auditEl, "blocking_issues");
+            foreach (var issue in blocking)
+            {
+                if (!string.IsNullOrWhiteSpace(issue))
+                {
+                    if (!result.WorkerBlockingIssues.Contains(issue, StringComparer.OrdinalIgnoreCase))
+                        result.WorkerBlockingIssues.Add(issue);
+                    if (!result.Verification.Errors.Contains(issue, StringComparer.OrdinalIgnoreCase))
+                        result.Verification.Errors.Add(issue);
+                }
+            }
+            if (blocking.Count > 0 || (auditEl.TryGetProperty("fully_balanced", out var fb) && fb.ValueKind == JsonValueKind.False))
+            {
+                if (result.WorkerBlockingIssues.Count == 0)
+                    result.WorkerBlockingIssues.Add("Worker GST audit reported invoice not fully balanced.");
+                result.Verification.IsBalanced = false;
+                result.Status = "ReviewRequired";
+            }
         }
 
         return result;
