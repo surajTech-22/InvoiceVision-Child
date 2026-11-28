@@ -512,6 +512,59 @@ class EngineRegressionTests(unittest.TestCase):
             self.assertGreaterEqual(len(lctx["similarExamples"]), 1)
             self.assertGreater(lctx["similarExamples"][0]["similarity"], 0.8)
 
+    def test_q01_q02_q07_q08_party_name_noise_and_split_client_gstin(self) -> None:
+        raw_q01 = f"""
+        <table>
+          <thead><tr><th>LAKSHMIVENKATESHWARA AGENCIES</th><th>M/s BALAJI TRADING CO</th></tr></thead>
+          <tbody><tr><td>D.D. No.: 2ND MAIN</td><td>APMC YARD TUMKUR GST: {CLIENT_GSTIN}</td></tr></tbody>
+        </table>
+        <table>
+          <thead><tr><th>FSSAI NO:</th><th>GST INVOICE</th><th>Invoice No.: LVA25/00932 Date: 11-11-2026<br>VEHICLE No.:</th></tr></thead>
+          <tbody><tr><td>GSTIN: 29APFPT8050D1ZO</td><td></td><td></td></tr></tbody>
+        </table>
+        <table>
+          <thead><tr><th>Sn.</th><th>Product</th><th>HSN</th><th>QTY</th><th>RATE</th><th>Amount</th></tr></thead>
+          <tbody><tr><td>1</td><td>ARUN CRISTAL 1KG</td><td>25010010</td><td>88</td><td>171.00</td><td>15000.00</td></tr></tbody>
+        </table>
+        Total 15000.00
+        """
+        c1 = gst_parser.parse_document_text_to_canonical(raw_q01, known_client_gstin=CLIENT_GSTIN)
+        self.assertEqual(c1["seller"]["name"], "LAKSHMIVENKATESHWARA AGENCIES")
+
+        raw_q02 = f"""
+        GSTIN : 29DFMPP8346J1ZJ
+        TAX INVOICE
+        UDAYAM NO KA-25-0070835
+        SLNS DISTRIBUTORS
+        Khatha Number 0/5776, Tumakuru
+        Billed to : BALAJI TRADING CO.
+        GSTIN : {CLIENT_GSTIN}
+        Invoice No. : 3466/2026-27
+        Dated : 04-11-2026
+        <table><thead><tr><th>S.N.</th><th>Goods</th><th>HSN</th><th>Qty</th><th>Unit</th><th>List Price</th><th>CGST Amt</th><th>SGST Amt</th><th>Amount</th></tr></thead>
+        <tbody><tr><td>1</td><td>MUSTARD OIL</td><td>15149920</td><td>6.00</td><td>Pcs</td><td>204.00</td><td>29.14</td><td>29.14</td><td>1224.00</td></tr></tbody></table>
+        Grand Total 1224.00
+        """
+        c2 = gst_parser.parse_document_text_to_canonical(raw_q02, known_client_gstin=CLIENT_GSTIN)
+        self.assertEqual(c2["seller"]["name"], "SLNS DISTRIBUTORS")
+
+        raw_q07 = """
+        # NAKUL COMMERCIAL
+        5248, APMC YARD
+        GSTIN : 29DKOPS2501N1ZI
+        **TO. BALAJI TRADING CO**
+        1ST CROSS APMC YARD
+        TUMAKUR
+        GSTIN: 29ABZPB5530G / ZE
+        Invoice No. NC04643 Date: 17-10-2026
+        <table><thead><tr><th>Sl</th><th>Product</th><th>HSN</th><th>Qty</th><th>Rate</th><th>Taxable</th><th>CGST</th><th>SGST</th><th>Amount</th></tr></thead>
+        <tbody><tr><td>1</td><td>OIL</td><td>15180039</td><td>1</td><td>100.00</td><td>100.00</td><td>2.50</td><td>2.50</td><td>105.00</td></tr></tbody></table>
+        GRAND TOTAL 105.00
+        """
+        c7 = gst_parser.parse_document_text_to_canonical(raw_q07, known_client_gstin=CLIENT_GSTIN)
+        self.assertEqual(c7["buyer"]["name"], "BALAJI TRADING CO")
+        self.assertEqual(c7["buyer"]["gstin"], CLIENT_GSTIN)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

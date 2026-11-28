@@ -226,27 +226,31 @@ def run_extraction(args: argparse.Namespace) -> Dict[str, Any]:
         final_canon = {}
         final_raw = ""
 
+    def _is_partial_continuation_scan(raw_txt: str, canon_obj: Optional[Dict[str, Any]], aud_obj: Dict[str, Any], pg_cnt: int) -> bool:
+        if pg_cnt > 1 or not canon_obj or aud_obj.get("row_count", 0) <= 0:
+            return False
+        inv_tot_v = float(canon_obj.get("invoiceTotal") or 0.0)
+        tx_tax_v = float(canon_obj.get("taxableTotal") or 0.0) + float(canon_obj.get("cgstTotal") or 0.0) + float(canon_obj.get("sgstTotal") or 0.0) + float(canon_obj.get("igstTotal") or 0.0)
+        blk_s = " ".join(str(b).lower() for b in (aud_obj.get("blocking_issues") or []))
+        if inv_tot_v <= 0.0 and re.search(r"\b(?:cont\.?\s*page\s*\d+|page\s*1\s*(?:of|/)\s*[2-9]|carry\s*forward|carried\s*forward|to\s+be\s+continued)\b", raw_txt, re.IGNORECASE):
+            return True
+        if "printed grand total was not found" in blk_s and re.search(r"\b(?:cont\.?\s*page\s*\d+|page\s*1\s*(?:of|/)\s*[2-9]|carry\s*forward|carried\s*forward|to\s+be\s+continued)\b", raw_txt, re.IGNORECASE):
+            return True
+        if inv_tot_v > tx_tax_v + 1.0:
+            if re.search(r"\bpage\s*[2-9]\s*(?:of|/)\s*[2-9]\b", raw_txt, re.IGNORECASE):
+                return True
+            # Detect continuation Page 2+ whose item table starts at Sl.No >= 2 (e.g. row 9 of INV 11874)
+            m_first_row = re.search(r"<tbody>\s*<tr>\s*<td[^>]*>\s*(\d{1,3})\s*\.?\s*</td>", raw_txt, re.IGNORECASE)
+            if m_first_row and int(m_first_row.group(1)) >= 2 and inv_tot_v > max(100.0, tx_tax_v * 1.5):
+                return True
+        return False
+
     need_escalation = False
     is_partial_continuation = (
-        len(p2_paths) == 1
-        and canon_lighton is not None
-        and len(canon_lighton.get("rows") or []) > 0
+        canon_lighton is not None
         and bool(canon_lighton.get("invoiceNumber"))
         and bool((canon_lighton.get("_audit") or {}).get("seller_gstin_valid"))
-        and (
-            (
-                float(canon_lighton.get("invoiceTotal") or 0.0) <= 0.0
-                and bool(re.search(r"\b(?:cont\.?\s*page\s*\d+|page\s*1\s*(?:of|/)\s*[2-9]|carry\s*forward|carried\s*forward|to\s+be\s+continued)\b", combined_lighton, re.IGNORECASE))
-            )
-            or (
-                bool(re.search(r"\b(?:cont\.?\s*page\s*\d+|page\s*1\s*(?:of|/)\s*[2-9]|carry\s*forward|carried\s*forward|to\s+be\s+continued)\b", combined_lighton, re.IGNORECASE))
-                and any("printed grand total was not found" in str(b).lower() for b in ((canon_lighton.get("_audit") or {}).get("blocking_issues") or []))
-            )
-            or (
-                bool(re.search(r"\bpage\s*[2-9]\s*(?:of|/)\s*[2-9]\b", combined_lighton, re.IGNORECASE))
-                and float(canon_lighton.get("invoiceTotal") or 0.0) > float((canon_lighton.get("taxableTotal") or 0.0) + (canon_lighton.get("cgstTotal") or 0.0) + (canon_lighton.get("sgstTotal") or 0.0) + (canon_lighton.get("igstTotal") or 0.0)) + 1.0
-            )
-        )
+        and _is_partial_continuation_scan(combined_lighton, canon_lighton, canon_lighton.get("_audit") or {}, len(p2_paths))
     )
     if is_partial_continuation:
         engine_used = "LightOnOCR-2-1B-P2 (Partial Page)"
@@ -525,13 +529,15 @@ def main() -> int:
         inv_tot_pl = float(canon_pl.get("invoiceTotal") or 0.0)
         tx_tax_pl = float(canon_pl.get("taxableTotal") or 0.0) + float(canon_pl.get("cgstTotal") or 0.0) + float(canon_pl.get("sgstTotal") or 0.0) + float(canon_pl.get("igstTotal") or 0.0)
         blk_pl = " ".join(str(b).lower() for b in (audit_pl.get("blocking_issues") or []))
+        m_first_row = re.search(r"<tbody>\s*<tr>\s*<td[^>]*>\s*(\d{1,3})\s*\.?\s*</td>", raw_pl, re.IGNORECASE)
+        is_cont_by_rowno = bool(m_first_row and int(m_first_row.group(1)) >= 2 and inv_tot_pl > max(100.0, tx_tax_pl * 1.5))
         is_partial_only = (
             pages_cnt <= 1
             and audit_pl.get("row_count", 0) > 0
             and (
                 (inv_tot_pl <= 0.0 and bool(re.search(r"\b(?:cont\.?\s*page\s*\d+|page\s*1\s*(?:of|/)\s*[2-9]|carry\s*forward|to\s+be\s+continued)\b", raw_pl, re.IGNORECASE)))
                 or ("printed grand total was not found" in blk_pl and bool(re.search(r"\b(?:cont\.?\s*page\s*\d+|page\s*1\s*(?:of|/)\s*[2-9]|carry\s*forward|to\s+be\s+continued)\b", raw_pl, re.IGNORECASE)))
-                or (inv_tot_pl > tx_tax_pl + 1.0 and bool(re.search(r"\bpage\s*[2-9]\s*(?:of|/)\s*[2-9]\b", raw_pl, re.IGNORECASE)))
+                or (inv_tot_pl > tx_tax_pl + 1.0 and (bool(re.search(r"\bpage\s*[2-9]\s*(?:of|/)\s*[2-9]\b", raw_pl, re.IGNORECASE)) or is_cont_by_rowno))
             )
         )
         if is_partial_only:

@@ -1204,8 +1204,9 @@ def _parse_item_rows_from_matrix(
 
 _PARTY_NOISE_PREFIX_RE = re.compile(
     r"^(?:page\s+\d+|print\s+copy|pan(?:\s+no)?|fssai(?:\s+(?:no|lic))?|essai(?:\s+lic)?|gst(?:\s*(?:no|num|number))?\s*:|gstin(?:/uin)?|gstn(?:\s+no)?|state(?:\s+name|\s+code)?|"
-    r"phone|ph(?:\s+no)?|mob(?:ile)?|contact|email|e-?mail|cin|van|beat|order\s*(?:no|number)|customer\s+order|dse\s+name|"
-    r"salesperson|eway|e-?way|irn\b|tkn\b|ack\.?\s*(?:no|date)|e-?inv|from|to|buyer(?:\s*\(bill\s*to\))?|"
+    r"phone|ph(?:\s+no)?|mob(?:ile)?|contact|email|e-?mail|tel\.?\s*/\s*email|cin|van|beat|order\s*(?:no|number)|customer\s+order|dse\s+name|"
+    r"salesperson|vehicle(?:\s*(?:no|num|number))?|ud(?:ay|y)?am(?:\s*(?:no|num|number|reg))?|msme(?:\s*(?:no|num|number))?|khatha\s+(?:no|number)|pid\b|mkt\b|eway|e-?way|irn\b|tkn\b|ack\.?\s*(?:no|date)|e-?inv|from|to|buyer(?:\s*\(bill\s*to\))?|"
+    r"sn\.?|sl\.?\s*no|sr\.?\s*no|product(?:\s+name)?|particulars|description\s+of\s+goods|item\s+name|hsn(?:/sac)?\b|qty\b|quantity\b|mrp\b|amount\b|"
     r"bill\s*to(?:\s+gstin)?|billed\s*to|ship\s*to(?:\s+gstin)?|shipping\s+(?:address|date)|supplier\s+address|registered\s+address|customer\s+(?:address|details)|"
     r"cust\.?\s*code|party\s+(?:mobile|gstin)|branch\s+name|channel|tax\s+type|place\s+of\s+(?:sale|supply)|mode\s+of\s+payment|"
     r"cn\s+(?:number|date)|sdp\s+id|number\s+of\s+totes|ids?\s+of\s+totes|scan\s+this\s+qr|"
@@ -1217,7 +1218,7 @@ _PARTY_NOISE_PREFIX_RE = re.compile(
 
 _ADDRESS_HINT_RE = re.compile(
     r"\b(?:main\b|cross|road|rd\b|street|st\b|yard|apmc|a\s*p\s*m\s*c|ayard|nagar|puram|phase|plot|industrial|layout|extension|ddpi|d\.?d\.?p\.?i|circle|enclave|survey|"
-    r"ward\s+no|pin\s*code|near|beside|opp\.?|bengaluru|tumkur|thumkur|tumakuru|karnataka|india|"
+    r"ward\s+no|pin\s*code|near|beside|opp\.?|bengaluru|bangalore|tumkur|thumkur|tumakur|tumakuru|mysuru|mysore|karnataka|india|"
     r"k(?:ha|at|ath)a\s+no|bata?wadi|balawadi|mandipet|belagumba)\b",
     re.IGNORECASE,
 )
@@ -1240,7 +1241,7 @@ def _clean_party_name(s: str) -> str:
     s = re.sub(r"^\(\s*(?:registered\s+as\s+)?(.+?)\s*\)$", r"\1", s, flags=re.IGNORECASE)
     # Strip explicit label prefixes ("Party Name : BALAJI...", "Company known as ...", "M/s. ...")
     s = re.sub(r"^(?:party\s*name|customer\s*name|buyer\s*name|supplier\s*name|seller\s*name|company\s+known\s+as|formerly\s+known\s+as|registered\s+as|m/s\.?)\s*[:\-]?\s+", "", s, flags=re.IGNORECASE)
-    m_to = re.match(r"^(?:to|from)\s*[:\-]?\s+(.{3,})$", s, re.IGNORECASE)
+    m_to = re.match(r"^(?:to|from)\.?\s*[:\-]?\s+(.{3,})$", s, re.IGNORECASE)
     if m_to:
         s = m_to.group(1)
     # Remove trailing phone number / single marker letter (e.g. "BALAJI TRADING CO. 9731329698 D")
@@ -1282,7 +1283,7 @@ def _extract_party_name_near(lines: List[str], target_gstin: str, role_keywords:
         low = ln.lower()
         if any(noise in low for noise in ("original for", "duplicate for", "triplicate for", "for recipient", "supplier address", "registered address", "shipping address")):
             continue
-        m_direct = re.match(r"^(?:to|from|party\s*name|customer\s*name|buyer\s*name|supplier\s*name|seller\s*name)\s*[:\-]?\s+(.+)$", ln, re.IGNORECASE)
+        m_direct = re.match(r"^(?:to|from|party\s*name|customer\s*name|buyer\s*name|supplier\s*name|seller\s*name)\.?\s*[:\-]?\s+(.+)$", ln, re.IGNORECASE)
         if m_direct and (
             (fallback_top and low.startswith(("from", "supplier", "seller")))
             or (not fallback_top and low.startswith(("to", "party", "customer", "buyer")))
@@ -1512,13 +1513,13 @@ def resolve_seller_buyer(
                         seller_g = ""
                     buyer_g = cg
         elif cok and buyer_g == "" and seller_g and seller_g != cg:
-            # Fill buyer GSTIN from client GSTIN when only client's PAN is printed under Buyer/BillTo/ShipTo (e.g. Metro Cash & Carry)
+            # Fill buyer GSTIN from client GSTIN when only client's PAN is printed under Buyer/BillTo/ShipTo (e.g. Metro Cash & Carry or split '29ABZPB5530G / ZE')
             cg_pan = cg[2:12]
             for idx, ln in enumerate(upper_lines[:75]):
                 norm_ln = re.sub(r"[^A-Za-z0-9]", "", ln).upper()
                 if cg_pan in norm_ln:
                     ctx = " | ".join(upper_lines[max(0, idx - 6):idx + 3]).lower()
-                    if any(m in ctx for m in ("billed to", "bill to", "ship to", "buyer", "customer", "consignee", "recipient")):
+                    if any(m in ctx for m in ("billed to", "bill to", "ship to", "buyer", "customer", "consignee", "recipient", "to.", "party", "m/s", "gstin")):
                         buyer_g = cg
                         break
 
