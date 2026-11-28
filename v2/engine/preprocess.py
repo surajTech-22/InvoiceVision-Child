@@ -164,8 +164,34 @@ def _get_paddlex_models(paddlex_cache_dir: Optional[Path]) -> Tuple[object, obje
         return ori_model, unwarp_model
 
 
+def orient_image_upright(img_path: Path, dst_path: Path, paddlex_cache_dir: Optional[Path] = None) -> Path:
+    """Detect page orientation with singleton PP-LCNet_x1_0_doc_ori and rotate upright when needed."""
+    img_path = Path(img_path)
+    dst_path = Path(dst_path)
+    paddlex_cache_dir = Path(paddlex_cache_dir) if paddlex_cache_dir is not None else None
+    img_bgr = load_exif_bgr(str(img_path))
+    ori_model, _ = _get_paddlex_models(paddlex_cache_dir)
+    rot_map = {
+        "0": None,
+        "90": cv2.ROTATE_90_COUNTERCLOCKWISE,
+        "180": cv2.ROTATE_180,
+        "270": cv2.ROTATE_90_CLOCKWISE,
+    }
+    with _PDX_PREDICT_LOCK:
+        ori_res = list(ori_model.predict(str(img_path)))
+    ori_label = str((ori_res[0].get("label_names") or ["0"])[0]) if ori_res else "0"
+    rot_code = rot_map.get(ori_label)
+    if rot_code is None:
+        return img_path
+    dst_path.parent.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(dst_path), cv2.rotate(img_bgr, rot_code))
+    return dst_path
+
+
 def crop_footer_strip(p2_img_path: Path, dst_path: Path, top_ratio: float = 0.50) -> Path:
     """Create a zoomed footer crop for fast Stage-2 targeted footer/total recovery."""
+    p2_img_path = Path(p2_img_path)
+    dst_path = Path(dst_path)
     img = cv2.imread(str(p2_img_path))
     if img is None:
         return p2_img_path

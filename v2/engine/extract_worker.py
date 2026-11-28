@@ -229,10 +229,22 @@ def run_extraction(args: argparse.Namespace) -> Dict[str, Any]:
         len(p2_paths) == 1
         and canon_lighton is not None
         and len(canon_lighton.get("rows") or []) > 0
-        and float(canon_lighton.get("invoiceTotal") or 0.0) <= 0.0
         and bool(canon_lighton.get("invoiceNumber"))
         and bool((canon_lighton.get("_audit") or {}).get("seller_gstin_valid"))
-        and bool(re.search(r"\b(?:cont\.?\s*page\s*\d+|page\s*1\s*(?:of|/)\s*[2-9]|carry\s*forward|carried\s*forward|to\s+be\s+continued)\b", combined_lighton, re.IGNORECASE))
+        and (
+            (
+                float(canon_lighton.get("invoiceTotal") or 0.0) <= 0.0
+                and bool(re.search(r"\b(?:cont\.?\s*page\s*\d+|page\s*1\s*(?:of|/)\s*[2-9]|carry\s*forward|carried\s*forward|to\s+be\s+continued)\b", combined_lighton, re.IGNORECASE))
+            )
+            or (
+                bool(re.search(r"\bpage\s*1\s*(?:of|/)\s*[2-9]\b", combined_lighton, re.IGNORECASE))
+                and any("printed grand total was not found" in str(b).lower() for b in ((canon_lighton.get("_audit") or {}).get("blocking_issues") or []))
+            )
+            or (
+                bool(re.search(r"\bpage\s*[2-9]\s*(?:of|/)\s*[2-9]\b", combined_lighton, re.IGNORECASE))
+                and float(canon_lighton.get("invoiceTotal") or 0.0) > float((canon_lighton.get("taxableTotal") or 0.0) + (canon_lighton.get("cgstTotal") or 0.0) + (canon_lighton.get("sgstTotal") or 0.0) + (canon_lighton.get("igstTotal") or 0.0)) + 1.0
+            )
+        )
     )
     if is_partial_continuation:
         engine_used = "LightOnOCR-2-1B-P2 (Partial Page)"
@@ -428,10 +440,20 @@ def main() -> int:
         qwen_mm = Path(args.qwen_mmproj or defaults["qwen_mmproj"])
         if not (qwen_m.is_file() and qwen_mm.is_file()):
             return False
+        raw_pl = payload_dict.get("rawOcrText") or ""
+        canon_pl = payload_dict.get("canonical") or {}
+        pages_cnt = len(payload_dict.get("renderedPageImages") or [])
+        inv_tot_pl = float(canon_pl.get("invoiceTotal") or 0.0)
+        tx_tax_pl = float(canon_pl.get("taxableTotal") or 0.0) + float(canon_pl.get("cgstTotal") or 0.0) + float(canon_pl.get("sgstTotal") or 0.0) + float(canon_pl.get("igstTotal") or 0.0)
+        blk_pl = " ".join(str(b).lower() for b in (audit_pl.get("blocking_issues") or []))
         is_partial_only = (
-            audit_pl.get("row_count", 0) > 0
-            and float((payload_dict.get("canonical") or {}).get("invoiceTotal") or 0.0) <= 0.0
-            and bool(re.search(r"\b(?:cont\.?\s*page\s*\d+|page\s*1\s*(?:of|/)\s*[2-9]|carry\s*forward|to\s+be\s+continued)\b", payload_dict.get("rawOcrText") or "", re.IGNORECASE))
+            pages_cnt <= 1
+            and audit_pl.get("row_count", 0) > 0
+            and (
+                (inv_tot_pl <= 0.0 and bool(re.search(r"\b(?:cont\.?\s*page\s*\d+|page\s*1\s*(?:of|/)\s*[2-9]|carry\s*forward|to\s+be\s+continued)\b", raw_pl, re.IGNORECASE)))
+                or ("printed grand total was not found" in blk_pl and bool(re.search(r"\bpage\s*1\s*(?:of|/)\s*[2-9]\b", raw_pl, re.IGNORECASE)))
+                or (inv_tot_pl > tx_tax_pl + 1.0 and bool(re.search(r"\bpage\s*[2-9]\s*(?:of|/)\s*[2-9]\b", raw_pl, re.IGNORECASE)))
+            )
         )
         return not is_partial_only
 

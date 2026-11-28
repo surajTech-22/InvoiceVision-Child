@@ -36,7 +36,7 @@ from category_agents import (
 from gst_math import audit_invoice_math, run_parallel_category_audits
 from gst_parser import clean_num, normalize_canonical_dict, parse_document_text_to_canonical
 from hybrid_merger import LlamaServerSession, apply_qwen_escalation_to_worker_payload, img_to_data_url
-from preprocess import configure_isolated_paddlex, crop_footer_strip, preprocess_pages_p2, render_input_to_images
+from preprocess import configure_isolated_paddlex, crop_footer_strip, orient_image_upright, preprocess_pages_p2, render_input_to_images
 from qr_decode import decode_qr_from_image
 from supplier_memory import apply_supplier_memory
 
@@ -373,8 +373,12 @@ class ManagerAgent:
         """Spawn a fast targeted Stage-2 child OCR call on a bottom footer strip."""
         t0 = time.perf_counter()
         tag = f"{int(round(top_ratio * 100))}"
+        src_img = p2_img_path
+        if src_img.parent.name != "preprocessed":
+            up_path = work_dir / "preprocessed" / f"{p2_img_path.stem}_upright.png"
+            src_img = orient_image_upright(p2_img_path, up_path, paddlex_cache_dir=self.paddlex_cache)
         strip_path = work_dir / "preprocessed" / f"{p2_img_path.stem}_footer_strip_{tag}.png"
-        cropped = crop_footer_strip(p2_img_path, strip_path, top_ratio=top_ratio)
+        cropped = crop_footer_strip(src_img, strip_path, top_ratio=top_ratio)
         eff_prompt = prompt or "Extract the tax breakdown table, CGST, SGST, IGST, round off, grand total, and amount in words from this invoice bottom section."
         with self._lighton_inference_slot():
             srv = self._ensure_ocr_session(work_dir / "logs")
@@ -617,8 +621,8 @@ class ManagerAgent:
                         job.invoice_id,
                         Path(pkt["p2_paths"][-1]),
                         Path(job.work_dir),
-                        top_ratio=0.72,
-                        max_tokens=500,
+                        top_ratio=0.78,
+                        max_tokens=1400,
                         prompt="Extract only the Tax Summary bottom Total row (especially Net Payable Amt), Round Off, Grand Total, and Amount in words accurately.",
                         child_name="visual_ocr_net_payable_child",
                     )
