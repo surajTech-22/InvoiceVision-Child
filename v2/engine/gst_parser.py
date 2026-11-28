@@ -1203,16 +1203,16 @@ def _parse_item_rows_from_matrix(
 
 
 _PARTY_NOISE_PREFIX_RE = re.compile(
-    r"^(?:page\s+\d+|print\s+copy|pan(?:\s+no)?|fssai(?:\s+(?:no|lic))?|essai(?:\s+lic)?|gst(?:\s*(?:no|num|number))?\s*:|gstin(?:/uin)?|gstn(?:\s+no)?|state(?:\s+name|\s+code)?|"
+    r"^(?:page\s+\d+|print\s+copy|pan(?:\s+no)?|fssai(?:\s+(?:no|lic))?|essai(?:\s+lic)?|gst(?:\s*(?:no|num|number))?|gstin(?:/uin)?|gstn(?:\s+no)?|state(?:\s+name|\s+code)?|"
     r"phone|ph(?:\s+no)?|mob(?:ile)?|contact|email|e-?mail|tel\.?\s*/\s*email|cin|van|beat|order\s*(?:no|number)|customer\s+order|dse\s+name|"
-    r"salesperson|vehicle(?:\s*(?:no|num|number))?|ud(?:ay|y)?am(?:\s*(?:no|num|number|reg))?|msme(?:\s*(?:no|num|number))?|khatha\s+(?:no|number)|pid\b|mkt\b|eway|e-?way|irn\b|tkn\b|ack\.?\s*(?:no|date)|e-?inv|from|to|buyer(?:\s*\(bill\s*to\))?|"
-    r"sn\.?|sl\.?\s*no|sr\.?\s*no|product(?:\s+name)?|particulars|description\s+of\s+goods|item\s+name|hsn(?:/sac)?\b|qty\b|quantity\b|mrp\b|amount\b|"
+    r"salesperson|vehicle(?:\s*(?:no|num|number))?|ud(?:ay|y)?am(?:\s*(?:no|num|number|reg))?|msme(?:\s*(?:no|num|number))?|khatha\s+(?:no|number)|pid|mkt|eway|e-?way|irn|tkn|ack\.?\s*(?:no|date)|e-?inv|from|to|buyer(?:\s*\(bill\s*to\))?|"
+    r"sn\.?|sl\.?\s*no|sr\.?\s*no|product(?:\s+name)?|particulars|description\s+of\s+goods|item\s+name|hsn(?:/sac)?|qty|quantity|mrp|amount|"
     r"bill\s*to(?:\s+gstin)?|billed\s*to|ship\s*to(?:\s+gstin)?|shipping\s+(?:address|date)|supplier\s+address|registered\s+address|customer\s+(?:address|details)|"
     r"cust\.?\s*code|party\s+(?:mobile|gstin)|branch\s+name|channel|tax\s+type|place\s+of\s+(?:sale|supply)|mode\s+of\s+payment|"
     r"cn\s+(?:number|date)|sdp\s+id|number\s+of\s+totes|ids?\s+of\s+totes|scan\s+this\s+qr|"
-    r"date\b|dated\b|inv(?:oice)?\s*(?:no|number|date|dt)|bill\s*(?:no|number|date|dt)|doc(?:ument)?\s*(?:no|number|date)|voucher\s*(?:no|number)|sm\s+name|rt\s+name|all\s+taxes\s+are|"
+    r"date|dated|inv(?:oice)?\s*(?:no|number|date|dt)|bill\s*(?:no|number|date|dt)|doc(?:ument)?\s*(?:no|number|date)|voucher\s*(?:no|number)|sm\s+name|rt\s+name|all\s+taxes\s+are|"
     r"gst\s+invoice(?:/cash)?|tax\s+invoice(?:\s*\(credit\))?|bill\s+of\s+supply|original(?:\s+for\s+recipient)?|"
-    r"duplicate|triplicate|reverse\s+charge|for\s+)\b",
+    r"duplicate|triplicate|reverse\s+charge|for)(?:$|\b|[:.\s])",
     re.IGNORECASE,
 )
 
@@ -1512,7 +1512,7 @@ def resolve_seller_buyer(
                     else:
                         seller_g = ""
                     buyer_g = cg
-        elif cok and buyer_g == "" and seller_g and seller_g != cg:
+        elif cok and buyer_g == "" and seller_g != cg:
             # Fill buyer GSTIN from client GSTIN when only client's PAN is printed under Buyer/BillTo/ShipTo (e.g. Metro Cash & Carry or split '29ABZPB5530G / ZE')
             cg_pan = cg[2:12]
             for idx, ln in enumerate(upper_lines[:75]):
