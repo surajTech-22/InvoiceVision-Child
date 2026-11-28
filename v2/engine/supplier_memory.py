@@ -454,6 +454,49 @@ def _find_learned_hsn_rate(hsn_map: Dict[str, float], raw_hsn: str) -> Optional[
     return None
 
 
+def _load_client_supplier_rule(db_path: str, supplier_gstin: str, client_gstin: str = "") -> Dict[str, Any]:
+    if not db_path or not Path(db_path).is_file():
+        return {}
+    conn = None
+    try:
+        conn = _connect(db_path)
+        for lh in ([f"client:{client_gstin}", ""] if client_gstin else [""]):
+            row = conn.execute(
+                "SELECT rule_json FROM supplier_layout_rules WHERE supplier_gstin = ? AND layout_hash = ? LIMIT 1",
+                (supplier_gstin, lh),
+            ).fetchone()
+            if row and row["rule_json"]:
+                parsed = json.loads(str(row["rule_json"]))
+                if isinstance(parsed, dict):
+                    return parsed
+    except Exception:
+        pass
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    return {}
+
+
+def _apply_invoice_number_rule(raw_inv: str, rule: Dict[str, Any]) -> str:
+    s = (raw_inv or "").strip()
+    if not s or not isinstance(rule, dict):
+        return s
+    for pref in rule.get("stripPrefixes") or []:
+        p = str(pref or "")
+        if p and s.lower().startswith(p.lower()):
+            trimmed = s[len(p):].lstrip(" -.:")
+            if trimmed:
+                return trimmed
+    if rule.get("digitsOnly"):
+        digits = re.sub(r"\D+", "", s)
+        if len(digits) >= 2:
+            return digits
+    return s
+
+
 def apply_supplier_memory(canon: Dict[str, Any], db_path: str, client_gstin: str = "") -> Dict[str, Any]:
     seller = canon.get("seller") or {}
     buyer = canon.get("buyer") or {}
@@ -552,6 +595,48 @@ def apply_supplier_memory(canon: Dict[str, Any], db_path: str, client_gstin: str
 
     if hsn_hits > 0:
         meta["appliedRules"].append(f"Applied learned HSN->GST rate on {hsn_hits} row(s)")
+
+    # Apply per-client + supplier learned formatting/line rules from supplier_layout_rules
+    if is_valid_gstin(seller_gstin):
+        client_rules = _load_client_supplier_rule(db_path, seller_gstin, client_norm)
+        if client_rules:
+            inv_rule = client_rules.get("invoiceNumberRule") or {}
+            cur_inv_no = str(canon.get("invoiceNumber") or "").strip()
+            if inv_rule and cur_inv_no:
+                rewritten = _apply_invoice_number_rule(cur_inv_no, inv_rule)
+                if rewritten and rewritten != cur_inv_no:
+                    canon["invoiceNumber"] = rewritten
+                    meta["appliedRules"].append(f"Applied learned invoice number format '{cur_inv_no}' -> '{rewritten}'")
+                    changed = True
+            line_rules = client_rules.get("savedLineRules") or []
+            if isinstance(line_rules, list) and line_rules:
+                by_key = {str(lr.get("lineKey") or ""): lr for lr in line_rules if isinstance(lr, dict) and lr.get("lineKey")}
+                drop_zero = bool(client_rules.get("dropZeroValueRows"))
+                kept_rows: List[Dict[str, Any]] = []
+                for rw in canon.get("rows") or []:
+                    tx_v = float(rw.get("taxable") or 0.0)
+                    lt_v = float(rw.get("lineTotal") or 0.0)
+                    desc_s = str(rw.get("description") or "").strip()
+                    if drop_zero and tx_v == 0.0 and lt_v == 0.0 and desc_s:
+                        changed = True
+                        continue
+                    h_d = _norm_hsn(str(rw.get("hsnSac") or ""))
+                    d_norm = re.sub(r"[^A-Z0-9]", "", desc_s.upper())[:28]
+                    lk = f"{h_d}:{d_norm}" if h_d else d_norm
+                    lr = by_key.get(lk) or by_key.get(d_norm)
+                    if lr:
+                        if not str(rw.get("unit") or "").strip() and lr.get("unit"):
+                            rw["unit"] = str(lr["unit"])
+                            changed = True
+                        if float(rw.get("gstRate") or 0.0) == 0.0 and float(lr.get("gstRate") or 0.0) > 0.0 and tx_v > 0.0:
+                            rw["gstRate"] = float(lr["gstRate"])
+                            changed = True
+                    kept_rows.append(rw)
+                canon["rows"] = kept_rows
+            if client_rules.get("preferredDirection") and not meta.get("preferredDirection"):
+                meta["preferredDirection"] = str(client_rules["preferredDirection"])
+            if client_rules.get("preferredRecognitionMode") and not meta.get("preferredRecognitionMode"):
+                meta["preferredRecognitionMode"] = str(client_rules["preferredRecognitionMode"])
 
     if changed:
         from gst_parser import normalize_canonical_dict  # local import avoids circular startup

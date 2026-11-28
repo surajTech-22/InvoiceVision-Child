@@ -150,7 +150,7 @@ class EngineRegressionTests(unittest.TestCase):
         )
 
     def test_supplier_memory_never_stores_or_learns_client_gstin(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
             db_path = str(Path(td) / "supplier_memory.db")
             res = supplier_memory.record_supplier_learning(
                 db_path=db_path,
@@ -324,7 +324,7 @@ class EngineRegressionTests(unittest.TestCase):
 
     def test_batch_manager_imports_re_and_daemon_log_dir(self) -> None:
         self.assertTrue(hasattr(batch_manager, "re"))
-        with tempfile.TemporaryDirectory() as td:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
             mgr = batch_manager.ManagerAgent(
                 llama_server=Path(td) / "llama-server.exe",
                 lighton_model=Path(td) / "lighton.gguf",
@@ -477,7 +477,7 @@ class EngineRegressionTests(unittest.TestCase):
             "rows": [{"description": "Sample", "taxable": 200.0, "cgst": 5.0, "sgst": 5.0, "igst": 0.0, "lineTotal": 210.0}],
             "_audit": {"fully_balanced": True},
         }
-        with tempfile.TemporaryDirectory() as td:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
             db_path = str(Path(td) / "mem.db")
             res = ai_self_learning.save_layout_rule(
                 db_path,
@@ -675,7 +675,7 @@ class EngineRegressionTests(unittest.TestCase):
                     "issueNotes": "Repaired Seller UDYAM prefix & Buyer city",
                 })
 
-        with tempfile.TemporaryDirectory() as td:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
             db_path = Path(td) / "mem.db"
             fake_model = Path(td) / "Qwen3-1.7B-Q4_K_M.gguf"
             fake_model.write_bytes(b"gguf")
@@ -794,6 +794,67 @@ class EngineRegressionTests(unittest.TestCase):
         self.assertAlmostEqual(c["creditNoteTotal"], 100.0, places=2)
         self.assertAlmostEqual(c["invoiceTotal"], 1670.0, places=2)
         self.assertTrue(c["_audit"]["fully_balanced"], c["_audit"]["blocking_issues"])
+
+    def test_client_scoped_invoice_number_and_line_memory_rules(self) -> None:
+        import json
+        import sqlite3
+        import tempfile
+        import supplier_memory
+
+        seller_g = "29AGFPL5940F1ZA"
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
+            dbp = str(Path(td) / "mem.db")
+            supplier_memory.record_supplier_learning(
+                dbp,
+                gstin=seller_g,
+                canonical_name="SRI VENKATESHWARA AGENCIES",
+                preferred_direction="Purchase",
+                preferred_recognition_mode="Accounting Invoice",
+                client_gstin=CLIENT_GSTIN,
+            )
+            conn = sqlite3.connect(dbp)
+            try:
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO supplier_layout_rules(
+                        supplier_gstin, supplier_name_norm, layout_hash, header_signature,
+                        rule_json, source, confidence, hit_count, success_count, created_at, updated_at
+                    ) VALUES (?, 'SRIVENKATESHWARAAGENCIES', ?, '', ?, 'user_confirmed', 0.98, 1, 1, '2026-11-28T16:25:00Z', '2026-11-28T16:25:00Z')
+                    """,
+                    (
+                        seller_g,
+                        f"client:{CLIENT_GSTIN}",
+                        json.dumps(
+                            {
+                                "clientGstin": CLIENT_GSTIN,
+                                "invoiceNumberRule": {"stripPrefixes": ["INV ", "INV-", "INV."], "digitsOnly": True},
+                                "savedLineRules": [{"lineKey": "09109100:FISHKABABFRY500GMS", "unit": "KG", "gstRate": 5.0}],
+                            }
+                        ),
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            canon = {
+                "seller": {"name": "SRI VENKATESHWARA AGENCIES", "gstin": seller_g},
+                "buyer": {"name": "BALAJI TRADING CO", "gstin": CLIENT_GSTIN},
+                "invoiceNumber": "INV 11874",
+                "invoiceDate": "2026-11-06",
+                "taxableTotal": 400.0,
+                "cgstTotal": 10.0,
+                "sgstTotal": 10.0,
+                "igstTotal": 0.0,
+                "invoiceTotal": 420.0,
+                "rows": [
+                    {"description": "FISH KABAB & FRY 500GMS", "hsnSac": "09109100", "quantity": 2.0, "unit": "", "rate": 200.0, "taxable": 400.0, "gstRate": 0.0, "cgst": 10.0, "sgst": 10.0, "lineTotal": 420.0}
+                ],
+            }
+            meta = supplier_memory.apply_supplier_memory(canon, dbp, client_gstin=CLIENT_GSTIN)
+            self.assertEqual(canon["invoiceNumber"], "11874")
+            self.assertEqual(canon["rows"][0]["unit"], "KG")
+            self.assertEqual(canon["rows"][0]["gstRate"], 5.0)
+            self.assertTrue(any("11874" in r for r in meta["appliedRules"]))
 
 
 if __name__ == "__main__":
