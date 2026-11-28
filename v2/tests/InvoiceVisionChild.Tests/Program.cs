@@ -532,5 +532,49 @@ internal static class Program
         Check(nandiRateSlip.Verification.IsBalanced && nandiRateSlip.Status == "Verified",
             "Line-sum and GST-rate balanced row must not fail on unit-rate slip alone: " +
             string.Join("; ", nandiRateSlip.Verification.Errors.Concat(nandiRateSlip.Verification.Warnings)));
+
+        // 6. Zero-value promotional/free row (Qty=0 or Rate=0, Taxable=0, LineTotal=0) must verify cleanly without 'Missing taxable amount'
+        var freePromoBill = new InvoiceExtractionResult
+        {
+            InvoiceNumber = "I/26-27/047899",
+            InvoiceDate = "2026-10-31",
+            Seller = new InvoicePartyInfo { Name = "SRI GANGADHARESHWARA ENTERPRISE", Gstin = seller },
+            Buyer = new InvoicePartyInfo { Name = "BALAJI TRADING CO", Gstin = buyer },
+            TaxableTotal = 1516.46m,
+            CgstTotal = 37.91m,
+            SgstTotal = 37.91m,
+            InvoiceTotal = 1592.28m,
+            Rows =
+            [
+                new InvoiceLineItem
+                {
+                    Description = "AASHIRVAAD ATTA 2KG",
+                    HsnSac = "11010000",
+                    Quantity = 1m,
+                    Rate = 1516.46m,
+                    Taxable = 1516.46m,
+                    GstRate = 5m,
+                    Cgst = 37.91m,
+                    Sgst = 37.91m,
+                    LineTotal = 1592.28m
+                },
+                new InvoiceLineItem
+                {
+                    Description = "AASHIVD SALT 1KG (FREE SCHEME)",
+                    HsnSac = "25010010",
+                    Quantity = 0m,
+                    Rate = 0m,
+                    Taxable = 0m,
+                    GstRate = 0m,
+                    Cgst = 0m,
+                    Sgst = 0m,
+                    LineTotal = 0m
+                }
+            ]
+        };
+        InvoiceMathVerifier.Verify(freePromoBill);
+        Check(freePromoBill.Verification.IsBalanced && freePromoBill.Status == "Verified" && freePromoBill.Rows[1].MathStatus == "OK",
+            "Zero-value free promotional row must verify cleanly: " +
+            string.Join("; ", freePromoBill.Verification.Errors.Concat(freePromoBill.Verification.Warnings)));
     }
 }

@@ -569,8 +569,15 @@ class ManagerAgent:
                 # Fast Stage-2 footer-strip child recovery before considering heavier escalation
                 issues_low = " ".join(audit.get("blocking_issues") or []).lower()
                 raw_low = (ctx.raw_ocr_text or "").lower()
+                is_page1_cont = (
+                    len(pkt.get("p2_paths") or []) <= 1
+                    and not is_trunc
+                    and not audit.get("truncated")
+                    and bool(re.search(r"\b(?:cont\.?\s*page\s*\d+|page\s*1\s*(?:of|/)\s*[2-9]|carry\s*forward|to\s+be\s+continued)\b", raw_low))
+                )
                 if (
                     not audit.get("fully_balanced")
+                    and not is_page1_cont
                     and (
                         is_trunc
                         or audit.get("truncated")

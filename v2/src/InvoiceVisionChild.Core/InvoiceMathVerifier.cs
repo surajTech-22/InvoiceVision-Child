@@ -96,6 +96,13 @@ public static class InvoiceMathVerifier
                 row.MathStatus = "OK";
                 row.MathNote = "Balanced";
             }
+            else if (row.Taxable == 0m && taxSum == 0m && row.Cess == 0m && row.LineTotal == 0m &&
+                     !string.IsNullOrWhiteSpace(row.Description) &&
+                     (row.Quantity == 0m || row.Rate == 0m || (row.Discount > 0m && row.Discount >= row.Quantity * row.Rate - 0.50m)))
+            {
+                row.MathStatus = "OK";
+                row.MathNote = "Free / zero-value promotional item";
+            }
             else
             {
                 row.MathStatus = "Incomplete";

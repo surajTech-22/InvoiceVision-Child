@@ -1661,6 +1661,7 @@ def parse_document_text_to_canonical(
 
     for page_mats in page_tables_list:
         seen_page_table_fps = set()
+        seen_page_row_sigs = set()
         for mat in page_mats:
             if _is_tax_summary_table(mat):
                 continue
@@ -1668,6 +1669,7 @@ def parse_document_text_to_canonical(
             if mat_fp in seen_page_table_fps:
                 continue
             seen_page_table_fps.add(mat_fp)
+            had_explicit_hdr = any(_is_item_table_header(r) for r in mat)
             item_start_indices = [i for i, r in enumerate(mat) if _is_item_table_header(r)]
             effective_mat = mat
             if not item_start_indices and last_item_hdr_rows:
@@ -1701,6 +1703,18 @@ def parse_document_text_to_canonical(
                         break
                 parsed_rows, fh = _parse_item_rows_from_matrix(sub[:cut_at], learned_rules=learned_rules)
                 if parsed_rows:
+                    def _row_sig(rw: Dict[str, Any]) -> Tuple[str, str, float, float]:
+                        dn = re.sub(r"[^a-z0-9]", "", str(rw.get("description") or "").lower())[:24]
+                        return (dn, str(rw.get("hsnSac") or ""), round(float(rw.get("quantity") or 0.0), 2), round(float(rw.get("lineTotal") or 0.0), 2))
+
+                    sigs = [_row_sig(rw) for rw in parsed_rows]
+                    dup_hits = sum(1 for sg in sigs if sg[0] and sg in seen_page_row_sigs)
+                    # Drop same-page duplicate slice (e.g. footer-crop re-OCR repeating bottom rows of same page)
+                    if dup_hits == len(parsed_rows) or (not had_explicit_hdr and dup_hits >= 2 and dup_hits * 2 >= len(parsed_rows)):
+                        continue
+                    for sg in sigs:
+                        if sg[0]:
+                            seen_page_row_sigs.add(sg)
                     has_hdr2 = len(sub) > 1 and not any(re.search(r"\b\d{4,8}\b", c) for c in sub[1])
                     last_item_hdr_rows = sub[:2] if has_hdr2 else sub[:1]
                     all_rows.extend(parsed_rows)
@@ -1880,6 +1894,19 @@ def parse_document_text_to_canonical(
     summary_slabs: Dict[float, float] = {}
     summary_slabs_detail: List[Dict[str, Any]] = []
     hsn_rate_map: Dict[str, float] = {}
+
+    if summary_discount_kv == 0.0:
+        for ln_d in reversed(plain_lines_clean[-40:]):
+            m_disc_ln = re.search(
+                r"(?:^|\b)(?:less\s*[:\-]?\s*)?(?:cash\s+|trade\s+|spl\.?\s+)?discount(?:\s+allowed)?\s*[:\-]\s*(?:₹|rs\.?|inr)?\s*([0-9][0-9,]*\.\d{2})\b",
+                ln_d,
+                re.IGNORECASE,
+            )
+            if m_disc_ln:
+                dv = clean_num(m_disc_ln.group(1))
+                if dv > 0:
+                    summary_discount_kv = dv
+                    break
 
     for mat in reversed(tables):
         if _is_tax_summary_table(mat):

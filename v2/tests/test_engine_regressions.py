@@ -762,6 +762,39 @@ class EngineRegressionTests(unittest.TestCase):
         self.assertAlmostEqual(c13["invoiceTotal"], 24400.00, places=2)
         self.assertTrue(c13["_audit"]["fully_balanced"], c13["_audit"]["blocking_issues"])
 
+    def test_multipage_same_page_headerless_footer_crop_dedup(self) -> None:
+        raw_inv11874_p1_with_footer_dup = f"""
+        GSTIN: 29AGFPL5940F1ZA
+        # TAX INVOICE
+        <table><thead><tr><th>SRI VENKATESHWARA AGENCIES</th><th>M/S BALAJI TRADING CO</th></tr></thead>
+        <tbody><tr><td>TUMKUR</td><td>GSTIN: {CLIENT_GSTIN}</td></tr></tbody></table>
+        BILL NO INV 11874 DATE 06-11-2026
+        <table>
+          <thead><tr><th>NO</th><th>PARTICULARS</th><th>HSN/SAC</th><th>PKNG</th><th>M.R.P</th><th>RATE</th><th>QTY</th><th>FREE</th><th>GST%</th><th>DISC</th><th>AMOUNT</th></tr></thead>
+          <tbody>
+            <tr><td>1</td><td>FISH KABAB &amp; FRY 500GMS</td><td>09109100</td><td>1KG</td><td>150.00</td><td>210.00</td><td>2.00</td><td></td><td>5.0</td><td></td><td>420.00</td></tr>
+            <tr><td>2</td><td>DANIYA POWDER 500GMS</td><td>09109100</td><td>1KG</td><td>200.00</td><td>270.00</td><td>5.00</td><td></td><td>5.0</td><td></td><td>1350.00</td></tr>
+          </tbody>
+        </table>
+        Cont. Page 2
+        <table>
+          <thead><tr><th></th><th>DANIYA POWDER 500GMS</th><th>09109100</th><th>1KG</th><th>200.00</th><th>270.00</th><th>5.00</th><th></th><th>5.0</th><th></th><th>1350.00</th></tr></thead>
+          <tbody>
+            <tr><td>1</td><td>FISH KABAB &amp; FRY 500GMS</td><td>09109100</td><td>1KG</td><td>150.00</td><td>210.00</td><td>2.00</td><td></td><td>5.0</td><td></td><td>420.00</td></tr>
+          </tbody>
+        </table>
+        **SUB TOTAL**: 1685.72
+        **DISCOUNT**: 100.00
+        **CGST AMT**: 42.14
+        **SGST AMT**: 42.14
+        NET AMT: 1670.00
+        """
+        c = gst_parser.parse_document_text_to_canonical(raw_inv11874_p1_with_footer_dup, known_client_gstin=CLIENT_GSTIN)
+        self.assertEqual(len(c["rows"]), 2)
+        self.assertAlmostEqual(c["creditNoteTotal"], 100.0, places=2)
+        self.assertAlmostEqual(c["invoiceTotal"], 1670.0, places=2)
+        self.assertTrue(c["_audit"]["fully_balanced"], c["_audit"]["blocking_issues"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
