@@ -507,8 +507,22 @@ def main() -> int:
                             "--lighton-mmproj", str(lo_mmproj),
                             "--paddlex-cache", str(pdx_cache),
                         ]
-                        cflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
-                        subprocess.Popen(dcmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=cflags, close_fds=True)
+                        # Use CREATE_NO_WINDOW alone (combining DETACHED_PROCESS causes uv's python shim on Win11
+                        # to spawn a visible WindowsTerminal/conhost window when re-execing CPython).
+                        cflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                        si = None
+                        if os.name == "nt":
+                            si = subprocess.STARTUPINFO()
+                            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                            si.wShowWindow = 0  # SW_HIDE
+                        subprocess.Popen(
+                            dcmd,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            creationflags=cflags,
+                            startupinfo=si,
+                            close_fds=True,
+                        )
                         for _ in range(30):
                             time.sleep(0.25)
                             port = _read_live_port()
